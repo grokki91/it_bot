@@ -177,6 +177,25 @@ def cmd_more(ctx):
     return "\n".join(lines)
 
 
+@command("breaking", "проверить, нет ли срочного прямо сейчас", heavy=True)
+def cmd_breaking(ctx):
+    from . import breaking
+
+    chat_id = ctx.chat_id
+    skip = breaking.why_not(ctx.conn)
+
+    def job():
+        if not breaking.check(chat_id=chat_id):
+            tg_send(chat_id, "🕊 Ничего срочного: подтверждённых событий выше "
+                             "порога %.1f нет." % CFG["breaking_min_score"])
+
+    if skip:
+        return "Срочные сейчас не ищу — %s." % esc(skip)
+    if not ctx.worker.submit("breaking", job, chat_id):
+        return "⏳ Уже проверяю."
+    return "⚡ Смотрю, нет ли чего-то срочного..."
+
+
 @command("saved", "закладки, отмеченные кнопкой 🔖")
 def cmd_saved(ctx):
     if ctx.arg(0) in ("clear", "очистить"):
@@ -297,6 +316,11 @@ def cmd_settings(ctx):
         "порог важности: <code>%.1f</code>" % CFG["min_score"],
         "сбор: раз в <code>%d</code> ч" % CFG["collect_every_h"],
         "язык: <code>%s</code>" % esc(CFG["language"]),
+        "срочные: <code>%s</code>%s" % (
+            "вкл" if CFG["breaking"] else "выкл",
+            (", тихо %s" % esc(CFG["breaking_quiet"])) if CFG["breaking"] else ""),
+        "кнопки реакций: <code>%s</code>" % ("вкл" if CFG["feedback_buttons"]
+                                             else "выкл"),
     ])
 
 

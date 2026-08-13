@@ -13,7 +13,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import breaking, config
 from .bot import Worker, drain_backlog, is_paused, poll_forever
 from .config import CFG, HOME, LOG_FILE, local_now, log, tz_label
 from .feedparse import parse_date
@@ -54,7 +54,12 @@ def tick(worker) -> None:
             build_and_send()
         worker.submit("digest", job)
     elif need_collect:
-        worker.submit("collect", collect)
+        # срочное ищем сразу после сбора: свежие материалы уже в базе,
+        # а до утреннего выпуска может оставаться половина суток
+        def job():
+            collect()
+            breaking.check()
+        worker.submit("collect", job)
 
 
 def scheduler_loop(worker, stop) -> None:

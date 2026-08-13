@@ -66,6 +66,26 @@ def fit_message(cards, scanned):
     return fit_message(cards[:half], scanned) + fit_message(cards[half:], scanned)
 
 
+def breaking_card(card, group, score, category):
+    """Отдельная карточка для срочного: одна новость, но с пометкой ⚡."""
+    main = primary_of(group)
+    others = sorted({i["source_id"] for i in group} - {main["source_id"]})[:3]
+    lines = ["⚡ <b>Срочно</b>", "",
+             "%s <b>%s</b>" % (EMOJI.get(category, "📌"),
+                               esc(card.get("headline") or main["title"]))]
+    what = str(card.get("what") or main["summary"][:300]).strip()
+    if what:
+        lines.append(esc(what))
+    why = str(card.get("why") or "").strip()
+    if why:
+        lines.append("💡 " + esc(why))
+    confirm = " · подтверждают: " + esc(", ".join(others)) if others else ""
+    lines.append('🔗 <a href="%s">%s</a>%s · ⭐ %.1f'
+                 % (esc(main["url"]), esc(main["source_id"]), confirm, score))
+    lines.append("<i>Остальное придёт в утреннем выпуске.</i>")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------- кнопки под выпуском
 MARK = "✓"
 BUTTONS = ((feedback.UP, "👍"), (feedback.DOWN, "👎"), ("save", "🔖"))

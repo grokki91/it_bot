@@ -69,6 +69,18 @@ CFG = {
     "listen":           True,      # [env ND_LISTEN] отвечать на команды в чате.
                                    # 0 = только рассылка по расписанию, как в 2.0
 
+    # --- срочные новости (вне расписания) ------------------------------------
+    # Событие, о котором за пару часов написали сразу несколько первоисточников,
+    # ждать до утра не должно. Условия нарочно строгие: одно ложное «срочно»
+    # раздражает сильнее, чем десять пропущенных.
+    "breaking":           True,   # [env ND_BREAKING] присылать срочное сразу
+    "breaking_window_h":  6,      # за какое окно считаем подтверждения
+    "breaking_min_sources": 3,    # столько РАЗНЫХ сайтов, и хотя бы один tier-1
+    "breaking_social":    0.9,    # либо ~270+ баллов Hacker News в одиночку
+    "breaking_min_score": 8.0,    # и оценка модели не ниже (1-10)
+    "breaking_max_per_day": 2,    # больше двух срочных в сутки — это уже лента
+    "breaking_quiet":     "23:00-08:00",  # в эти часы молчим (ваше время)
+
     # --- обратная связь ------------------------------------------------------
     "feedback_buttons": True,      # [env ND_FEEDBACK] кнопки 👍/👎/🔖 под выпуском
     "feedback_weight":  0.25,      # насколько реакции двигают прескоринг.
@@ -125,6 +137,8 @@ ENV_MAP = {
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_FEEDBACK": ("feedback_buttons",
                     lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_BREAKING_QUIET": ("breaking_quiet", str),
 }
 
 log = logging.getLogger("nd")
