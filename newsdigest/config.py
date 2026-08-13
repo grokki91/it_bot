@@ -74,6 +74,15 @@ CFG = {
                                    #        подписчик тратит ваш баланс модели),
                                    # off — отвечать «бот личный» и не пускать
 
+    # --- страница в браузере -------------------------------------------------
+    # То же, что бот в Telegram, но по адресу http://<ip-вашего-vps>:8080.
+    # Пароль (web_token) создаётся сам при первом запуске и пишется в env.
+    "web":              True,       # [env ND_WEB] поднимать страницу вместе с демоном
+    "web_host":         "0.0.0.0",  # [env ND_WEB_HOST] 0.0.0.0 = видно по IP VPS,
+                                    # 127.0.0.1 = только с самой машины (через ssh-туннель)
+    "web_port":         8080,       # [env ND_WEB_PORT]
+    "web_token":        "",         # [env ND_WEB_TOKEN] пароль страницы; пусто = создам сам
+
     # --- срочные новости (вне расписания) ------------------------------------
     # Событие, о котором за пару часов написали сразу несколько первоисточников,
     # ждать до утра не должно. Условия нарочно строгие: одно ложное «срочно»
@@ -146,6 +155,10 @@ ENV_MAP = {
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
     "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),
     "ND_SIGNUP": ("signup", str),
+    "ND_WEB": ("web", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_WEB_HOST": ("web_host", str),
+    "ND_WEB_PORT": ("web_port", int),
+    "ND_WEB_TOKEN": ("web_token", str),
 }
 
 log = logging.getLogger("nd")
@@ -258,6 +271,16 @@ def local_now() -> datetime:
     if _TZ_NAME:
         return datetime.now()
     return (datetime.now(timezone.utc)
+            + timedelta(hours=CFG["tz_offset"])).replace(tzinfo=None)
+
+
+def to_local(when: datetime) -> datetime:
+    """Момент времени (обычно UTC из базы) в вашем поясе, наивный datetime."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if _TZ_NAME:
+        return when.astimezone().replace(tzinfo=None)
+    return (when.astimezone(timezone.utc)
             + timedelta(hours=CFG["tz_offset"])).replace(tzinfo=None)
 
 

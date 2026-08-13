@@ -118,7 +118,22 @@ CREATE TABLE IF NOT EXISTS saved (
     at        TEXT NOT NULL,
     PRIMARY KEY (chat_id, url_hash)
 );
+
+-- Копии сообщений бота: их показывает веб-страница. Всё, что уходит в
+-- Telegram, попадает и сюда, поэтому в браузере видно ровно то же самое.
+CREATE TABLE IF NOT EXISTS outbox (
+    id       INTEGER PRIMARY KEY,
+    chat_id  TEXT NOT NULL DEFAULT '',
+    kind     TEXT NOT NULL DEFAULT 'bot',
+    text     TEXT NOT NULL,
+    keyboard TEXT NOT NULL DEFAULT '',
+    at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_chat ON outbox(chat_id, id);
 """
+
+#: сколько последних сообщений храним для страницы (на каждый чат)
+OUTBOX_KEEP = 400
 
 
 def table_exists(conn, name: str) -> bool:
@@ -228,6 +243,37 @@ def take_leftover(conn, chat_id, limit):
                          [(r["id"],) for r in rows])
         conn.commit()
     return rows
+
+
+def save_outbox(conn, chat_id, text, keyboard=None, kind="bot") -> int:
+    """Кладёт копию сообщения для веб-страницы. Возвращает её номер.
+
+    Хвост подрезаем изредка, а не каждый раз: лишний DELETE на каждое
+    сообщение ничего не даёт, а страница живёт последними сотнями строк.
+    """
+    cur = conn.execute(
+        "INSERT INTO outbox(chat_id, kind, text, keyboard, at) VALUES (?,?,?,?,?)",
+        (str(chat_id), kind, text,
+         json.dumps(keyboard, ensure_ascii=False) if keyboard else "", now_iso()))
+    conn.commit()
+    new_id = int(cur.lastrowid)
+    if new_id % 25 == 0:
+        conn.execute("DELETE FROM outbox WHERE chat_id=? AND id<=?",
+                     (str(chat_id), new_id - OUTBOX_KEEP))
+        conn.commit()
+    return new_id
+
+
+def outbox_page(conn, chat_id, after=None, limit=60):
+    """Сообщения чата: хвост ленты (after=None) или всё новее номера after."""
+    if after is None:
+        rows = list(conn.execute(
+            "SELECT * FROM outbox WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+            (str(chat_id), limit)))
+        return rows[::-1]
+    return list(conn.execute(
+        "SELECT * FROM outbox WHERE chat_id=? AND id>? ORDER BY id LIMIT ?",
+        (str(chat_id), int(after), limit)))
 
 
 def db() -> sqlite3.Connection:
