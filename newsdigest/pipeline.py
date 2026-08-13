@@ -11,11 +11,38 @@ from .llm import LLMError, llm_cost, rank_clusters, summarize
 from .profiles import profile
 from .rank import already_sent, cluster, prescore, primary_of, select
 from .render import fit_message
-from .storage import db, log_run, meta_set
+from .storage import db, log_run, meta_set, save_leftover
 from .telegram import plain, tg_send
 
 
-def build_and_send(dry_run=False) -> dict:
+def remember_leftover(conn, chat_id, ranking, shortlist, picked) -> None:
+    """Сохраняет кандидатов, которые модель оценила, но выпуск их не вместил.
+
+    Их показывает команда /more — и это бесплатно: ранжирование уже оплачено.
+    """
+    chosen = {id(group) for group, _score, _cat in picked}
+    rows = []
+    for entry in ranking:
+        try:
+            idx = int(entry.get("id", -1))
+            score = float(entry.get("score") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= idx < len(shortlist):
+            continue
+        group = shortlist[idx]
+        if id(group) in chosen:
+            continue
+        main = primary_of(group)
+        rows.append({"url_hash": main["url_hash"], "title": main["title"],
+                     "url": main["url"], "source_id": main["source_id"],
+                     "category": entry.get("category") or main["category"],
+                     "score": score})
+    save_leftover(conn, chat_id, rows[:30])
+
+
+def build_and_send(dry_run=False, chat_id=None) -> dict:
+    chat_id = chat_id or config.TG_CHAT
     conn = db()
     stats = {"candidates": 0, "clusters": 0, "selected": 0, "sent": 0, "cost": 0.0}
     prof = profile()
@@ -53,6 +80,7 @@ def build_and_send(dry_run=False) -> dict:
                    for i, g in enumerate(shortlist)]
 
     picked = select(ranking, shortlist)
+    remember_leftover(conn, chat_id, ranking, shortlist, picked)
     if not picked:
         log.warning("Ничего не прошло порог важности %.1f — тихий день", CFG["min_score"])
         log_run(conn, "digest", "empty", stats)
@@ -89,7 +117,7 @@ def build_and_send(dry_run=False) -> dict:
         return stats
 
     for text in messages:
-        tg_send(config.TG_CHAT, text)
+        tg_send(chat_id, text)
         stats["sent"] += 1
         time.sleep(1.0)
 

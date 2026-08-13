@@ -52,6 +52,22 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+
+-- Кандидаты, которые модель отранжировала, но в выпуск они не влезли.
+-- Это запас для команды /more: показать их стоит без нового запроса к LLM.
+CREATE TABLE IF NOT EXISTS leftover (
+    id        INTEGER PRIMARY KEY,
+    chat_id   TEXT NOT NULL DEFAULT '',
+    url_hash  TEXT NOT NULL,
+    title     TEXT NOT NULL,
+    url       TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL DEFAULT '',
+    category  TEXT NOT NULL DEFAULT 'other',
+    score     REAL NOT NULL DEFAULT 0,
+    at        TEXT NOT NULL,
+    shown     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_leftover_chat ON leftover(chat_id, shown, score);
 """
 
 
@@ -72,6 +88,29 @@ def ensure_column(conn, table: str, column: str, decl: str) -> bool:
 def migrate(conn) -> None:
     """Догоняет схему до текущей версии на уже существующей базе."""
     return None
+
+
+def save_leftover(conn, chat_id, rows) -> None:
+    """Запоминает хвост ранжирования: то, что не влезло в сегодняшний выпуск."""
+    conn.execute("DELETE FROM leftover WHERE chat_id=?", (str(chat_id),))
+    conn.executemany(
+        "INSERT INTO leftover(chat_id,url_hash,title,url,source_id,category,score,at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        [(str(chat_id), r["url_hash"], r["title"], r["url"], r["source_id"],
+          r["category"], r["score"], now_iso()) for r in rows])
+    conn.commit()
+
+
+def take_leftover(conn, chat_id, limit):
+    """Отдаёт следующие непоказанные новости из хвоста и помечает их показанными."""
+    rows = list(conn.execute(
+        "SELECT * FROM leftover WHERE chat_id=? AND shown=0 "
+        "ORDER BY score DESC LIMIT ?", (str(chat_id), limit)))
+    if rows:
+        conn.executemany("UPDATE leftover SET shown=1 WHERE id=?",
+                         [(r["id"],) for r in rows])
+        conn.commit()
+    return rows
 
 
 def db() -> sqlite3.Connection:

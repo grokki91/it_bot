@@ -66,6 +66,8 @@ CFG = {
     "one_message":      True,      # весь дайджест одним сообщением (режем только если >4096)
     "link_preview":     False,     # превью ссылок раздувает сообщение
     "silent":           False,     # [env ND_SILENT] true = отправлять без звука
+    "listen":           True,      # [env ND_LISTEN] отвечать на команды в чате.
+                                   # 0 = только рассылка по расписанию, как в 2.0
 
     # --- хранение ------------------------------------------------------------
     "keep_items_days":  10,
@@ -114,6 +116,7 @@ ENV_MAP = {
     "ND_MIN_SCORE": ("min_score", float),
     "ND_MODEL_SUMMARY": ("model_summary", str),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
 }
 
 log = logging.getLogger("nd")

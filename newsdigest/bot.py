@@ -1,0 +1,397 @@
+# -*- coding: utf-8 -*-
+"""Разбор входящих апдейтов: команды в чате и фоновые задачи.
+
+Демон не просто ждёт назначенного часа — он слушает Telegram и отвечает.
+Тяжёлое (сбор фидов, запросы к модели) уходит в отдельную нить: пока идёт
+прогон, бот продолжает отвечать на команды.
+"""
+from __future__ import annotations
+
+import json
+import queue
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+
+from . import config
+from .config import CFG, local_now, log, tz_label
+from .pipeline import build_and_send
+from .profiles import profile
+from .render import esc
+from .sources import all_feeds, collect, fetch_source
+from .storage import db, meta_get, meta_set, take_leftover
+from .telegram import tg_call, tg_send
+
+#: сколько секунд держим long-poll соединение открытым
+POLL_TIMEOUT = 25
+
+
+# ------------------------------------------------------------------ фоновые задачи
+class Worker:
+    """Одна фоновая нить на все долгие задачи.
+
+    Больше одной нити не нужно: и сбор, и запросы к модели упираются в сеть
+    и в лимиты API, а параллельные прогоны только мешали бы друг другу.
+    """
+
+    def __init__(self):
+        self.queue = queue.Queue()
+        self.current = ""
+        self._lock = threading.Lock()
+        self._pending = set()
+        self._thread = threading.Thread(target=self._loop, name="nd-worker",
+                                        daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def busy(self) -> str:
+        with self._lock:
+            return self.current
+
+    def submit(self, name: str, fn, chat_id="") -> bool:
+        """Ставит задачу в очередь. False — такая задача уже выполняется."""
+        with self._lock:
+            if name == self.current or name in self._pending:
+                return False
+            self._pending.add(name)
+        self.queue.put((name, fn, str(chat_id or "")))
+        return True
+
+    def _loop(self):
+        while True:
+            name, fn, chat_id = self.queue.get()
+            with self._lock:
+                self._pending.discard(name)
+                self.current = name
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 — нить не должна умирать
+                log.exception("Задача %s упала: %s", name, exc)
+                if chat_id:
+                    try:
+                        tg_send(chat_id, "⚠️ %s: не получилось — %s"
+                                % (esc(name), esc(str(exc)[:300])))
+                    except Exception:  # noqa: BLE001
+                        pass
+            finally:
+                with self._lock:
+                    self.current = ""
+                self.queue.task_done()
+
+
+# ------------------------------------------------------------------ реестр команд
+class Command:
+    def __init__(self, name, fn, help_text, heavy, hidden):
+        self.name, self.fn = name, fn
+        self.help, self.heavy, self.hidden = help_text, heavy, hidden
+
+
+HANDLERS = {}
+
+
+def command(name, help_text="", heavy=False, hidden=False, aliases=()):
+    def deco(fn):
+        cmd = Command(name, fn, help_text, heavy, hidden)
+        HANDLERS[name] = cmd
+        for alias in aliases:
+            HANDLERS[alias] = Command(alias, fn, "", heavy, True)
+        return fn
+    return deco
+
+
+class Ctx:
+    """Всё, что нужно обработчику команды."""
+
+    def __init__(self, chat_id, args, conn, worker, user=""):
+        self.chat_id, self.args, self.conn = chat_id, args, conn
+        self.worker, self.user = worker, user
+
+    def arg(self, index, default=""):
+        return self.args[index] if index < len(self.args) else default
+
+
+# --------------------------------------------------------------------- доступ
+_REFUSED = set()
+
+
+def allowed_chats() -> set:
+    """Кому бот подчиняется. Пока это владелец плюс явно добавленные чаты."""
+    chats = {str(config.TG_CHAT)} if config.TG_CHAT else set()
+    conn = db()
+    extra = meta_get(conn, "extra_chats", "")
+    conn.close()
+    return chats | {c.strip() for c in extra.split(",") if c.strip()}
+
+
+def is_allowed(chat_id) -> bool:
+    return str(chat_id) in allowed_chats()
+
+
+# ------------------------------------------------------------------- команды
+@command("help", "эта справка", aliases=("start",))
+def cmd_help(ctx):
+    lines = ["🤖 <b>Дайджест новостей</b>", ""]
+    for name, cmd in sorted(HANDLERS.items()):
+        if not cmd.hidden and cmd.help:
+            lines.append("/%s — %s" % (name, cmd.help))
+    lines += ["", "Тема: <b>%s</b>, выпуск в %s (%s)."
+              % (esc(CFG["topic"]), esc(CFG["send_at"]), esc(tz_label()))]
+    return "\n".join(lines)
+
+
+@command("digest", "собрать и прислать выпуск сейчас", heavy=True)
+def cmd_digest(ctx):
+    chat_id = ctx.chat_id
+    tg_send(chat_id, "🔄 Собираю свежее — займёт минуту-другую.")
+
+    def job():
+        collect()
+        stats = build_and_send(chat_id=chat_id)
+        if not stats.get("sent"):
+            tg_send(chat_id, "🌘 Ничего нового, что стоило бы прислать. "
+                             "Так бывает: тихий день или всё уже уходило раньше.")
+
+    if not ctx.worker.submit("digest", job, chat_id):
+        return "⏳ Уже собираю выпуск, подождите."
+    return None
+
+
+@command("more", "ещё новости, не попавшие в выпуск")
+def cmd_more(ctx):
+    try:
+        count = max(1, min(int(ctx.arg(0, "5")), 15))
+    except ValueError:
+        count = 5
+    rows = take_leftover(ctx.conn, ctx.chat_id, count)
+    if not rows:
+        return ("Запас пуст. Он наполняется при сборке выпуска — "
+                "пришлите /digest или дождитесь утреннего.")
+    lines = ["📎 <b>Ещё из вчерашнего отбора</b>", ""]
+    for row in rows:
+        lines.append('• <a href="%s">%s</a> — %s · ⭐ %.1f'
+                     % (esc(row["url"]), esc(row["title"]),
+                        esc(row["source_id"]), row["score"]))
+    return "\n".join(lines)
+
+
+@command("status", "что происходит: расписание, расход, источники")
+def cmd_status(ctx):
+    conn = ctx.conn
+    day = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    fresh = conn.execute("SELECT COUNT(*) c FROM items WHERE fetched_at > ?",
+                         (day,)).fetchone()["c"]
+    sent = conn.execute("SELECT COUNT(*) c FROM sent WHERE sent_at > ?",
+                        (week,)).fetchone()["c"]
+    bad = list(conn.execute("SELECT source_id FROM health WHERE fails >= ? ",
+                            (CFG["mute_after_fails"],)))
+    cost = 0.0
+    for row in conn.execute("SELECT stats FROM runs WHERE at > ?", (week,)):
+        try:
+            cost += float(json.loads(row["stats"]).get("cost", 0))
+        except (ValueError, TypeError):
+            pass
+
+    lines = [
+        "📊 <b>Состояние</b>",
+        "Тема: <b>%s</b> · источников: %d" % (esc(CFG["topic"]), len(profile()["feeds"])),
+        "Следующий выпуск: %s" % esc(next_send_human(conn)),
+        "Материалов за сутки: %d · отправлено за неделю: %d" % (fresh, sent),
+        "Расход модели за неделю: $%.4f" % cost,
+    ]
+    if bad:
+        lines.append("Отключённые источники: %s"
+                     % esc(", ".join(r["source_id"] for r in bad[:6])))
+    if is_paused(conn):
+        lines.append("⏸ Рассылка на паузе — /resume вернёт.")
+    busy = ctx.worker.busy() if ctx.worker else ""
+    if busy:
+        lines.append("Сейчас выполняется: %s" % esc(busy))
+    return "\n".join(lines)
+
+
+@command("feeds", "проверить источники по одному", heavy=True)
+def cmd_feeds(ctx):
+    chat_id = ctx.chat_id
+    feeds = all_feeds()
+
+    def job():
+        ok, rows = 0, []
+        with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
+            for src, items, err in pool.map(fetch_source, feeds):
+                if err:
+                    rows.append("❌ %s — %s" % (esc(src[0]), esc(err[:50])))
+                else:
+                    ok += 1
+                    rows.append("✅ %s — %d" % (esc(src[0]), len(items)))
+        head = "🩺 <b>Источники: %d из %d отвечают</b>\n" % (ok, len(feeds))
+        tg_send(chat_id, head + "\n".join(sorted(rows)))
+
+    tg_send(chat_id, "🩺 Проверяю %d источников..." % len(feeds))
+    if not ctx.worker.submit("feeds", job, chat_id):
+        return "⏳ Проверка уже идёт."
+    return None
+
+
+@command("pause", "приостановить рассылку")
+def cmd_pause(ctx):
+    meta_set(ctx.conn, "paused", "1")
+    return "⏸ Рассылка на паузе. Сбор новостей продолжается — /resume вернёт выпуски."
+
+
+@command("resume", "вернуть рассылку")
+def cmd_resume(ctx):
+    meta_set(ctx.conn, "paused", "0")
+    return "▶️ Рассылка включена. Следующий выпуск: %s" % esc(next_send_human(ctx.conn))
+
+
+@command("settings", "текущие настройки")
+def cmd_settings(ctx):
+    return "\n".join([
+        "⚙️ <b>Настройки</b>",
+        "тема: <code>%s</code>" % esc(CFG["topic"]),
+        "время выпуска: <code>%s</code> (%s)" % (esc(CFG["send_at"]), esc(tz_label())),
+        "новостей в выпуске: <code>%d–%d</code>" % (CFG["min_items"], CFG["max_items"]),
+        "порог важности: <code>%.1f</code>" % CFG["min_score"],
+        "сбор: раз в <code>%d</code> ч" % CFG["collect_every_h"],
+        "язык: <code>%s</code>" % esc(CFG["language"]),
+    ])
+
+
+# ------------------------------------------------------------------ расписание
+def is_paused(conn) -> bool:
+    return meta_get(conn, "paused", "0") == "1"
+
+
+def next_send_human(conn) -> str:
+    """«сегодня в 09:00» / «завтра в 09:00» — с учётом уже отправленного."""
+    try:
+        hour, minute = [int(x) for x in CFG["send_at"].split(":")]
+    except ValueError:
+        return "время отправки задано неверно (%s)" % CFG["send_at"]
+    now = local_now()
+    today = now.strftime("%Y-%m-%d")
+    done_today = meta_get(conn, "last_digest_date", "") == today
+    due_passed = now.hour * 60 + now.minute >= hour * 60 + minute
+    when = "завтра" if (done_today or due_passed) else "сегодня"
+    return "%s в %02d:%02d (%s)" % (when, hour, minute, tz_label())
+
+
+# --------------------------------------------------------------------- разбор
+def parse_command(text: str):
+    """'/more@my_bot 7' -> ('more', ['7']). Не команда -> (None, [])."""
+    text = (text or "").strip()
+    if not text.startswith("/"):
+        return None, []
+    parts = text.split()
+    name = parts[0][1:].split("@", 1)[0].lower()
+    return (name or None), parts[1:]
+
+
+def handle_message(msg, worker) -> None:
+    chat = msg.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    if not chat_id or not text:
+        return
+    user = ((msg.get("from") or {}).get("username")
+            or (msg.get("from") or {}).get("first_name") or "")
+
+    if not is_allowed(chat_id):
+        log.warning("Команда от постороннего чата %s (%s): %r", chat_id, user, text[:60])
+        if chat_id not in _REFUSED:
+            _REFUSED.add(chat_id)
+            try:
+                tg_send(chat_id, "Это личный бот-дайджест. "
+                                 "Он отвечает только своему владельцу.")
+            except Exception:  # noqa: BLE001
+                pass
+        return
+
+    name, args = parse_command(text)
+    if not name:
+        return
+    cmd = HANDLERS.get(name)
+    if not cmd:
+        tg_send(chat_id, "Не знаю команду /%s. Список: /help" % esc(name))
+        return
+    if cmd.heavy and worker is None:
+        tg_send(chat_id, "Фоновые задачи сейчас недоступны — демон не запущен.")
+        return
+
+    conn = db()
+    try:
+        reply = cmd.fn(Ctx(chat_id, args, conn, worker, user))
+    finally:
+        conn.close()
+    if reply:
+        tg_send(chat_id, reply, silent=True)
+
+
+def handle_update(upd, worker) -> None:
+    msg = upd.get("message") or upd.get("channel_post")
+    if msg:
+        handle_message(msg, worker)
+
+
+# ----------------------------------------------------------------- long-polling
+def drain_backlog(conn) -> None:
+    """При первом запуске пропускаем то, что накопилось, пока бота не было.
+
+    Иначе после суток простоя бот выполнит всё, что ему успели написать.
+    """
+    if meta_get(conn, "tg_offset", ""):
+        return
+    try:
+        updates = tg_call("getUpdates", {"offset": -1, "timeout": 0}, attempts=1)
+    except RuntimeError as exc:
+        log.warning("Не смог прочитать очередь апдейтов: %s", exc)
+        return
+    if updates:
+        meta_set(conn, "tg_offset", int(updates[-1]["update_id"]) + 1)
+        log.info("Пропустил %d старых апдейтов", len(updates))
+    else:
+        meta_set(conn, "tg_offset", 0)
+
+
+def poll_once(worker, timeout=POLL_TIMEOUT) -> int:
+    """Один заход long-poll. Возвращает число обработанных апдейтов."""
+    conn = db()
+    offset = int(meta_get(conn, "tg_offset", "0") or 0)
+    conn.close()
+    payload = {"timeout": timeout, "limit": 20,
+               "allowed_updates": ["message", "channel_post", "callback_query"]}
+    if offset:
+        payload["offset"] = offset
+    updates = tg_call("getUpdates", payload, attempts=1, timeout=timeout + 15)
+
+    handled = 0
+    highest = offset
+    for upd in updates:
+        highest = max(highest, int(upd.get("update_id", 0)) + 1)
+        try:
+            handle_update(upd, worker)
+            handled += 1
+        except Exception as exc:  # noqa: BLE001 — один кривой апдейт не ломает цикл
+            log.exception("Апдейт %s не обработан: %s", upd.get("update_id"), exc)
+    if highest != offset:
+        conn = db()
+        meta_set(conn, "tg_offset", highest)
+        conn.close()
+    return handled
+
+
+def poll_forever(worker, stop=None) -> None:
+    """Цикл приёма команд. Сетевые сбои гасим нарастающей паузой."""
+    backoff = 1
+    while not (stop and stop.is_set()):
+        try:
+            poll_once(worker)
+            backoff = 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Приём апдейтов не удался: %s (пауза %ds)", exc, backoff)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 300)

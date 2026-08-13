@@ -13,13 +13,13 @@ from .net import post_json
 TG_LIMIT = 4096
 
 
-def tg_call(method, payload, attempts=4):
+def tg_call(method, payload, attempts=4, timeout=30):
     if not config.TG_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
     url = "https://api.telegram.org/bot%s/%s" % (config.TG_TOKEN, method)
     last = ""
     for attempt in range(1, attempts + 1):
-        status, data, err = post_json(url, payload, timeout=30)
+        status, data, err = post_json(url, payload, timeout=timeout)
         if data and data.get("ok"):
             return data["result"]
         code = (data or {}).get("error_code", status)
