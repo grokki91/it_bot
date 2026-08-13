@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, feedback, userprofiles
+from . import config, feedback, settings, userprofiles
 from .config import CFG, local_now, log, tz_label
 from .pipeline import build_and_send
 from .profiles import profile
@@ -386,20 +386,38 @@ def cmd_resume(ctx):
 
 @command("settings", "текущие настройки")
 def cmd_settings(ctx):
-    return "\n".join([
-        "⚙️ <b>Настройки</b>",
-        "тема: <code>%s</code>" % esc(CFG["topic"]),
-        "время выпуска: <code>%s</code> (%s)" % (esc(CFG["send_at"]), esc(tz_label())),
-        "новостей в выпуске: <code>%d–%d</code>" % (CFG["min_items"], CFG["max_items"]),
-        "порог важности: <code>%.1f</code>" % CFG["min_score"],
-        "сбор: раз в <code>%d</code> ч" % CFG["collect_every_h"],
-        "язык: <code>%s</code>" % esc(CFG["language"]),
-        "срочные: <code>%s</code>%s" % (
-            "вкл" if CFG["breaking"] else "выкл",
-            (", тихо %s" % esc(CFG["breaking_quiet"])) if CFG["breaking"] else ""),
-        "кнопки реакций: <code>%s</code>" % ("вкл" if CFG["feedback_buttons"]
-                                             else "выкл"),
-    ])
+    lines = ["⚙️ <b>Настройки</b> (часовой пояс: %s)" % esc(tz_label()), ""]
+    for name, value, describe in settings.overview():
+        lines.append("<code>%s</code> = <b>%s</b> — %s"
+                     % (esc(name), esc(value), esc(describe)))
+    lines += ["", "Менять: <code>/set имя значение</code>, "
+                  "например <code>/set time 08:30</code>."]
+    return "\n".join(lines)
+
+
+@command("set", "изменить настройку: /set время 08:30")
+def cmd_set(ctx):
+    if not ctx.args:
+        return cmd_settings(ctx)
+    if len(ctx.args) < 2:
+        key, setting = settings.resolve(ctx.arg(0))
+        if not setting:
+            return "Не знаю настройку «%s». Список — /settings" % esc(ctx.arg(0))
+        return ("<code>%s</code> сейчас <b>%s</b> — %s.\nЗадать: "
+                "<code>/set %s значение</code>"
+                % (esc(key), esc(setting.current()), esc(setting.describe), esc(key)))
+    try:
+        key, shown = settings.apply(ctx.arg(0), " ".join(ctx.args[1:]))
+    except settings.Invalid as exc:
+        return "⚠️ %s" % esc(exc)
+
+    tail = ""
+    if key in ("time", "tz"):
+        tail = "\nСледующий выпуск: %s" % esc(next_send_human(ctx.conn))
+    if key == "topic":
+        tail = ("\nИсточников в теме: %d. Первый выпуск по новой теме соберётся "
+                "после ближайшего сбора." % len(profile()["feeds"]))
+    return "✅ <code>%s</code> = <b>%s</b>%s" % (esc(key), esc(shown), tail)
 
 
 # ------------------------------------------------------------------ расписание

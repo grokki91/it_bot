@@ -139,6 +139,7 @@ ENV_MAP = {
                     lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
+    "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),
 }
 
 log = logging.getLogger("nd")
@@ -181,8 +182,13 @@ def load_env() -> None:
     DS_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 
 
-def write_env(values: dict) -> None:
-    """Дописывает значения в ~/.newsdigest/env, не теряя уже сохранённые."""
+def write_env(values: dict, allow_empty: bool = False) -> None:
+    """Дописывает значения в ~/.newsdigest/env, не теряя уже сохранённые.
+
+    Пустые значения по умолчанию пропускаются: полупустой ответ мастера
+    настройки не должен затирать уже сохранённый токен. Осознанной записи
+    пустоты (например, «часов тишины нет») служит allow_empty.
+    """
     HOME.mkdir(parents=True, exist_ok=True)
     existing = {}
     if ENV_FILE.exists():
@@ -190,7 +196,8 @@ def write_env(values: dict) -> None:
             if "=" in line and not line.strip().startswith("#"):
                 key, val = line.split("=", 1)
                 existing[key.strip()] = val.strip()
-    existing.update({k: v for k, v in values.items() if v not in (None, "")})
+    existing.update({k: v for k, v in values.items()
+                     if v is not None and (allow_empty or v != "")})
     body = ["# Секреты и настройки дайджеста. Права 600, в git не класть.",
             "# Всё, кроме трёх верхних строк, можно менять и в newsdigest/config.py.", ""]
     for key in sorted(existing):
