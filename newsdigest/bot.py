@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, feedback
+from . import config, feedback, userprofiles
 from .config import CFG, local_now, log, tz_label
 from .pipeline import build_and_send
 from .profiles import profile
@@ -292,6 +292,84 @@ def cmd_feeds(ctx):
     if not ctx.worker.submit("feeds", job, chat_id):
         return "⏳ Проверка уже идёт."
     return None
+
+
+FEED_HELP = ("Источники темы <b>%s</b>:\n"
+             "/feed list — список\n"
+             "/feed add &lt;ссылка&gt; [tier 1-3] [категория]\n"
+             "/feed rm &lt;имя&gt;\n\n"
+             "tier: 1 первоисточник, 2 СМИ, 3 агрегатор.\n"
+             "категории: %s")
+
+
+@command("feed", "добавить или убрать источник")
+def cmd_feed(ctx):
+    topic = CFG["topic"]
+    action = (ctx.arg(0) or "list").lower()
+
+    if action in ("list", "список"):
+        feeds = profile()["feeds"]
+        lines = ["📚 <b>%d источников темы «%s»</b>" % (len(feeds), esc(topic)), ""]
+        for source_id, url, tier, category in sorted(feeds):
+            mark = " ✏️" if userprofiles.is_custom(topic, source_id) else ""
+            lines.append("<code>%s</code>%s · t%d · %s"
+                         % (esc(source_id), mark, tier, esc(category)))
+        lines += ["", "<i>✏️ — добавлено вами. /feed add и /feed rm правят список.</i>"]
+        return "\n".join(lines)
+
+    if action in ("add", "добавить"):
+        url = ctx.arg(1)
+        if not url:
+            return FEED_HELP % (esc(topic), ", ".join(userprofiles.CATEGORIES))
+        tier = ctx.arg(2, "2")
+        category = ctx.arg(3, "media")
+        try:
+            feed = userprofiles.add_feed(topic, url, tier, category)
+        except ValueError as exc:
+            return "Не вышло: %s" % esc(exc)
+
+        # проверяем сразу: молчащий фид лучше увидеть здесь, а не через сутки
+        _src, items, err = fetch_source(feed)
+        if err:
+            userprofiles.remove_feed(topic, feed[0])
+            return ("Источник не отвечает (%s) — не добавляю.\n"
+                    "Проверьте, что это ссылка именно на RSS/Atom." % esc(err[:80]))
+        note = ("свежих записей: %d" % len(items) if items
+                else "свежего пока нет — это нормально для редких блогов")
+        return ("✅ Добавил <code>%s</code> (t%d, %s), %s.\nВ теме теперь %d источников."
+                % (esc(feed[0]), feed[2], esc(feed[3]), note, len(profile()["feeds"])))
+
+    if action in ("rm", "remove", "del", "убрать"):
+        source_id = ctx.arg(1)
+        if not source_id:
+            return "Что убрать? /feed rm &lt;имя&gt;, список — /feed list"
+        if not userprofiles.remove_feed(topic, source_id):
+            return "В теме «%s» нет источника <code>%s</code>." % (esc(topic),
+                                                                   esc(source_id))
+        return ("🗑 Убрал <code>%s</code>. Осталось %d источников.\n"
+                "<i>Вернуть: /feed add со ссылкой.</i>"
+                % (esc(source_id), len(profile()["feeds"])))
+
+    return FEED_HELP % (esc(topic), ", ".join(userprofiles.CATEGORIES))
+
+
+@command("keywords", "ключевые слова для фильтра Hacker News")
+def cmd_keywords(ctx):
+    topic = CFG["topic"]
+    action = (ctx.arg(0) or "list").lower()
+    if action in ("add", "добавить") and len(ctx.args) > 1:
+        words = userprofiles.edit_keywords(topic, add=ctx.args[1:])
+        return "✅ Добавил. Сейчас %d слов:\n<code>%s</code>" % (len(words),
+                                                                esc(", ".join(words)))
+    if action in ("rm", "remove", "убрать") and len(ctx.args) > 1:
+        words = userprofiles.edit_keywords(topic, remove=ctx.args[1:])
+        return "🗑 Убрал. Осталось %d слов:\n<code>%s</code>" % (len(words),
+                                                                 esc(", ".join(words)))
+    words = profile()["keywords"]
+    return ("🔑 <b>Ключевые слова темы «%s»</b> (%d)\n<code>%s</code>\n\n"
+            "<i>Ими фильтруется Hacker News. /keywords add слово, "
+            "/keywords rm слово.</i>"
+            % (esc(topic), len(words), esc(", ".join(words))))
 
 
 @command("pause", "приостановить рассылку")

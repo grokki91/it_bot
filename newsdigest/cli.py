@@ -13,9 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config
-from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROG, local_now,
-                     load_env, setup_logging, tz_label, write_env)
+from . import config, userprofiles
+from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
+                     local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
 from .llm import llm_cost, llm_json
 from .net import post_json
@@ -373,6 +373,7 @@ def build_parser():
     sub.add_parser("doctor", help="проверить Telegram, DeepSeek, базу").set_defaults(
         func=cmd_doctor)
     sub.add_parser("feeds", help="проверить каждый источник").set_defaults(func=cmd_feeds)
+    sub.add_parser("topics", help="темы и их источники").set_defaults(func=cmd_topics)
     sub.add_parser("collect", help="только собрать новости").set_defaults(
         func=cmd_collect)
 
@@ -391,9 +392,25 @@ def build_parser():
     return parser
 
 
+def cmd_topics(_args):
+    print("Темы (★ — активная). ✏️ помечены источники из %s\n" % PROFILES_FILE)
+    for name in sorted(PROFILES):
+        prof = PROFILES[name]
+        mark = "★" if name == CFG["topic"] else " "
+        custom = sum(1 for f in prof["feeds"] if userprofiles.is_custom(name, f[0]))
+        print("%s %-12s источников: %2d%s, ключевых слов: %d"
+              % (mark, name, len(prof["feeds"]),
+                 " (из них своих %d)" % custom if custom else "",
+                 len(prof["keywords"])))
+    print("\nСменить тему: ND_TOPIC=<имя> или /set topic <имя> в чате.")
+    print("Править источники: /feed add|rm в чате или %s руками." % PROFILES_FILE)
+    return 0
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     load_env()
+    userprofiles.apply()
     setup_logging(args.verbose, args.log_file)
     try:
         return args.func(args)
