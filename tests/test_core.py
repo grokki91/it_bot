@@ -173,6 +173,9 @@ class TestRender(unittest.TestCase):
     def test_fits_one_message(self):
         messages = render.fit_message(self.cards(8), 100)
         self.assertEqual(len(messages), 1)
+        text, chunk = messages[0]
+        self.assertIn("Заголовок 7", text)
+        self.assertEqual(len(chunk), 8)
 
     def test_splits_when_too_long(self):
         # даже в самом сжатом виде (trim=2) остаются заголовки со ссылками,
@@ -182,8 +185,49 @@ class TestRender(unittest.TestCase):
                  for c, g, s, k in cards]
         messages = render.fit_message(cards, 100)
         self.assertGreater(len(messages), 1)
-        for text in messages:
+        for text, chunk in messages:
             self.assertLessEqual(len(text), 4096)
+            self.assertTrue(chunk)
+        # ни одна карточка не потерялась и не задвоилась
+        self.assertEqual(sum(len(chunk) for _t, chunk in messages), len(cards))
+
+    def test_keyboard_matches_numbering(self):
+        cards = self.cards(3)
+        keyboard = render.feedback_keyboard(cards)
+        self.assertEqual(len(keyboard), 3)
+        self.assertEqual([b["text"] for b in keyboard[0]], ["1 👍", "1 👎", "1 🔖"])
+        for row in keyboard:
+            for button in row:
+                self.assertLessEqual(len(button["callback_data"].encode()), 64)
+
+    def test_keyboard_can_be_switched_off(self):
+        CFG["feedback_buttons"] = False
+        try:
+            self.assertIsNone(render.feedback_keyboard(self.cards(2)))
+        finally:
+            CFG["feedback_buttons"] = True
+
+    def test_mark_pressed_is_exclusive_for_verdicts(self):
+        keyboard = render.feedback_keyboard(self.cards(2))
+        up = keyboard[0][0]["callback_data"]
+        down = keyboard[0][1]["callback_data"]
+        save = keyboard[0][2]["callback_data"]
+
+        render.mark_pressed(keyboard, up)
+        self.assertEqual(keyboard[0][0]["text"], "1 👍✓")
+
+        render.mark_pressed(keyboard, save)
+        self.assertEqual(keyboard[0][2]["text"], "1 🔖✓")
+        self.assertEqual(keyboard[0][0]["text"], "1 👍✓")   # закладка не сбила оценку
+
+        render.mark_pressed(keyboard, down)
+        self.assertEqual(keyboard[0][0]["text"], "1 👍")     # 👎 снял 👍
+        self.assertEqual(keyboard[0][1]["text"], "1 👎✓")
+        self.assertEqual(keyboard[0][2]["text"], "1 🔖✓")    # а закладка осталась
+
+        render.mark_pressed(keyboard, save, pressed=False)
+        self.assertEqual(keyboard[0][2]["text"], "1 🔖")
+        self.assertEqual(keyboard[1][0]["text"], "2 👍")     # соседний ряд не тронут
 
 
 class TestStorage(unittest.TestCase):

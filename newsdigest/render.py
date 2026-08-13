@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as html_mod
 
+from . import feedback
 from .config import CFG, local_now, log
 from .rank import primary_of
 from .telegram import TG_LIMIT
@@ -48,14 +49,62 @@ def render(cards, scanned, trim=0):
 
 
 def fit_message(cards, scanned):
-    """Возвращает список сообщений. Сначала пытаемся уместить всё в одно."""
+    """Возвращает список пар (текст, карточки этого сообщения).
+
+    Карточки нужны вместе с текстом: под каждым сообщением своя клавиатура
+    реакций, и номера кнопок должны совпадать с номерами в тексте.
+    """
     for trim in (0, 1, 2):
         text = render(cards, scanned, trim)
         if len(text) <= TG_LIMIT - 60:
             if trim and CFG["one_message"]:
                 log.info("Сообщение длинное — сократил детализацию (уровень %d)", trim)
-            return [text]
+            return [(text, cards)]
     half = max(len(cards) // 2, 1)          # всё ещё длинно — режем по новостям
     if len(cards) <= 1:
-        return [render(cards, scanned, 2)[:TG_LIMIT]]
+        return [(render(cards, scanned, 2)[:TG_LIMIT], cards)]
     return fit_message(cards[:half], scanned) + fit_message(cards[half:], scanned)
+
+
+# --------------------------------------------------------- кнопки под выпуском
+MARK = "✓"
+BUTTONS = ((feedback.UP, "👍"), (feedback.DOWN, "👎"), ("save", "🔖"))
+
+
+def feedback_keyboard(cards):
+    """Ряд кнопок на каждую новость: «1 👍», «1 👎», «1 🔖».
+
+    В callback_data влезает только 64 байта, поэтому кладём туда хэш ссылки —
+    по нему потом находятся и заголовок, и источник.
+    """
+    if not CFG["feedback_buttons"]:
+        return None
+    keyboard = []
+    for num, (_card, group, _score, _cat) in enumerate(cards, 1):
+        url_hash = primary_of(group)["url_hash"]
+        keyboard.append([{"text": "%d %s" % (num, icon),
+                          "callback_data": "fb:%s:%s" % (kind, url_hash)}
+                         for kind, icon in BUTTONS])
+    return keyboard
+
+
+def mark_pressed(keyboard, data, pressed=True):
+    """Отмечает нажатую кнопку галочкой прямо в присланной Telegram разметке.
+
+    Оценка и закладка независимы: 👍 снимает 👎 в своём ряду, а 🔖 живёт сам
+    по себе. Итоговое состояние решает вызывающий — он же пишет его в базу.
+    """
+    kind = data.split(":")[1] if data.count(":") >= 2 else ""
+    for row in keyboard:
+        if not any(b.get("callback_data") == data for b in row):
+            continue
+        for button in row:
+            other = button.get("callback_data", "")
+            other_kind = other.split(":")[1] if other.count(":") >= 2 else ""
+            bare = button.get("text", "").replace(MARK, "")
+            if other == data:
+                button["text"] = bare + MARK if pressed else bare
+            elif kind in (feedback.UP, feedback.DOWN) and other_kind in (
+                    feedback.UP, feedback.DOWN):
+                button["text"] = bare
+    return keyboard

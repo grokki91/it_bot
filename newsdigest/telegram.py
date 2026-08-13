@@ -60,6 +60,30 @@ def plain(text: str) -> str:
     return html_mod.unescape(re.sub(r"<[^>]+>", "", text))
 
 
+def tg_answer_callback(callback_id, text="", alert=False):
+    """Гасит «часики» на кнопке и показывает всплывающую подсказку."""
+    payload = {"callback_query_id": callback_id, "show_alert": bool(alert)}
+    if text:
+        payload["text"] = text[:200]
+    try:
+        return tg_call("answerCallbackQuery", payload, attempts=1)
+    except RuntimeError as exc:
+        # подтверждение живёт ~15 секунд: опоздали — не беда, ответ уже отправлен
+        log.debug("answerCallbackQuery: %s", exc)
+        return None
+
+
+def tg_edit_markup(chat_id, message_id, keyboard):
+    try:
+        return tg_call("editMessageReplyMarkup",
+                       {"chat_id": chat_id, "message_id": message_id,
+                        "reply_markup": {"inline_keyboard": keyboard}}, attempts=2)
+    except RuntimeError as exc:
+        if "not modified" in str(exc).lower():
+            return None
+        raise
+
+
 def tg_detect_chat():
     """Достаёт chat_id из последних апдейтов — чтобы не искать его вручную."""
     updates = tg_call("getUpdates", {"limit": 20, "timeout": 0})

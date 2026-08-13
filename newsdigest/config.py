@@ -69,6 +69,12 @@ CFG = {
     "listen":           True,      # [env ND_LISTEN] отвечать на команды в чате.
                                    # 0 = только рассылка по расписанию, как в 2.0
 
+    # --- обратная связь ------------------------------------------------------
+    "feedback_buttons": True,      # [env ND_FEEDBACK] кнопки 👍/👎/🔖 под выпуском
+    "feedback_weight":  0.25,      # насколько реакции двигают прескоринг.
+                                   # 0 = кнопки собирают статистику, но ни на что
+                                   # не влияют; 0.5 — вкусы почти важнее свежести
+
     # --- хранение ------------------------------------------------------------
     "keep_items_days":  10,
     "keep_sent_days":   60,        # история отправленного = защита от повторов
@@ -117,6 +123,8 @@ ENV_MAP = {
     "ND_MODEL_SUMMARY": ("model_summary", str),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_FEEDBACK": ("feedback_buttons",
+                    lambda v: str(v).lower() in ("1", "true", "yes")),
 }
 
 log = logging.getLogger("nd")

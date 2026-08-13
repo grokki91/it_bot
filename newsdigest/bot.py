@@ -14,14 +14,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import config, feedback
 from .config import CFG, local_now, log, tz_label
 from .pipeline import build_and_send
 from .profiles import profile
-from .render import esc
+from .render import esc, mark_pressed
 from .sources import all_feeds, collect, fetch_source
-from .storage import db, meta_get, meta_set, take_leftover
-from .telegram import tg_call, tg_send
+from .storage import db, item_facts, meta_get, meta_set, take_leftover
+from .telegram import tg_answer_callback, tg_call, tg_edit_markup, tg_send
 
 #: сколько секунд держим long-poll соединение открытым
 POLL_TIMEOUT = 25
@@ -174,6 +174,45 @@ def cmd_more(ctx):
         lines.append('• <a href="%s">%s</a> — %s · ⭐ %.1f'
                      % (esc(row["url"]), esc(row["title"]),
                         esc(row["source_id"]), row["score"]))
+    return "\n".join(lines)
+
+
+@command("saved", "закладки, отмеченные кнопкой 🔖")
+def cmd_saved(ctx):
+    if ctx.arg(0) in ("clear", "очистить"):
+        ctx.conn.execute("DELETE FROM saved WHERE chat_id=?", (ctx.chat_id,))
+        ctx.conn.commit()
+        return "🔖 Закладки очищены."
+    rows = feedback.bookmarks(ctx.conn, ctx.chat_id)
+    if not rows:
+        return ("Закладок пока нет. Кнопка 🔖 под новостью в выпуске "
+                "откладывает её сюда.")
+    lines = ["🔖 <b>Закладки</b>", ""]
+    for row in rows:
+        lines.append('• <a href="%s">%s</a> — %s'
+                     % (esc(row["url"]), esc(row["title"] or row["url"]),
+                        esc(row["source_id"])))
+    lines += ["", "<i>/saved clear — очистить</i>"]
+    return "\n".join(lines)
+
+
+@command("taste", "что бот выучил про ваши вкусы")
+def cmd_taste(ctx):
+    aff = feedback.Affinity.load(ctx.conn, ctx.chat_id)
+    total = ctx.conn.execute("SELECT COUNT(*) c FROM feedback WHERE chat_id=?",
+                             (ctx.chat_id,)).fetchone()["c"]
+    if not total:
+        return ("Пока ничего не знаю о ваших вкусах. Жмите 👍 и 👎 под новостями — "
+                "через неделю выпуск начнёт подстраиваться.")
+    liked, disliked = aff.top()
+    lines = ["🎯 <b>Что я о вас понял</b>",
+             "оценок собрано: %d, вес в отборе: %.2f" % (total, CFG["feedback_weight"])]
+    if liked:
+        lines.append("нравится: " + esc(", ".join("%s %+.2f" % kv for kv in liked)))
+    if disliked:
+        lines.append("не заходит: " + esc(", ".join("%s %+.2f" % kv for kv in disliked)))
+    if not liked and not disliked:
+        lines.append("Оценок пока мало, чтобы делать выводы — продолжайте.")
     return "\n".join(lines)
 
 
@@ -331,10 +370,56 @@ def handle_message(msg, worker) -> None:
         tg_send(chat_id, reply, silent=True)
 
 
+TOAST = {
+    feedback.UP:   "Учёл 👍 — такое буду поднимать выше",
+    feedback.DOWN: "Учёл 👎 — такого станет меньше",
+}
+
+
+def handle_callback(cb, worker) -> None:
+    """Нажатие кнопки под карточкой: записать оценку и переставить галочку."""
+    message = cb.get("message") or {}
+    chat_id = str((message.get("chat") or {}).get("id") or "")
+    data = cb.get("data") or ""
+    if not is_allowed(chat_id):
+        tg_answer_callback(cb.get("id"), "Это личный бот-дайджест.")
+        return
+    if not data.startswith("fb:") or data.count(":") < 2:
+        tg_answer_callback(cb.get("id"))
+        return
+
+    _, kind, url_hash = data.split(":", 2)
+    conn = db()
+    try:
+        facts = item_facts(conn, url_hash)
+        if kind in (feedback.UP, feedback.DOWN):
+            feedback.record(conn, chat_id, url_hash, kind, facts)
+            pressed, toast = True, TOAST[kind]
+        elif kind == "save":
+            pressed = feedback.save_bookmark(conn, chat_id, url_hash, facts)
+            toast = "🔖 В закладках, /saved" if pressed else "Убрал из закладок"
+        else:
+            tg_answer_callback(cb.get("id"))
+            return
+    finally:
+        conn.close()
+
+    tg_answer_callback(cb.get("id"), toast)
+    keyboard = ((message.get("reply_markup") or {}).get("inline_keyboard") or [])
+    if keyboard:
+        try:
+            tg_edit_markup(chat_id, message.get("message_id"),
+                           mark_pressed(keyboard, data, pressed))
+        except RuntimeError as exc:
+            log.debug("Разметку обновить не удалось: %s", exc)
+
+
 def handle_update(upd, worker) -> None:
     msg = upd.get("message") or upd.get("channel_post")
     if msg:
         handle_message(msg, worker)
+    elif upd.get("callback_query"):
+        handle_callback(upd["callback_query"], worker)
 
 
 # ----------------------------------------------------------------- long-polling

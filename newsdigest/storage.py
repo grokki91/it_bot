@@ -68,6 +68,30 @@ CREATE TABLE IF NOT EXISTS leftover (
     shown     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_leftover_chat ON leftover(chat_id, shown, score);
+
+-- Реакции 👍/👎 под карточками. Это единственный сигнал о вкусах читателя,
+-- который у нас есть, — он правит прескоринг и подсказывает модели.
+CREATE TABLE IF NOT EXISTS feedback (
+    chat_id   TEXT NOT NULL,
+    url_hash  TEXT NOT NULL,
+    verdict   TEXT NOT NULL,
+    source_id TEXT NOT NULL DEFAULT '',
+    category  TEXT NOT NULL DEFAULT 'other',
+    title     TEXT NOT NULL DEFAULT '',
+    at        TEXT NOT NULL,
+    PRIMARY KEY (chat_id, url_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(chat_id, at);
+
+CREATE TABLE IF NOT EXISTS saved (
+    chat_id   TEXT NOT NULL,
+    url_hash  TEXT NOT NULL,
+    title     TEXT NOT NULL DEFAULT '',
+    url       TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL DEFAULT '',
+    at        TEXT NOT NULL,
+    PRIMARY KEY (chat_id, url_hash)
+);
 """
 
 
@@ -87,7 +111,21 @@ def ensure_column(conn, table: str, column: str, decl: str) -> bool:
 
 def migrate(conn) -> None:
     """Догоняет схему до текущей версии на уже существующей базе."""
-    return None
+    # 3.0: реакции приходят по url_hash, а карточка к тому времени может уже
+    # уехать из items — источник и категорию держим в истории отправленного.
+    ensure_column(conn, "sent", "source_id", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "sent", "category", "TEXT NOT NULL DEFAULT 'other'")
+
+
+def item_facts(conn, url_hash):
+    """Заголовок, ссылка, источник и категория по хэшу — где бы они ни лежали."""
+    for table in ("items", "sent"):
+        row = conn.execute(
+            "SELECT title, url, source_id, category FROM %s WHERE url_hash=?" % table,
+            (url_hash,)).fetchone()
+        if row:
+            return dict(row)
+    return {"title": "", "url": "", "source_id": "", "category": "other"}
 
 
 def save_leftover(conn, chat_id, rows) -> None:

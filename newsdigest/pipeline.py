@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 from . import config
 from .config import CFG, local_now, log, now_iso
+from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
 from .profiles import profile
-from .rank import already_sent, cluster, prescore, primary_of, select
-from .render import fit_message
+from .rank import already_sent, cluster, primary_of, select
+from .render import feedback_keyboard, fit_message
 from .storage import db, log_run, meta_set, save_leftover
 from .telegram import plain, tg_send
 
@@ -68,11 +69,15 @@ def build_and_send(dry_run=False, chat_id=None) -> dict:
         conn.close()
         return stats
 
-    shortlist = sorted(fresh, key=prescore, reverse=True)[: CFG["llm_candidates"]]
+    # прескоринг с поправкой на вкусы: реакции читателя решают, кто вообще
+    # доедет до модели, — а это самый дешёвый способ учесть обратную связь
+    ordering = weighted_prescore(conn, chat_id)
+    shortlist = sorted(fresh, key=ordering, reverse=True)[: CFG["llm_candidates"]]
+    persona = prof["persona"] + persona_hint(conn, chat_id)
 
     # 1) ранжирование
     try:
-        ranking, usage = rank_clusters(shortlist, prof["persona"])
+        ranking, usage = rank_clusters(shortlist, persona)
         stats["cost"] += llm_cost(usage)
     except LLMError as exc:                 # деградируем, но выпуск не срываем
         log.error("Ранжирование не удалось (%s) — беру порядок прескоринга", exc)
@@ -91,7 +96,7 @@ def build_and_send(dry_run=False, chat_id=None) -> dict:
 
     # 2) саммари одним запросом на весь выпуск
     try:
-        cards_map, usage = summarize(picked, prof["persona"], CFG["language"])
+        cards_map, usage = summarize(picked, persona, CFG["language"])
         stats["cost"] += llm_cost(usage)
     except LLMError as exc:
         log.error("Саммари не удалось (%s) — публикую исходные заголовки", exc)
@@ -109,25 +114,25 @@ def build_and_send(dry_run=False, chat_id=None) -> dict:
 
     if dry_run:
         print()
-        print(("\n" + "─" * 60 + "\n").join(plain(m) for m in messages))
+        print(("\n" + "─" * 60 + "\n").join(plain(text) for text, _ in messages))
         print("\n[dry-run] отправки не было. Примерная стоимость запроса: $%.4f"
               % stats["cost"])
         log_run(conn, "digest", "dry-run", stats)
         conn.close()
         return stats
 
-    for text in messages:
-        tg_send(chat_id, text)
+    for text, chunk in messages:
+        tg_send(chat_id, text, keyboard=feedback_keyboard(chunk))
         stats["sent"] += 1
         time.sleep(1.0)
 
     day = local_now().strftime("%Y-%m-%d")
-    for _card, group, _score, _cat in cards:
+    for _card, group, _score, category in cards:
         main = primary_of(group)
-        conn.execute("INSERT OR IGNORE INTO sent(url_hash,sig,title,url,digest_date,sent_at)"
-                     " VALUES (?,?,?,?,?,?)",
+        conn.execute("INSERT OR IGNORE INTO sent(url_hash,sig,title,url,digest_date,"
+                     "sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?)",
                      (main["url_hash"], main["sig"], main["title"], main["url"],
-                      day, now_iso()))
+                      day, now_iso(), main["source_id"], category))
         for item in group:
             conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                          (item["url_hash"],))
