@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+"""Планировщик: что и когда попадает в очередь фоновых задач."""
+import logging
+import os
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
+
+from newsdigest import config, daemon, storage, subscribers  # noqa: E402
+from newsdigest.config import CFG  # noqa: E402
+
+logging.getLogger("nd").addHandler(logging.NullHandler())
+logging.getLogger("nd").propagate = False
+
+
+class FakeWorker:
+    """Очередь, которая ничего не выполняет — только запоминает заявки."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def submit(self, name, fn, chat_id=""):
+        self.jobs.append((name, fn))
+        return True
+
+    def busy(self):
+        return ""
+
+    def names(self):
+        return [name for name, _fn in self.jobs]
+
+    def run_all(self):
+        for _name, fn in self.jobs:
+            fn()
+
+
+class TestTick(unittest.TestCase):
+    OWNER = "700"
+
+    def setUp(self):
+        self.worker = FakeWorker()
+        self._owner = config.TG_CHAT
+        config.TG_CHAT = self.OWNER
+        self.saved = {k: CFG[k] for k in ("send_at", "collect_every_h", "breaking")}
+        CFG["breaking"] = False
+
+        self.collected = []
+        self.digests = []
+        self._real = (daemon.collect, daemon.build_and_send)
+        daemon.collect = lambda: self.collected.append(1)
+        daemon.build_and_send = self.fake_digest
+
+        conn = storage.db()
+        try:
+            for table in ("subscribers", "meta", "items", "sent"):
+                conn.execute("DELETE FROM %s" % table)
+            conn.commit()
+            subscribers.ensure_owner(conn)
+        finally:
+            conn.close()
+
+    def tearDown(self):
+        daemon.collect, daemon.build_and_send = self._real
+        config.TG_CHAT = self._owner
+        CFG.update(self.saved)
+
+    def fake_digest(self, sub=None, **kw):
+        self.digests.append(sub["chat_id"])
+        return {"sent": 1}
+
+    def mark_collected(self, hours_ago):
+        conn = storage.db()
+        try:
+            storage.meta_set(conn, "last_collect",
+                             (datetime.now(timezone.utc)
+                              - timedelta(hours=hours_ago)).isoformat())
+        finally:
+            conn.close()
+
+    def test_nothing_to_do_stays_quiet(self):
+        CFG["send_at"] = "23:59"          # время выпуска ещё не подошло
+        self.mark_collected(0)
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), [])
+
+    def test_stale_collection_is_scheduled(self):
+        CFG["send_at"] = "23:59"
+        CFG["collect_every_h"] = 4
+        self.mark_collected(5)
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), ["collect"])
+
+    def test_due_subscriber_gets_collect_then_digest(self):
+        CFG["send_at"] = "00:01"          # время уже прошло
+        self.mark_collected(0)
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), ["collect", "digest:%s" % self.OWNER])
+
+        self.worker.run_all()
+        self.assertEqual(self.collected, [1])
+        self.assertEqual(self.digests, [self.OWNER])
+
+    def test_every_due_subscriber_gets_his_own_job(self):
+        CFG["send_at"] = "00:01"
+        conn = storage.db()
+        try:
+            subscribers.add(conn, "800", role="member")
+            subscribers.add(conn, "900", role="member")
+            subscribers.set_field(conn, "900", "send_at", "23:59")   # ему рано
+        finally:
+            conn.close()
+        daemon.tick(self.worker)
+        self.assertIn("digest:800", self.worker.names())
+        self.assertNotIn("digest:900", self.worker.names())
+
+    def test_paused_subscriber_is_skipped_even_after_queueing(self):
+        CFG["send_at"] = "00:01"
+        daemon.tick(self.worker)
+        conn = storage.db()
+        try:
+            subscribers.set_field(conn, self.OWNER, "paused", 1)
+        finally:
+            conn.close()
+        self.worker.run_all()             # задача уже в очереди, но пауза важнее
+        self.assertEqual(self.digests, [])
+
+    def test_empty_digest_backs_off_for_an_hour(self):
+        CFG["send_at"] = "00:01"
+        daemon.build_and_send = lambda sub=None, **kw: {"sent": 0}
+        daemon.tick(self.worker)
+        self.worker.run_all()
+
+        again = FakeWorker()
+        daemon.tick(again)
+        self.assertNotIn("digest:%s" % self.OWNER, again.names())
+
+        conn = storage.db()
+        try:                              # час прошёл — пробуем снова
+            storage.meta_set(conn, "digest_attempt:%s" % self.OWNER,
+                             (datetime.now(timezone.utc)
+                              - timedelta(hours=2)).isoformat())
+        finally:
+            conn.close()
+        third = FakeWorker()
+        daemon.tick(third)
+        self.assertIn("digest:%s" % self.OWNER, third.names())
+
+
+if __name__ == "__main__":
+    unittest.main()
