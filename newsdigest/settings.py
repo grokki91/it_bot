@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config
+from . import config, subscribers
 from .config import CFG, write_env
 from .profiles import PROFILES
 
@@ -200,3 +200,48 @@ def overview():
     """Пары (имя, значение, пояснение) для /settings и /set без аргументов."""
     return [(name, SPEC[name].current(), SPEC[name].describe)
             for name in sorted(SPEC)]
+
+
+# ---------------------------------------------------- личные настройки чата
+#: что подписчик волен менять у себя; остальное — только владелец
+PERSONAL = {"topic": "topic", "time": "send_at", "tz": "tz", "language": "language",
+            "max": "max_items", "score": "min_score", "silent": "silent"}
+
+
+def personal_view(sub) -> dict:
+    """Личные значения подписчика в терминах имён настроек."""
+    if sub is None:
+        return {}
+    out = {}
+    for name, field in PERSONAL.items():
+        value = sub[field]
+        if value in (None, subscribers.BLANK[field]):
+            continue
+        out[name] = SPEC[name].show(bool(value) if field == "silent" else value)
+    return out
+
+
+def apply_for(conn, chat_id, owner, name, raw):
+    """Правка настройки от имени чата.
+
+    Владелец меняет значения по умолчанию для всех, остальные — только свои.
+    Возвращает (имя, показанное значение, 'global'|'personal').
+    """
+    key, setting = resolve(name)
+    if not setting:
+        raise Invalid("не знаю настройку «%s». Список: /settings" % name)
+
+    if owner:
+        key, shown = apply(key, raw)
+        subscribers.remember_global_change(setting.key, CFG[setting.key])
+        return key, shown, "global"
+
+    if key not in PERSONAL:
+        raise Invalid("«%s» меняет только владелец бота. Ваши настройки: %s"
+                      % (key, ", ".join(sorted(PERSONAL))))
+    value = setting.parse(raw)
+    if key == "max" and value < CFG["min_items"]:
+        raise Invalid("в выпуске не может быть меньше %d новостей" % CFG["min_items"])
+    subscribers.set_field(conn, chat_id, PERSONAL[key],
+                          int(value) if key == "silent" else value)
+    return key, setting.show(value), "personal"

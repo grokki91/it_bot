@@ -14,8 +14,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, feedback, settings, userprofiles
-from .config import CFG, local_now, log, tz_label
+from . import config, feedback, settings, subscribers, userprofiles
+from .config import CFG, log, tz_label
 from .pipeline import build_and_send
 from .profiles import profile
 from .render import esc, mark_pressed
@@ -84,20 +84,20 @@ class Worker:
 
 # ------------------------------------------------------------------ реестр команд
 class Command:
-    def __init__(self, name, fn, help_text, heavy, hidden):
+    def __init__(self, name, fn, help_text, heavy, hidden, owner):
         self.name, self.fn = name, fn
         self.help, self.heavy, self.hidden = help_text, heavy, hidden
+        self.owner = owner
 
 
 HANDLERS = {}
 
 
-def command(name, help_text="", heavy=False, hidden=False, aliases=()):
+def command(name, help_text="", heavy=False, hidden=False, owner=False, aliases=()):
     def deco(fn):
-        cmd = Command(name, fn, help_text, heavy, hidden)
-        HANDLERS[name] = cmd
+        HANDLERS[name] = Command(name, fn, help_text, heavy, hidden, owner)
         for alias in aliases:
-            HANDLERS[alias] = Command(alias, fn, "", heavy, True)
+            HANDLERS[alias] = Command(alias, fn, "", heavy, True, owner)
         return fn
     return deco
 
@@ -106,28 +106,86 @@ class Ctx:
     """Всё, что нужно обработчику команды."""
 
     def __init__(self, chat_id, args, conn, worker, user=""):
-        self.chat_id, self.args, self.conn = chat_id, args, conn
+        self.chat_id, self.args, self.conn = str(chat_id), args, conn
         self.worker, self.user = worker, user
+        self.sub = subscribers.get(conn, chat_id)
+
+    @property
+    def owner(self) -> bool:
+        return is_owner(self.chat_id)
 
     def arg(self, index, default=""):
         return self.args[index] if index < len(self.args) else default
+
+    def next_send(self) -> str:
+        return subscribers.next_send_human(self.sub)
 
 
 # --------------------------------------------------------------------- доступ
 _REFUSED = set()
 
 
+def is_owner(chat_id) -> bool:
+    return bool(config.TG_CHAT) and str(chat_id) == str(config.TG_CHAT)
+
+
 def allowed_chats() -> set:
-    """Кому бот подчиняется. Пока это владелец плюс явно добавленные чаты."""
-    chats = {str(config.TG_CHAT)} if config.TG_CHAT else set()
+    """Кому бот подчиняется: владелец и одобренные подписчики."""
     conn = db()
-    extra = meta_get(conn, "extra_chats", "")
-    conn.close()
-    return chats | {c.strip() for c in extra.split(",") if c.strip()}
+    try:
+        subscribers.ensure_owner(conn)
+        chats = {s["chat_id"] for s in subscribers.all_rows(conn)}
+    finally:
+        conn.close()
+    if config.TG_CHAT:
+        chats.add(str(config.TG_CHAT))
+    return chats
 
 
 def is_allowed(chat_id) -> bool:
     return str(chat_id) in allowed_chats()
+
+
+def greet_stranger(chat_id, title, kind) -> None:
+    """Что делать с новым чатом — решает настройка signup.
+
+    По умолчанию «ask»: чат ждёт одобрения, владелец получает кнопки. Так
+    посторонний не начнёт тратить ваш баланс модели, но и отшивать вручную
+    каждого знакомого не приходится.
+    """
+    mode = str(CFG["signup"]).lower()
+    if mode == "open":
+        conn = db()
+        try:
+            subscribers.add(conn, chat_id, role="member", title=title, kind=kind)
+        finally:
+            conn.close()
+        tg_send(chat_id, "👋 Подписал вас на дайджест. Справка: /help")
+        log.info("Новый подписчик %s (%s) — открытая подписка", chat_id, title)
+        return
+
+    if mode != "ask" or not config.TG_CHAT:
+        if chat_id not in _REFUSED:
+            _REFUSED.add(chat_id)
+            tg_send(chat_id, "Это личный бот-дайджест. "
+                             "Он отвечает только своему владельцу.")
+        return
+
+    conn = db()
+    try:
+        existing = subscribers.get(conn, chat_id)
+        subscribers.add(conn, chat_id, role="pending", title=title, kind=kind)
+    finally:
+        conn.close()
+    if existing is not None and existing["role"] == "pending":
+        return          # заявка уже висит: молчим, чтобы не превратиться в эхо
+    tg_send(chat_id, "👋 Заявка отправлена владельцу. Как только он одобрит, "
+                     "начну присылать выпуски.")
+    tg_send(config.TG_CHAT,
+            "🔔 Новый чат просится на дайджест:\n<b>%s</b> (<code>%s</code>, %s)"
+            % (esc(title or "без имени"), esc(chat_id), esc(kind)),
+            keyboard=[[{"text": "✅ Пустить", "callback_data": "sub:ok:%s" % chat_id},
+                       {"text": "🚫 Нет", "callback_data": "sub:no:%s" % chat_id}]])
 
 
 # ------------------------------------------------------------------- команды
@@ -135,21 +193,26 @@ def is_allowed(chat_id) -> bool:
 def cmd_help(ctx):
     lines = ["🤖 <b>Дайджест новостей</b>", ""]
     for name, cmd in sorted(HANDLERS.items()):
-        if not cmd.hidden and cmd.help:
-            lines.append("/%s — %s" % (name, cmd.help))
-    lines += ["", "Тема: <b>%s</b>, выпуск в %s (%s)."
-              % (esc(CFG["topic"]), esc(CFG["send_at"]), esc(tz_label()))]
+        if cmd.hidden or not cmd.help:
+            continue
+        if cmd.owner and not ctx.owner:
+            continue
+        lines.append("/%s — %s" % (name, cmd.help))
+    topic = (ctx.sub["topic"] if ctx.sub is not None and ctx.sub["topic"]
+             else CFG["topic"])
+    lines += ["", "Тема: <b>%s</b>, выпуск %s."
+              % (esc(topic), esc(ctx.next_send()))]
     return "\n".join(lines)
 
 
 @command("digest", "собрать и прислать выпуск сейчас", heavy=True)
 def cmd_digest(ctx):
-    chat_id = ctx.chat_id
+    chat_id, sub = ctx.chat_id, ctx.sub
     tg_send(chat_id, "🔄 Собираю свежее — займёт минуту-другую.")
 
     def job():
         collect()
-        stats = build_and_send(chat_id=chat_id)
+        stats = build_and_send(chat_id=chat_id, sub=sub)
         if not stats.get("sent"):
             tg_send(chat_id, "🌘 Ничего нового, что стоило бы прислать. "
                              "Так бывает: тихий день или всё уже уходило раньше.")
@@ -181,11 +244,11 @@ def cmd_more(ctx):
 def cmd_breaking(ctx):
     from . import breaking
 
-    chat_id = ctx.chat_id
-    skip = breaking.why_not(ctx.conn)
+    chat_id, sub = ctx.chat_id, ctx.sub
+    skip = breaking.why_not(ctx.conn, sub, chat_id)
 
     def job():
-        if not breaking.check(chat_id=chat_id):
+        if not breaking.check(chat_id=chat_id, sub=sub):
             tg_send(chat_id, "🕊 Ничего срочного: подтверждённых событий выше "
                              "порога %.1f нет." % CFG["breaking_min_score"])
 
@@ -242,8 +305,8 @@ def cmd_status(ctx):
     week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     fresh = conn.execute("SELECT COUNT(*) c FROM items WHERE fetched_at > ?",
                          (day,)).fetchone()["c"]
-    sent = conn.execute("SELECT COUNT(*) c FROM sent WHERE sent_at > ?",
-                        (week,)).fetchone()["c"]
+    sent = conn.execute("SELECT COUNT(*) c FROM sent WHERE chat_id=? AND sent_at > ?",
+                        (ctx.chat_id, week)).fetchone()["c"]
     bad = list(conn.execute("SELECT source_id FROM health WHERE fails >= ? ",
                             (CFG["mute_after_fails"],)))
     cost = 0.0
@@ -253,17 +316,20 @@ def cmd_status(ctx):
         except (ValueError, TypeError):
             pass
 
+    topic = (ctx.sub["topic"] if ctx.sub is not None and ctx.sub["topic"]
+             else CFG["topic"])
     lines = [
         "📊 <b>Состояние</b>",
-        "Тема: <b>%s</b> · источников: %d" % (esc(CFG["topic"]), len(profile()["feeds"])),
-        "Следующий выпуск: %s" % esc(next_send_human(conn)),
-        "Материалов за сутки: %d · отправлено за неделю: %d" % (fresh, sent),
+        "Тема: <b>%s</b> · источников: %d" % (esc(topic),
+                                              len(profile(topic)["feeds"])),
+        "Следующий выпуск: %s" % esc(ctx.next_send()),
+        "Материалов за сутки: %d · отправлено вам за неделю: %d" % (fresh, sent),
         "Расход модели за неделю: $%.4f" % cost,
     ]
     if bad:
         lines.append("Отключённые источники: %s"
                      % esc(", ".join(r["source_id"] for r in bad[:6])))
-    if is_paused(conn):
+    if ctx.sub is not None and ctx.sub["paused"]:
         lines.append("⏸ Рассылка на паузе — /resume вернёт.")
     busy = ctx.worker.busy() if ctx.worker else ""
     if busy:
@@ -302,7 +368,7 @@ FEED_HELP = ("Источники темы <b>%s</b>:\n"
              "категории: %s")
 
 
-@command("feed", "добавить или убрать источник")
+@command("feed", "добавить или убрать источник", owner=True)
 def cmd_feed(ctx):
     topic = CFG["topic"]
     action = (ctx.arg(0) or "list").lower()
@@ -353,7 +419,7 @@ def cmd_feed(ctx):
     return FEED_HELP % (esc(topic), ", ".join(userprofiles.CATEGORIES))
 
 
-@command("keywords", "ключевые слова для фильтра Hacker News")
+@command("keywords", "ключевые слова для фильтра Hacker News", owner=True)
 def cmd_keywords(ctx):
     topic = CFG["topic"]
     action = (ctx.arg(0) or "list").lower()
@@ -374,24 +440,72 @@ def cmd_keywords(ctx):
 
 @command("pause", "приостановить рассылку")
 def cmd_pause(ctx):
-    meta_set(ctx.conn, "paused", "1")
-    return "⏸ Рассылка на паузе. Сбор новостей продолжается — /resume вернёт выпуски."
+    subscribers.set_field(ctx.conn, ctx.chat_id, "paused", 1)
+    return ("⏸ Ваши выпуски на паузе. Сбор новостей продолжается — "
+            "/resume вернёт рассылку.")
 
 
 @command("resume", "вернуть рассылку")
 def cmd_resume(ctx):
-    meta_set(ctx.conn, "paused", "0")
-    return "▶️ Рассылка включена. Следующий выпуск: %s" % esc(next_send_human(ctx.conn))
+    subscribers.set_field(ctx.conn, ctx.chat_id, "paused", 0)
+    ctx.sub = subscribers.get(ctx.conn, ctx.chat_id)
+    return "▶️ Рассылка включена. Следующий выпуск: %s" % esc(ctx.next_send())
+
+
+@command("stop", "отписаться от дайджеста")
+def cmd_stop(ctx):
+    if ctx.owner:
+        return ("Вы владелец — отписаться нельзя, но можно поставить на паузу: "
+                "/pause.")
+    subscribers.remove(ctx.conn, ctx.chat_id)
+    return "👋 Отписал. Захотите вернуться — напишите /start."
+
+
+@command("subs", "подписчики: список, /subs rm <id>", owner=True)
+def cmd_subs(ctx):
+    action = (ctx.arg(0) or "list").lower()
+    if action in ("add", "добавить") and ctx.arg(1):
+        sub = subscribers.add(ctx.conn, ctx.arg(1), role="member",
+                              title=" ".join(ctx.args[2:]))
+        tg_send(sub["chat_id"], "👋 Вас подписали на дайджест. Справка: /help")
+        return "✅ Добавил <code>%s</code>." % esc(sub["chat_id"])
+    if action in ("rm", "remove", "убрать") and ctx.arg(1):
+        try:
+            removed = subscribers.remove(ctx.conn, ctx.arg(1))
+        except ValueError as exc:
+            return "⚠️ %s" % esc(exc)
+        return ("🗑 Убрал <code>%s</code>." % esc(ctx.arg(1)) if removed
+                else "Такого подписчика нет.")
+
+    rows = subscribers.all_rows(ctx.conn, roles=("owner", "member", "pending"))
+    lines = ["👥 <b>Подписчики (%d)</b>" % len(rows), ""]
+    for sub in rows:
+        mark = {"owner": "👑", "member": "•", "pending": "⏳"}.get(sub["role"], "•")
+        pause = " ⏸" if sub["paused"] else ""
+        lines.append("%s <code>%s</code> %s%s\n    <i>%s</i>"
+                     % (mark, esc(sub["chat_id"]), esc(sub["title"] or "без имени"),
+                        pause, esc(subscribers.describe(sub))))
+    lines += ["", "<i>Каждый подписчик — отдельные запросы к модели, "
+                  "расход растёт пропорционально. /subs add &lt;id&gt;, "
+                  "/subs rm &lt;id&gt;.</i>"]
+    return "\n".join(lines)
 
 
 @command("settings", "текущие настройки")
 def cmd_settings(ctx):
+    personal = settings.personal_view(ctx.sub)
     lines = ["⚙️ <b>Настройки</b> (часовой пояс: %s)" % esc(tz_label()), ""]
     for name, value, describe in settings.overview():
-        lines.append("<code>%s</code> = <b>%s</b> — %s"
-                     % (esc(name), esc(value), esc(describe)))
+        own = " ✏️" if name in personal else ""
+        shown = personal.get(name, value)
+        editable = ctx.owner or name in settings.PERSONAL
+        lines.append("%s<code>%s</code> = <b>%s</b>%s — %s"
+                     % ("" if editable else "🔒 ", esc(name), esc(shown), own,
+                        esc(describe)))
     lines += ["", "Менять: <code>/set имя значение</code>, "
                   "например <code>/set time 08:30</code>."]
+    if not ctx.owner:
+        lines.append("<i>✏️ — ваша личная настройка. 🔒 меняет только владелец.</i>")
     return "\n".join(lines)
 
 
@@ -403,40 +517,26 @@ def cmd_set(ctx):
         key, setting = settings.resolve(ctx.arg(0))
         if not setting:
             return "Не знаю настройку «%s». Список — /settings" % esc(ctx.arg(0))
+        current = settings.personal_view(ctx.sub).get(key, setting.current())
         return ("<code>%s</code> сейчас <b>%s</b> — %s.\nЗадать: "
                 "<code>/set %s значение</code>"
-                % (esc(key), esc(setting.current()), esc(setting.describe), esc(key)))
+                % (esc(key), esc(current), esc(setting.describe), esc(key)))
     try:
-        key, shown = settings.apply(ctx.arg(0), " ".join(ctx.args[1:]))
+        key, shown, scope = settings.apply_for(
+            ctx.conn, ctx.chat_id, ctx.owner, ctx.arg(0), " ".join(ctx.args[1:]))
     except settings.Invalid as exc:
         return "⚠️ %s" % esc(exc)
 
+    ctx.sub = subscribers.get(ctx.conn, ctx.chat_id)
     tail = ""
     if key in ("time", "tz"):
-        tail = "\nСледующий выпуск: %s" % esc(next_send_human(ctx.conn))
+        tail = "\nСледующий выпуск: %s" % esc(ctx.next_send())
     if key == "topic":
         tail = ("\nИсточников в теме: %d. Первый выпуск по новой теме соберётся "
-                "после ближайшего сбора." % len(profile()["feeds"]))
-    return "✅ <code>%s</code> = <b>%s</b>%s" % (esc(key), esc(shown), tail)
-
-
-# ------------------------------------------------------------------ расписание
-def is_paused(conn) -> bool:
-    return meta_get(conn, "paused", "0") == "1"
-
-
-def next_send_human(conn) -> str:
-    """«сегодня в 09:00» / «завтра в 09:00» — с учётом уже отправленного."""
-    try:
-        hour, minute = [int(x) for x in CFG["send_at"].split(":")]
-    except ValueError:
-        return "время отправки задано неверно (%s)" % CFG["send_at"]
-    now = local_now()
-    today = now.strftime("%Y-%m-%d")
-    done_today = meta_get(conn, "last_digest_date", "") == today
-    due_passed = now.hour * 60 + now.minute >= hour * 60 + minute
-    when = "завтра" if (done_today or due_passed) else "сегодня"
-    return "%s в %02d:%02d (%s)" % (when, hour, minute, tz_label())
+                "после ближайшего сбора." % len(profile(shown)["feeds"]))
+    where = "для всех" if scope == "global" else "лично для вас"
+    return "✅ <code>%s</code> = <b>%s</b> (%s)%s" % (esc(key), esc(shown),
+                                                     where, tail)
 
 
 # --------------------------------------------------------------------- разбор
@@ -460,14 +560,13 @@ def handle_message(msg, worker) -> None:
             or (msg.get("from") or {}).get("first_name") or "")
 
     if not is_allowed(chat_id):
-        log.warning("Команда от постороннего чата %s (%s): %r", chat_id, user, text[:60])
-        if chat_id not in _REFUSED:
-            _REFUSED.add(chat_id)
-            try:
-                tg_send(chat_id, "Это личный бот-дайджест. "
-                                 "Он отвечает только своему владельцу.")
-            except Exception:  # noqa: BLE001
-                pass
+        log.info("Чат %s (%s) вне подписки: %r", chat_id, user, text[:60])
+        try:
+            greet_stranger(chat_id, chat.get("title") or chat.get("username")
+                           or (msg.get("from") or {}).get("first_name") or "",
+                           chat.get("type", "private"))
+        except Exception as exc:  # noqa: BLE001 — чужой чат не ломает бота
+            log.warning("Не смог ответить чату %s: %s", chat_id, exc)
         return
 
     name, args = parse_command(text)
@@ -479,6 +578,9 @@ def handle_message(msg, worker) -> None:
         return
     if cmd.heavy and worker is None:
         tg_send(chat_id, "Фоновые задачи сейчас недоступны — демон не запущен.")
+        return
+    if cmd.owner and not is_owner(chat_id):
+        tg_send(chat_id, "Команда /%s доступна только владельцу бота." % esc(name))
         return
 
     conn = db()
@@ -496,11 +598,44 @@ TOAST = {
 }
 
 
+def handle_signup_callback(cb, chat_id, data) -> None:
+    """Владелец решает судьбу заявки: «Пустить» или «Нет»."""
+    if not is_owner(chat_id):
+        tg_answer_callback(cb.get("id"), "Только владелец решает, кого пускать.")
+        return
+    _, verdict, applicant = data.split(":", 2)
+    conn = db()
+    try:
+        if verdict == "ok":
+            subscribers.add(conn, applicant, role="member")
+            tg_answer_callback(cb.get("id"), "Пустил")
+            tg_send(applicant, "✅ Владелец одобрил подписку. Справка: /help")
+            note = "✅ <code>%s</code> подписан." % esc(applicant)
+        else:
+            subscribers.remove(conn, applicant)
+            tg_answer_callback(cb.get("id"), "Отказал")
+            note = "🚫 <code>%s</code> отклонён." % esc(applicant)
+    except ValueError as exc:
+        tg_answer_callback(cb.get("id"), str(exc))
+        return
+    finally:
+        conn.close()
+    message = cb.get("message") or {}
+    try:
+        tg_edit_markup(chat_id, message.get("message_id"), [])
+    except RuntimeError:
+        pass
+    tg_send(chat_id, note, silent=True)
+
+
 def handle_callback(cb, worker) -> None:
-    """Нажатие кнопки под карточкой: записать оценку и переставить галочку."""
+    """Нажатие кнопки: оценка под карточкой или решение по заявке."""
     message = cb.get("message") or {}
     chat_id = str((message.get("chat") or {}).get("id") or "")
     data = cb.get("data") or ""
+    if data.startswith("sub:") and data.count(":") >= 2:
+        handle_signup_callback(cb, chat_id, data)
+        return
     if not is_allowed(chat_id):
         tg_answer_callback(cb.get("id"), "Это личный бот-дайджест.")
         return

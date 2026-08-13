@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import breaking, storage  # noqa: E402
+from newsdigest import breaking, storage, subscribers  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
@@ -35,10 +35,14 @@ class Clock:
 class BreakingCase(unittest.TestCase):
     def setUp(self):
         conn = storage.db()
-        for table in ("items", "sent", "meta", "runs", "feedback"):
-            conn.execute("DELETE FROM %s" % table)
-        conn.commit()
-        conn.close()
+        try:
+            for table in ("items", "sent", "meta", "runs", "feedback", "subscribers"):
+                conn.execute("DELETE FROM %s" % table)
+            conn.commit()
+            subscribers.add(conn, CHAT, role="member", title="тест")
+            self.sub = subscribers.get(conn, CHAT)
+        finally:
+            conn.close()
 
         self.sent = []
         self.saved_cfg = {k: CFG[k] for k in CFG}
@@ -178,13 +182,17 @@ class TestCheck(BreakingCase):
         CFG["breaking_max_per_day"] = 1
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
-        self.fill(["openai", "arstechnica", "wired"],
+        self.fill(["openai", "arstechnica", "venturebeat"],
                   title="Совсем другое крупное событие в отрасли",
                   tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
         conn = storage.db()
-        self.assertIn("лимит", breaking.why_not(conn))
-        conn.close()
+        try:
+            self.assertIn("лимит", breaking.why_not(conn, chat_id=CHAT))
+            # у другого подписчика счётчик свой
+            self.assertEqual(breaking.why_not(conn, chat_id="другой"), "")
+        finally:
+            conn.close()
 
     def test_switch_off(self):
         CFG["breaking"] = False
@@ -193,9 +201,24 @@ class TestCheck(BreakingCase):
 
     def test_pause_blocks(self):
         conn = storage.db()
-        storage.meta_set(conn, "paused", "1")
-        conn.close()
+        try:
+            subscribers.set_field(conn, CHAT, "paused", 1)
+            paused = subscribers.get(conn, CHAT)
+        finally:
+            conn.close()
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check(sub=paused), 0)
+
+    def test_history_is_personal(self):
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)      # ему уже слали
+        self.assertEqual(breaking.check(chat_id="другой"), 1)  # а этому ещё нет
+
+    def test_foreign_topic_sources_are_ignored(self):
+        # источники крипто-темы не должны всплыть у читателя ai
+        self.fill(["coindesk", "cointelegraph", "ethereum-blog"],
+                  title="Крупное обновление сети", tiers={"ethereum-blog": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
 
     def test_old_items_are_out_of_window(self):

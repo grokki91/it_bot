@@ -13,7 +13,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, storage  # noqa: E402
+from newsdigest import bot, config, storage, subscribers  # noqa: E402
+from newsdigest.config import CFG  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
 logging.getLogger("nd").propagate = False
@@ -39,16 +40,28 @@ class BotCase(unittest.TestCase):
         bot.tg_send = self.sent
         self._real_owner = config.TG_CHAT
         config.TG_CHAT = self.OWNER
+        self._signup = CFG["signup"]
         bot._REFUSED.clear()
         conn = storage.db()
-        conn.execute("DELETE FROM leftover")
-        conn.execute("DELETE FROM meta")
-        conn.commit()
-        conn.close()
+        try:
+            for table in ("leftover", "meta", "subscribers", "sent"):
+                conn.execute("DELETE FROM %s" % table)
+            conn.commit()
+            subscribers.ensure_owner(conn)
+        finally:
+            conn.close()
 
     def tearDown(self):
         bot.tg_send = self._real_send
         config.TG_CHAT = self._real_owner
+        CFG["signup"] = self._signup
+
+    def sub(self, chat_id=None):
+        conn = storage.db()
+        try:
+            return subscribers.get(conn, chat_id or self.OWNER)
+        finally:
+            conn.close()
 
     def message(self, text, chat_id=None):
         bot.handle_update({"update_id": 1, "message": {
@@ -74,18 +87,74 @@ class TestAccess(BotCase):
         self.assertTrue(bot.is_allowed(self.OWNER))
         self.assertFalse(bot.is_allowed("999"))
 
-    def test_stranger_refused_once(self):
+    def test_stranger_gets_pending_and_owner_is_asked(self):
+        CFG["signup"] = "ask"
+        self.message("/start", chat_id="999")
+        self.assertIn("Заявка отправлена", self.sent.texts())
+        self.assertIn("просится на дайджест", self.sent.texts())
+        self.assertEqual(self.sub("999")["role"], "pending")
+        self.assertFalse(bot.is_allowed("999"))
+
+    def test_pending_chat_is_not_spammed(self):
+        CFG["signup"] = "ask"
+        self.message("/start", chat_id="999")
+        before = len(self.sent)
+        self.message("/status", chat_id="999")
+        self.message("/digest", chat_id="999")
+        self.assertEqual(len(self.sent), before)
+
+    def test_signup_off_refuses_once(self):
+        CFG["signup"] = "off"
         self.message("/digest", chat_id="999")
         self.message("/status", chat_id="999")
         self.assertEqual(len(self.sent), 1)
         self.assertIn("личный бот", self.sent.texts())
 
-    def test_extra_chat_can_be_allowed(self):
+    def test_signup_open_subscribes_immediately(self):
+        CFG["signup"] = "open"
+        self.message("/start", chat_id="999")
+        self.assertTrue(bot.is_allowed("999"))
+        self.assertIn("Подписал", self.sent.texts())
+
+    def test_owner_approves_by_button(self):
+        CFG["signup"] = "ask"
+        self.message("/start", chat_id="999")
+        bot.tg_answer_callback = lambda *a, **kw: None
+        bot.tg_edit_markup = lambda *a, **kw: None
+        bot.handle_update({"update_id": 3, "callback_query": {
+            "id": "c", "data": "sub:ok:999",
+            "message": {"message_id": 1, "chat": {"id": self.OWNER}}}}, worker=None)
+        self.assertTrue(bot.is_allowed("999"))
+        self.assertEqual(self.sub("999")["role"], "member")
+
+    def test_member_cannot_approve(self):
+        CFG["signup"] = "ask"
+        self.message("/start", chat_id="999")
+        answers = []
+        bot.tg_answer_callback = lambda cb, text="", alert=False: answers.append(text)
+        bot.handle_update({"update_id": 4, "callback_query": {
+            "id": "c", "data": "sub:ok:999",
+            "message": {"message_id": 1, "chat": {"id": "999"}}}}, worker=None)
+        self.assertIn("владелец", answers[0])
+        self.assertFalse(bot.is_allowed("999"))
+
+    def test_legacy_extra_chats_become_subscribers(self):
         conn = storage.db()
-        storage.meta_set(conn, "extra_chats", "999, 777")
-        conn.close()
+        try:
+            conn.execute("DELETE FROM subscribers")
+            storage.meta_set(conn, "extra_chats", "999, 777")
+            subscribers.ensure_owner(conn)
+        finally:
+            conn.close()
         self.assertTrue(bot.is_allowed("999"))
         self.assertTrue(bot.is_allowed("777"))
+
+    def test_owner_only_command_is_blocked_for_members(self):
+        conn = storage.db()
+        subscribers.add(conn, "888", role="member")
+        conn.close()
+        self.message("/feed list", chat_id="888")
+        self.assertIn("только владельцу", self.sent.texts())
 
 
 class TestCommands(BotCase):
@@ -109,14 +178,28 @@ class TestCommands(BotCase):
 
     def test_pause_and_resume(self):
         self.message("/pause")
-        conn = storage.db()
-        self.assertTrue(bot.is_paused(conn))
-        conn.close()
+        self.assertTrue(self.sub()["paused"])
         self.message("/resume")
-        conn = storage.db()
-        self.assertFalse(bot.is_paused(conn))
-        conn.close()
+        self.assertFalse(self.sub()["paused"])
         self.assertIn("паузе", self.sent.texts())
+
+    def test_pause_is_personal(self):
+        conn = storage.db()
+        subscribers.add(conn, "888", role="member")
+        conn.close()
+        self.message("/pause", chat_id="888")
+        self.assertTrue(self.sub("888")["paused"])
+        self.assertFalse(self.sub()["paused"])
+
+    def test_member_can_unsubscribe_owner_cannot(self):
+        conn = storage.db()
+        subscribers.add(conn, "888", role="member")
+        conn.close()
+        self.message("/stop", chat_id="888")
+        self.assertFalse(bot.is_allowed("888"))
+        self.message("/stop")
+        self.assertIn("владелец", self.sent.texts())
+        self.assertTrue(bot.is_allowed(self.OWNER))
 
     def test_more_without_stock(self):
         self.message("/more")
@@ -147,17 +230,43 @@ class TestCommands(BotCase):
 
 class TestSchedule(BotCase):
     def test_next_send_switches_to_tomorrow(self):
-        conn = storage.db()
-        saved = config.CFG["send_at"]
+        saved = CFG["send_at"]
+        sub = self.sub()
         try:
-            config.CFG["send_at"] = "00:01"       # уже прошло
-            self.assertIn("завтра", bot.next_send_human(conn))
-            config.CFG["send_at"] = "23:59"       # ещё будет
-            self.assertIn("сегодня", bot.next_send_human(conn))
-            config.CFG["send_at"] = "лунный полдень"
-            self.assertIn("неверно", bot.next_send_human(conn))
+            CFG["send_at"] = "00:01"       # уже прошло
+            self.assertIn("завтра", subscribers.next_send_human(sub))
+            CFG["send_at"] = "23:59"       # ещё будет
+            self.assertIn("сегодня", subscribers.next_send_human(sub))
+            CFG["send_at"] = "лунный полдень"
+            self.assertIn("09:00", subscribers.next_send_human(sub))
         finally:
-            config.CFG["send_at"] = saved
+            CFG["send_at"] = saved
+
+    def test_personal_time_wins_over_global(self):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, "888", role="member")
+            subscribers.set_field(conn, "888", "send_at", "23:59")
+            sub = subscribers.get(conn, "888")
+        finally:
+            conn.close()
+        self.assertEqual(subscribers.send_at_for(sub), (23, 59))
+        self.assertIn("23:59", subscribers.next_send_human(sub))
+
+    def test_due_respects_pause_and_last_digest(self):
+        conn = storage.db()
+        try:
+            subscribers.set_field(conn, self.OWNER, "send_at", "00:01")
+            self.assertIn(self.OWNER, [s["chat_id"] for s in subscribers.due(conn)])
+
+            subscribers.set_field(conn, self.OWNER, "paused", 1)
+            self.assertEqual(subscribers.due(conn), [])
+
+            subscribers.set_field(conn, self.OWNER, "paused", 0)
+            today = subscribers.now_for(subscribers.get(conn, self.OWNER))
+            subscribers.set_last_digest(conn, self.OWNER, today.strftime("%Y-%m-%d"))
+            self.assertEqual(subscribers.due(conn), [])
+        finally:
             conn.close()
 
 

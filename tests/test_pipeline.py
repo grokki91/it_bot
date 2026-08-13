@@ -11,9 +11,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import config, feedback, pipeline, storage  # noqa: E402
+from newsdigest import config, feedback, pipeline, storage, subscribers  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
+from newsdigest.profiles import PROFILES  # noqa: E402
 
 from test_core import item  # noqa: E402
 
@@ -26,10 +27,13 @@ CHAT = "77"
 class PipelineCase(unittest.TestCase):
     def setUp(self):
         conn = storage.db()
-        for table in ("items", "sent", "leftover", "feedback", "meta", "runs"):
+        for table in ("items", "sent", "leftover", "feedback", "meta", "runs",
+                      "subscribers"):
             conn.execute("DELETE FROM %s" % table)
         conn.commit()
         conn.close()
+        self.saved_topic = CFG["topic"]
+        CFG["topic"] = "ai"
 
         self.sent = []
         self.ranked_personas = []
@@ -41,6 +45,7 @@ class PipelineCase(unittest.TestCase):
 
     def tearDown(self):
         pipeline.tg_send, pipeline.rank_clusters, pipeline.summarize = self._real
+        CFG["topic"] = self.saved_topic
 
     def fake_rank(self, clusters, persona):
         """Все кандидаты выше порога — так проверяется отбор, а не порог."""
@@ -72,18 +77,27 @@ class PipelineCase(unittest.TestCase):
         "Curl отказался от поддержки gopher",
     ]
 
-    def fill(self, count, source="src"):
+    def source_ids(self, topic="ai"):
+        """Материал попадает в выпуск, только если его источник есть в теме."""
+        return [f[0] for f in PROFILES[topic]["feeds"]]
+
+    def fill(self, count, topic="ai"):
+        sources = self.source_ids(topic)
         conn = storage.db()
-        for i in range(count):
-            row = item("https://e.com/%d" % i, self.TITLES[i % len(self.TITLES)],
-                       "%s%d" % (source, i))
-            conn.execute(
-                "INSERT INTO items(url_hash,url,source_id,tier,category,title,summary,"
-                "published_at,fetched_at,sig,social) VALUES (:url_hash,:url,:source_id,"
-                ":tier,:category,:title,:summary,:published_at,:fetched_at,:sig,:social)",
-                dict(row, fetched_at=now_iso()))
-        conn.commit()
-        conn.close()
+        try:
+            for i in range(count):
+                row = item("https://e.com/%s/%d" % (topic, i),
+                           self.TITLES[i % len(self.TITLES)],
+                           sources[i % len(sources)])
+                conn.execute(
+                    "INSERT OR REPLACE INTO items(url_hash,url,source_id,tier,category,"
+                    "title,summary,published_at,fetched_at,sig,social) VALUES "
+                    "(:url_hash,:url,:source_id,:tier,:category,:title,:summary,"
+                    ":published_at,:fetched_at,:sig,:social)",
+                    dict(row, fetched_at=now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 class TestBuildAndSend(PipelineCase):
@@ -185,6 +199,78 @@ class TestBuildAndSend(PipelineCase):
             self.assertIsNone(self.sent[0][2])
         finally:
             CFG["feedback_buttons"] = True
+
+
+class TestPerSubscriber(PipelineCase):
+    """У каждого подписчика своя тема, свои лимиты и своя история."""
+
+    def subscriber(self, chat_id, **fields):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, chat_id, role="member")
+            for field, value in fields.items():
+                subscribers.set_field(conn, chat_id, field, value)
+            return subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
+
+    def test_history_is_personal(self):
+        self.fill(5)
+        first = self.subscriber("a")
+        second = self.subscriber("b")
+        pipeline.build_and_send(sub=first)
+        pipeline.build_and_send(sub=second)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual({chat for chat, _t, _k in self.sent}, {"a", "b"})
+        # повтор тому же читателю — молчок, а второму всё ещё есть что слать
+        self.assertEqual(pipeline.build_and_send(sub=first)["sent"], 0)
+
+    def test_personal_topic_filters_sources(self):
+        self.fill(5, topic="ai")
+        self.fill(5, topic="crypto")
+        sub = self.subscriber("c", topic="crypto")
+        pipeline.build_and_send(sub=sub)
+        conn = storage.db()
+        try:
+            sources = {r["source_id"] for r in
+                       conn.execute("SELECT source_id FROM sent WHERE chat_id='c'")}
+        finally:
+            conn.close()
+        self.assertTrue(sources)
+        self.assertTrue(sources <= set(self.source_ids("crypto")),
+                        "в крипто-выпуск просочились чужие источники: %s" % sources)
+
+    def test_personal_limit_applies(self):
+        self.fill(12)
+        sub = self.subscriber("d", max_items=3)
+        stats = pipeline.build_and_send(sub=sub)
+        self.assertEqual(stats["selected"], 3)
+        self.assertEqual(CFG["max_items"], 8)      # общая настройка не съехала
+
+    def test_overlay_restores_even_after_failure(self):
+        self.fill(3)
+        sub = self.subscriber("e", max_items=2, language="английский")
+
+        def boom(picked, persona, language):
+            raise RuntimeError("что-то сломалось")
+
+        pipeline.summarize = boom
+        with self.assertRaises(RuntimeError):
+            pipeline.build_and_send(sub=sub)
+        self.assertEqual(CFG["max_items"], 8)
+        self.assertEqual(CFG["language"], "русский")
+
+    def test_last_digest_is_recorded(self):
+        self.fill(4)
+        sub = self.subscriber("f")
+        pipeline.build_and_send(sub=sub)
+        conn = storage.db()
+        try:
+            fresh = subscribers.get(conn, "f")
+            self.assertTrue(fresh["last_digest"])
+            self.assertEqual(subscribers.due(conn), [])
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

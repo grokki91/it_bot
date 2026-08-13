@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, settings, storage  # noqa: E402
+from newsdigest import bot, config, settings, storage, subscribers  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
@@ -184,6 +184,79 @@ class TestSetCommand(SettingsCase):
     def test_multiword_value(self):
         self.say("/set language английский язык")
         self.assertEqual(CFG["language"], "английский язык")
+
+
+class TestPersonalSettings(SettingsCase):
+    """Владелец правит настройки для всех, подписчик — только свои."""
+
+    OWNER, MEMBER = "1", "2"
+
+    def setUp(self):
+        super().setUp()
+        self.conn = storage.db()
+        self.conn.execute("DELETE FROM subscribers")
+        self.conn.commit()
+        self._owner = config.TG_CHAT
+        config.TG_CHAT = self.OWNER
+        subscribers.ensure_owner(self.conn)
+        subscribers.add(self.conn, self.MEMBER, role="member")
+
+    def tearDown(self):
+        self.conn.close()
+        config.TG_CHAT = self._owner
+        super().tearDown()
+
+    def member(self):
+        return subscribers.get(self.conn, self.MEMBER)
+
+    def test_owner_change_is_global(self):
+        key, shown, scope = settings.apply_for(self.conn, self.OWNER, True,
+                                               "time", "07:15")
+        self.assertEqual((key, shown, scope), ("time", "07:15", "global"))
+        self.assertEqual(CFG["send_at"], "07:15")
+
+    def test_member_change_is_personal(self):
+        _key, shown, scope = settings.apply_for(self.conn, self.MEMBER, False,
+                                                "time", "21:00")
+        self.assertEqual((shown, scope), ("21:00", "personal"))
+        self.assertEqual(self.member()["send_at"], "21:00")
+        self.assertNotEqual(CFG["send_at"], "21:00")   # общая не тронута
+
+    def test_member_cannot_touch_global_only(self):
+        with self.assertRaises(settings.Invalid) as caught:
+            settings.apply_for(self.conn, self.MEMBER, False, "every", "2")
+        self.assertIn("владелец", str(caught.exception))
+
+    def test_personal_view_marks_own_values(self):
+        settings.apply_for(self.conn, self.MEMBER, False, "topic", "crypto")
+        view = settings.personal_view(self.member())
+        self.assertEqual(view, {"topic": "crypto"})
+        self.assertEqual(settings.personal_view(subscribers.get(
+            self.conn, self.OWNER)), {})
+
+    def test_personal_silent_roundtrip(self):
+        settings.apply_for(self.conn, self.MEMBER, False, "silent", "вкл")
+        self.assertEqual(self.member()["silent"], 1)
+        self.assertEqual(subscribers.overrides(self.member()), {"silent": True})
+
+    def test_bad_personal_value_changes_nothing(self):
+        with self.assertRaises(settings.Invalid):
+            settings.apply_for(self.conn, self.MEMBER, False, "topic", "ерунда")
+        self.assertEqual(self.member()["topic"], "")
+
+    def test_global_change_during_overlay_is_not_lost(self):
+        """Правка настроек во время чужого выпуска не должна откатиться."""
+        settings.apply_for(self.conn, self.MEMBER, False, "max", "6")
+        sub = self.member()
+        with subscribers.overlay(sub):
+            self.assertEqual(CFG["max_items"], 6)
+            settings.apply_for(self.conn, self.OWNER, True, "max", "12")
+        self.assertEqual(CFG["max_items"], 12)
+
+    def test_member_max_below_global_minimum_is_rejected(self):
+        CFG["min_items"] = 5
+        with self.assertRaises(settings.Invalid):
+            settings.apply_for(self.conn, self.MEMBER, False, "max", "3")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from .config import DB_FILE, HOME, now_iso
+from . import config
+from .config import DB_FILE, HOME, log, now_iso
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -24,15 +25,21 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
 
+-- История отправленного персональна: у каждого подписчика свой дедуп.
 CREATE TABLE IF NOT EXISTS sent (
-    url_hash    TEXT PRIMARY KEY,
+    chat_id     TEXT NOT NULL DEFAULT '',
+    url_hash    TEXT NOT NULL,
     sig         TEXT NOT NULL DEFAULT '',
     title       TEXT NOT NULL,
     url         TEXT NOT NULL DEFAULT '',
+    source_id   TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT 'other',
     digest_date TEXT NOT NULL,
-    sent_at     TEXT NOT NULL
+    sent_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, url_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_sent_at ON sent(sent_at);
+CREATE INDEX IF NOT EXISTS idx_sent_chat ON sent(chat_id, sent_at);
 
 CREATE TABLE IF NOT EXISTS health (
     source_id  TEXT PRIMARY KEY,
@@ -83,6 +90,25 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_at ON feedback(chat_id, at);
 
+-- Подписчики. Пустая строка / 0 / -1 в настройке означает «как в CFG»,
+-- поэтому личные настройки не расходятся с общими сами по себе.
+CREATE TABLE IF NOT EXISTS subscribers (
+    chat_id     TEXT PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL DEFAULT 'private',
+    role        TEXT NOT NULL DEFAULT 'member',
+    topic       TEXT NOT NULL DEFAULT '',
+    send_at     TEXT NOT NULL DEFAULT '',
+    tz          TEXT NOT NULL DEFAULT '',
+    language    TEXT NOT NULL DEFAULT '',
+    max_items   INTEGER NOT NULL DEFAULT 0,
+    min_score   REAL NOT NULL DEFAULT 0,
+    silent      INTEGER NOT NULL DEFAULT -1,
+    paused      INTEGER NOT NULL DEFAULT 0,
+    last_digest TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS saved (
     chat_id   TEXT NOT NULL,
     url_hash  TEXT NOT NULL,
@@ -95,26 +121,79 @@ CREATE TABLE IF NOT EXISTS saved (
 """
 
 
+def table_exists(conn, name: str) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,)).fetchone())
+
+
+def columns(conn, table: str) -> set:
+    return {r["name"] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+
+
 def ensure_column(conn, table: str, column: str, decl: str) -> bool:
     """Добавляет колонку, если её ещё нет. Возвращает True, если добавили.
 
     Апгрейд с прошлой версии не должен требовать «удалите базу и начните
     заново» — история отправленного это и защита от повторов тоже.
     """
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(%s)" % table)}
-    if column in have:
+    if column in columns(conn, table):
         return False
     conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
     conn.commit()
     return True
 
 
-def migrate(conn) -> None:
-    """Догоняет схему до текущей версии на уже существующей базе."""
-    # 3.0: реакции приходят по url_hash, а карточка к тому времени может уже
-    # уехать из items — источник и категорию держим в истории отправленного.
-    ensure_column(conn, "sent", "source_id", "TEXT NOT NULL DEFAULT ''")
-    ensure_column(conn, "sent", "category", "TEXT NOT NULL DEFAULT 'other'")
+def upgrade(conn) -> None:
+    """Подтягивает старую базу до текущей схемы.
+
+    Вызывается ДО создания схемы: иначе индексы по новым колонкам не лягут
+    на таблицу, оставшуюся от прошлой версии.
+    """
+    split_sent_by_chat(conn)
+
+
+def split_sent_by_chat(conn) -> None:
+    """История отправленного становится персональной.
+
+    До 3.0 таблица `sent` была общей: один читатель — одна история. С
+    подписчиками так нельзя, у каждого свой дедуп. Ключ меняется на
+    (chat_id, url_hash), а старые записи достаются владельцу — он их и
+    получал. Терять историю нельзя: это защита от повторов.
+    """
+    if not table_exists(conn, "sent") or "chat_id" in columns(conn, "sent"):
+        return
+    have = columns(conn, "sent")
+    owner = str(getattr(config, "TG_CHAT", "") or "")
+    conn.executescript("""
+        CREATE TABLE sent_new (
+            chat_id     TEXT NOT NULL DEFAULT '',
+            url_hash    TEXT NOT NULL,
+            sig         TEXT NOT NULL DEFAULT '',
+            title       TEXT NOT NULL,
+            url         TEXT NOT NULL DEFAULT '',
+            source_id   TEXT NOT NULL DEFAULT '',
+            category    TEXT NOT NULL DEFAULT 'other',
+            digest_date TEXT NOT NULL,
+            sent_at     TEXT NOT NULL,
+            PRIMARY KEY (chat_id, url_hash)
+        );
+    """)
+    # source_id и category появились в 3.0: в базе 2.0 их нет, подставляем пусто
+    picked = ["?"] + [name if name in have else default for name, default in (
+        ("url_hash", "''"), ("sig", "''"), ("title", "''"), ("url", "''"),
+        ("source_id", "''"), ("category", "'other'"),
+        ("digest_date", "''"), ("sent_at", "''"))]
+    conn.execute(
+        "INSERT OR IGNORE INTO sent_new(chat_id,url_hash,sig,title,url,source_id,"
+        "category,digest_date,sent_at) SELECT %s FROM sent" % ",".join(picked),
+        (owner,))
+    moved = conn.execute("SELECT COUNT(*) c FROM sent_new").fetchone()["c"]
+    conn.executescript("DROP TABLE sent; ALTER TABLE sent_new RENAME TO sent;")
+    conn.commit()
+    if moved:
+        log.info("История отправленного (%d записей) закреплена за chat_id %s",
+                 moved, owner or "—")
 
 
 def item_facts(conn, url_hash):
@@ -158,8 +237,8 @@ def db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
+    upgrade(conn)                 # сначала чиним старое, потом досоздаём новое
     conn.executescript(SCHEMA)
-    migrate(conn)
     return conn
 
 

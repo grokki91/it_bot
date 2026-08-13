@@ -68,6 +68,11 @@ CFG = {
     "silent":           False,     # [env ND_SILENT] true = отправлять без звука
     "listen":           True,      # [env ND_LISTEN] отвечать на команды в чате.
                                    # 0 = только рассылка по расписанию, как в 2.0
+    "signup":           "ask",     # [env ND_SIGNUP] что делать с новым чатом:
+                                   # ask — спросить владельца кнопками,
+                                   # open — подписывать сразу (осторожно: каждый
+                                   #        подписчик тратит ваш баланс модели),
+                                   # off — отвечать «бот личный» и не пускать
 
     # --- срочные новости (вне расписания) ------------------------------------
     # Событие, о котором за пару часов написали сразу несколько первоисточников,
@@ -140,6 +145,7 @@ ENV_MAP = {
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
     "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),
+    "ND_SIGNUP": ("signup", str),
 }
 
 log = logging.getLogger("nd")

@@ -102,15 +102,16 @@ def select(ranking, shortlist):
     return picked
 
 
-def already_sent(conn, group, threshold) -> bool:
-    """Межсуточный дедуп: не повторяем то, что уже уходило."""
+def already_sent(conn, group, threshold, chat_id="") -> bool:
+    """Межсуточный дедуп: не повторяем то, что уже уходило ЭТОМУ читателю."""
     hashes = [i["url_hash"] for i in group]
     marks = ",".join("?" * len(hashes))
-    if conn.execute("SELECT 1 FROM sent WHERE url_hash IN (%s) LIMIT 1" % marks,
-                    hashes).fetchone():
+    if conn.execute(
+            "SELECT 1 FROM sent WHERE chat_id=? AND url_hash IN (%s) LIMIT 1" % marks,
+            [str(chat_id)] + hashes).fetchone():
         return True
     main = primary_of(group)
-    for row in conn.execute("SELECT sig FROM sent"):
+    for row in conn.execute("SELECT sig FROM sent WHERE chat_id=?", (str(chat_id),)):
         if similarity(main["sig"], row["sig"]) >= threshold:
             return True
     return False

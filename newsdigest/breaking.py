@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import config, subscribers
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .llm import LLMError, llm_cost, rank_clusters, summarize
+from .pipeline import fresh_items
 from .profiles import profile
 from .rank import already_sent, cluster, prescore, primary_of
 from .render import breaking_card, feedback_keyboard
@@ -56,20 +57,20 @@ def in_quiet_hours(now=None) -> bool:
     return minutes >= start or minutes < end       # окно через полночь
 
 
-def sent_today(conn) -> int:
+def sent_today(conn, chat_id="") -> int:
     today = local_now().strftime("%Y-%m-%d")
-    if meta_get(conn, "breaking_date", "") != today:
+    if meta_get(conn, "breaking_date:%s" % chat_id, "") != today:
         return 0
     try:
-        return int(meta_get(conn, "breaking_count", "0"))
+        return int(meta_get(conn, "breaking_count:%s" % chat_id, "0"))
     except ValueError:
         return 0
 
 
-def count_sent(conn) -> None:
+def count_sent(conn, chat_id="") -> None:
     today = local_now().strftime("%Y-%m-%d")
-    meta_set(conn, "breaking_count", sent_today(conn) + 1)
-    meta_set(conn, "breaking_date", today)
+    meta_set(conn, "breaking_count:%s" % chat_id, sent_today(conn, chat_id) + 1)
+    meta_set(conn, "breaking_date:%s" % chat_id, today)
 
 
 def is_hot(group) -> bool:
@@ -81,45 +82,50 @@ def is_hot(group) -> bool:
     return max(i["social"] for i in group) >= CFG["breaking_social"]
 
 
-def candidates(conn):
+def candidates(conn, chat_id=""):
     """Свежие неотправленные кластеры, похожие на срочные, лучшие — первыми."""
-    window = (datetime.now(timezone.utc)
+    cutoff = (datetime.now(timezone.utc)
               - timedelta(hours=CFG["breaking_window_h"])).isoformat()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM items WHERE fetched_at > ? AND state = 'new'", (window,))]
+    rows = [r for r in fresh_items(conn, CFG["topic"]) if r["fetched_at"] > cutoff]
     if not rows:
         return []
     hot = [g for g in cluster(rows, CFG["similarity"]) if is_hot(g)]
-    hot = [g for g in hot if not already_sent(conn, g, CFG["similarity"])]
+    hot = [g for g in hot if not already_sent(conn, g, CFG["similarity"], chat_id)]
     return sorted(hot, key=prescore, reverse=True)[:MAX_CANDIDATES]
 
 
-def why_not(conn) -> str:
+def why_not(conn, sub=None, chat_id="") -> str:
     """Причина, по которой проверка не запускается. Пусто — можно работать."""
-    from .bot import is_paused
     if not CFG["breaking"]:
         return "выключено (ND_BREAKING=0)"
-    if is_paused(conn):
+    if sub is not None and sub["paused"]:
         return "рассылка на паузе"
     if in_quiet_hours():
         return "тихие часы %s" % CFG["breaking_quiet"]
-    if sent_today(conn) >= CFG["breaking_max_per_day"]:
+    if sent_today(conn, chat_id) >= CFG["breaking_max_per_day"]:
         return "лимит %d в сутки исчерпан" % CFG["breaking_max_per_day"]
     return ""
 
 
-def check(chat_id=None) -> int:
+def check(chat_id=None, sub=None) -> int:
     """Ищет и отправляет срочное. Возвращает число отправленных сообщений."""
-    chat_id = chat_id or config.TG_CHAT
+    if sub is not None and chat_id is None:
+        chat_id = sub["chat_id"]
+    chat_id = str(chat_id or config.TG_CHAT)
+    with subscribers.overlay(sub):
+        return _check(chat_id, sub)
+
+
+def _check(chat_id, sub) -> int:
     conn = db()
     stats = {"candidates": 0, "sent": 0, "cost": 0.0, "best": 0.0}
     try:
-        skip = why_not(conn)
+        skip = why_not(conn, sub, chat_id)
         if skip:
             log.debug("Срочные не проверяю: %s", skip)
             return 0
 
-        groups = candidates(conn)
+        groups = candidates(conn, chat_id)
         stats["candidates"] = len(groups)
         if not groups:
             return 0
@@ -171,15 +177,15 @@ def check(chat_id=None) -> int:
         stats["sent"] = 1
 
         conn.execute(
-            "INSERT OR IGNORE INTO sent(url_hash,sig,title,url,digest_date,sent_at,"
-            "source_id,category) VALUES (?,?,?,?,?,?,?,?)",
-            (main["url_hash"], main["sig"], main["title"], main["url"],
+            "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,digest_date,"
+            "sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?,?)",
+            (chat_id, main["url_hash"], main["sig"], main["title"], main["url"],
              local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"], category))
         for row in best:
             conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                          (row["url_hash"],))
         conn.commit()
-        count_sent(conn)
+        count_sent(conn, chat_id)
         log_run(conn, "breaking", "ok", stats)
         log.info("Срочное отправлено: %s (оценка %.1f, ~$%.4f)",
                  main["title"][:70], best_score, stats["cost"])

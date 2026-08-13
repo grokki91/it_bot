@@ -123,7 +123,7 @@ class TestCallback(unittest.TestCase):
         self._owner = config.TG_CHAT
         config.TG_CHAT = CHAT
         conn = storage.db()
-        for table in ("feedback", "saved", "items"):
+        for table in ("feedback", "saved", "items", "subscribers"):
             conn.execute("DELETE FROM %s" % table)
         conn.execute("INSERT INTO items(url_hash,url,source_id,tier,category,title,"
                      "fetched_at) VALUES ('hash1','https://e.com/1','openai',1,'labs',"

@@ -5,13 +5,14 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import config, subscribers
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
-from .profiles import profile
+from .profiles import PROFILES, profile
 from .rank import already_sent, cluster, primary_of, select
 from .render import feedback_keyboard, fit_message
+from .sources import sources_for
 from .storage import db, log_run, meta_set, save_leftover
 from .telegram import plain, tg_send
 
@@ -42,17 +43,45 @@ def remember_leftover(conn, chat_id, ranking, shortlist, picked) -> None:
     save_leftover(conn, chat_id, rows[:30])
 
 
-def build_and_send(dry_run=False, chat_id=None) -> dict:
-    chat_id = chat_id or config.TG_CHAT
+def fresh_items(conn, topic):
+    """Свежие материалы, относящиеся к теме этого читателя.
+
+    Материалы собираются сразу по всем темам подписчиков, поэтому чужие
+    источники надо отсечь. Hacker News общий для всех — его записи
+    проверяем по ключевым словам темы.
+    """
+    window = (datetime.now(timezone.utc)
+              - timedelta(hours=CFG["window_hours"])).isoformat()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM items WHERE fetched_at > ? ORDER BY published_at DESC",
+        (window,))]
+    allowed = sources_for(topic)
+    keywords = [k.lower() for k in PROFILES.get(topic, {}).get("keywords", [])]
+    out = []
+    for row in rows:
+        if row["source_id"] in allowed:
+            out.append(row)
+        elif row["source_id"] == "hackernews" and any(
+                k in row["title"].lower() for k in keywords):
+            out.append(row)
+    return out
+
+
+def build_and_send(dry_run=False, chat_id=None, sub=None) -> dict:
+    """Собирает и отправляет выпуск одному читателю."""
+    if sub is not None and chat_id is None:
+        chat_id = sub["chat_id"]
+    chat_id = str(chat_id or config.TG_CHAT)
+    with subscribers.overlay(sub):
+        return _build_and_send(dry_run, chat_id)
+
+
+def _build_and_send(dry_run, chat_id) -> dict:
     conn = db()
     stats = {"candidates": 0, "clusters": 0, "selected": 0, "sent": 0, "cost": 0.0}
     prof = profile()
 
-    window = (datetime.now(timezone.utc)
-              - timedelta(hours=CFG["window_hours"])).isoformat()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM items WHERE fetched_at > ? AND state != 'sent' "
-        "ORDER BY published_at DESC", (window,))]
+    rows = fresh_items(conn, CFG["topic"])
     stats["candidates"] = len(rows)
     if not rows:
         log.warning("Нет свежих материалов — дайджест не формируется")
@@ -61,7 +90,8 @@ def build_and_send(dry_run=False, chat_id=None) -> dict:
         return stats
 
     groups = cluster(rows, CFG["similarity"])
-    fresh = [g for g in groups if not already_sent(conn, g, CFG["similarity"])]
+    fresh = [g for g in groups
+             if not already_sent(conn, g, CFG["similarity"], chat_id)]
     stats["clusters"] = len(fresh)
     if not fresh:
         log.warning("После дедупликации новых новостей не осталось")
@@ -129,14 +159,17 @@ def build_and_send(dry_run=False, chat_id=None) -> dict:
     day = local_now().strftime("%Y-%m-%d")
     for _card, group, _score, category in cards:
         main = primary_of(group)
-        conn.execute("INSERT OR IGNORE INTO sent(url_hash,sig,title,url,digest_date,"
-                     "sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?)",
-                     (main["url_hash"], main["sig"], main["title"], main["url"],
-                      day, now_iso(), main["source_id"], category))
+        conn.execute("INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,"
+                     "digest_date,sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (chat_id, main["url_hash"], main["sig"], main["title"],
+                      main["url"], day, now_iso(), main["source_id"], category))
         for item in group:
+            # 'sent' здесь значит «кому-то уже уходило» и бережёт материал от
+            # уборки; персональный дедуп живёт в таблице sent
             conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                          (item["url_hash"],))
     conn.commit()
+    subscribers.set_last_digest(conn, chat_id, day)
     meta_set(conn, "last_digest_date", day)
     log_run(conn, "digest", "ok", stats)
     conn.close()

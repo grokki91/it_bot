@@ -13,9 +13,9 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import breaking, config
-from .bot import Worker, drain_backlog, is_paused, poll_forever
-from .config import CFG, HOME, LOG_FILE, local_now, log, tz_label
+from . import breaking, config, subscribers
+from .bot import Worker, drain_backlog, poll_forever
+from .config import CFG, HOME, LOG_FILE, log, tz_label
 from .feedparse import parse_date
 from .pipeline import build_and_send
 from .sources import collect
@@ -29,36 +29,63 @@ def send_at_minutes() -> int:
     return hour * 60 + minute
 
 
+def digest_job(sub):
+    """Замыкание на конкретного подписчика — у каждого своя тема и время."""
+    chat_id = sub["chat_id"]
+
+    def job():
+        conn = db()
+        try:
+            fresh = subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
+        if fresh is None or fresh["paused"]:    # успел отписаться, пока ждал
+            return
+        log.info("Время выпуска для %s", chat_id)
+        stats = build_and_send(sub=fresh)
+        if not stats.get("sent"):
+            # день не закрываем: новости могут появиться позже. Но и повторять
+            # каждую минуту нельзя — ранжирование стоит денег
+            conn = db()
+            try:
+                subscribers.note_empty(conn, chat_id)
+            finally:
+                conn.close()
+            log.info("Для %s выпуска не набралось — вернусь через час", chat_id)
+    return job
+
+
 def tick(worker) -> None:
     """Один заход планировщика: решает, что запустить, и уходит."""
     conn = db()
     try:
+        subscribers.ensure_owner(conn)
         last_collect = parse_date(meta_get(conn, "last_collect", ""))
-        last_digest = meta_get(conn, "last_digest_date", "")
-        paused = is_paused(conn)
+        ready = subscribers.due(conn)
+        waiting = subscribers.active(conn)
     finally:
         conn.close()
 
     need_collect = (last_collect is None or
                     datetime.now(timezone.utc) - last_collect
                     >= timedelta(hours=CFG["collect_every_h"]))
-    now = local_now()
-    today = now.strftime("%Y-%m-%d")
-    due = now.hour * 60 + now.minute >= send_at_minutes()
-    need_digest = due and last_digest != today and not paused
 
-    if need_digest:
-        def job():
-            log.info("Время дайджеста — собираю свежее и отправляю")
+    if ready:
+        # свежее собираем один раз на всех, дальше выпуск каждому свой
+        def collect_first():
             collect()
-            build_and_send()
-        worker.submit("digest", job)
-    elif need_collect:
+        worker.submit("collect", collect_first)
+        for sub in ready:
+            worker.submit("digest:%s" % sub["chat_id"], digest_job(sub))
+        return
+
+    if need_collect:
         # срочное ищем сразу после сбора: свежие материалы уже в базе,
         # а до утреннего выпуска может оставаться половина суток
         def job():
             collect()
-            breaking.check()
+            for sub in waiting:
+                breaking.check(sub=sub)
         worker.submit("collect", job)
 
 
@@ -99,10 +126,11 @@ def daemon():
     conn = db()
     try:
         drain_backlog(conn)
+        count = len(subscribers.all_rows(conn))
     finally:
         conn.close()
-    log.info("Слушаю команды в Telegram. Владелец: chat_id %s. Справка в чате: /help",
-             config.TG_CHAT)
+    log.info("Слушаю команды в Telegram. Владелец: chat_id %s, подписчиков: %d. "
+             "Справка в чате: /help", config.TG_CHAT, count)
     try:
         poll_forever(worker, stop)
     except KeyboardInterrupt:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
-from .profiles import profile
+from .profiles import PROFILES, profile
 from .storage import db, log_run, meta_set
 from .textutil import canonical_url, signature, url_hash
 
@@ -63,7 +64,7 @@ def fetch_hackernews():
         log.warning("Hacker News недоступен: %s", exc)
         return []
 
-    keywords = [k.lower() for k in profile()["keywords"]]
+    keywords = keywords_for()
     out = []
     for hit in hits:
         title = strip_html(hit.get("title") or "", 300)
@@ -118,7 +119,7 @@ def mark_health(conn, source_id, ok, err="", count=0):
 def collect() -> dict:
     conn = db()
     stats = {"ok": 0, "failed": 0, "muted": 0, "fetched": 0, "new": 0}
-    feeds = all_feeds()
+    feeds = all_feeds(topics_in_use(conn))
     sources = [s for s in feeds if not is_muted(conn, s[0])]
     stats["muted"] = len(feeds) - len(sources)
 
@@ -166,6 +167,50 @@ def collect() -> dict:
     return stats
 
 
-def all_feeds() -> list:
-    """Источники активной темы."""
-    return list(profile()["feeds"])
+def topics_in_use(conn=None) -> list:
+    """Темы, которые кто-то читает: общая плюс личные темы подписчиков.
+
+    Собирать надо для всех сразу — один обход фидов на всех подписчиков,
+    а не по обходу на каждого.
+    """
+    from .subscribers import active
+
+    topics = [CFG["topic"]]
+    close = conn is None
+    conn = conn or db()
+    try:
+        for sub in active(conn):
+            topic = (sub["topic"] or "").strip()
+            if topic and topic in PROFILES and topic not in topics:
+                topics.append(topic)
+    except sqlite3.Error as exc:                # база ещё не готова — не беда
+        log.debug("Не смог прочитать подписчиков: %s", exc)
+    finally:
+        if close:
+            conn.close()
+    return topics
+
+
+def all_feeds(topics=None) -> list:
+    """Источники всех используемых тем без повторов."""
+    seen, feeds = set(), []
+    for topic in (topics if topics is not None else topics_in_use()):
+        for feed in PROFILES.get(topic, {}).get("feeds", []):
+            if feed[0] not in seen:
+                seen.add(feed[0])
+                feeds.append(feed)
+    return feeds
+
+
+def sources_for(topic: str) -> set:
+    """Имена источников темы — по ним материалы фильтруются под подписчика."""
+    return {f[0] for f in PROFILES.get(topic, {}).get("feeds", [])}
+
+
+def keywords_for(topics=None) -> list:
+    words = []
+    for topic in (topics if topics is not None else topics_in_use()):
+        for word in PROFILES.get(topic, {}).get("keywords", []):
+            if word.lower() not in words:
+                words.append(word.lower())
+    return words
