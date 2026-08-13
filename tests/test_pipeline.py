@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import config, feedback, pipeline, storage, subscribers  # noqa: E402
+from newsdigest import feedback, pipeline, storage, subscribers  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 from newsdigest.profiles import PROFILES  # noqa: E402

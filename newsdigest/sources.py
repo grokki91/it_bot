@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
-from .profiles import PROFILES, profile
+from .profiles import PROFILES
 from .storage import db, log_run, meta_set
 from .textutil import canonical_url, signature, url_hash
 
