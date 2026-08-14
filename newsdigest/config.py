@@ -20,7 +20,12 @@ from pathlib import Path
 
 CFG = {
     # --- что и когда ---------------------------------------------------------
-    "topic":            "ai",      # [env ND_TOPIC] ai | crypto | cybersec | custom
+    "topic":            "ai",      # [env ND_TOPIC] раздел по умолчанию: он идёт
+                                   # в /news без аргумента и в срочные новости
+    "sections":         "",        # [env ND_SECTIONS] разделы утреннего выпуска
+                                   # через запятую. Пусто = подборка по умолчанию
+                                   # (profiles.DEFAULT_SECTIONS). Список всех
+                                   # разделов — команда /sections
     "language":         "русский", # [env ND_LANGUAGE] язык дайджеста
     "send_at":          "09:00",   # [env ND_SEND_AT] во сколько отправлять (ВАШЕ время)
     "tz":               "Europe/Riga",  # [env ND_TZ] пояс по имени: сам учитывает
@@ -29,6 +34,12 @@ CFG = {
     "collect_every_h":  4,         # [env ND_COLLECT_EVERY] раз в сколько часов собирать
 
     # --- сколько новостей ----------------------------------------------------
+    "per_section":      2,         # [env ND_PER_SECTION] новостей на раздел утром
+    "section_items":    5,         # сколько отдаёт /news <раздел> без числа
+    "section_max_items":10,        # и сколько максимум можно попросить
+    "section_candidates": 14,      # кандидатов раздела показываем модели
+    "section_workers":  3,         # разделов ранжируем параллельно (запросы к LLM)
+    "summary_batch":    10,        # карточек в одном запросе на саммари
     "min_items":        5,         # [env ND_MIN_ITEMS] меньше — просто тихий день, не ошибка
     "max_items":        8,         # [env ND_MAX_ITEMS] сколько новостей в выпуске (5-10)
     "min_score":        5.5,       # [env ND_MIN_SCORE] порог важности 1-10, ниже не публикуем
@@ -38,7 +49,8 @@ CFG = {
     # --- сбор ----------------------------------------------------------------
     "window_hours":     30,        # насколько старые материалы ещё считаем свежими
     "http_timeout":     20,        # секунд на один источник
-    "concurrency":      4,         # параллельных загрузок (на 1 vCPU больше не нужно)
+    "concurrency":      8,         # параллельных загрузок. Источников теперь
+                                   # больше сотни, а упираются они в сеть, а не в CPU
     "max_per_feed":     30,        # сколько записей брать из одного фида
     "mute_after_fails": 5,         # после N сбоев подряд источник молчит сутки
     "use_hackernews":   True,      # добавлять топ Hacker News (без ключа, бесплатно)
@@ -138,6 +150,8 @@ LAUNCHER = Path(__file__).resolve().parent.parent / "digest.py"
 
 ENV_MAP = {
     "ND_TOPIC": ("topic", str),
+    "ND_SECTIONS": ("sections", str),
+    "ND_PER_SECTION": ("per_section", int),
     "ND_LANGUAGE": ("language", str),
     "ND_SEND_AT": ("send_at", str),
     "ND_TZ": ("tz", str),

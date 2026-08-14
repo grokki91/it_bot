@@ -1,0 +1,137 @@
+# -*- coding: utf-8 -*-
+"""Разделы выпуска: как их называть, как разбирать и кто на какие подписан.
+
+Раздел — это тема из profiles.PROFILES, взятая с той стороны, с которой на
+неё смотрит читатель: у него есть список разделов, и утренний выпуск идёт
+по этому списку. Здесь только справочник и разбор имён; сборка выпуска —
+в pipeline.py.
+
+Имя раздела можно писать как удобно: `medicine`, `медицина`, `мед` —
+всё это один и тот же раздел. Поэтому команды принимают человеческий ввод
+с телефона, а не только латинские идентификаторы.
+"""
+from __future__ import annotations
+
+from .config import CFG
+from .profiles import DEFAULT_SECTIONS, PROFILES, label, title
+
+#: сколько разделов имеет смысл держать в утреннем выпуске. Это не запрет,
+#: а защита от «включил всё и получил простыню на 60 новостей».
+MAX_SECTIONS = 20
+
+
+def known() -> list:
+    """Все разделы: сначала подборка по умолчанию, потом остальные."""
+    rest = sorted(name for name in PROFILES if name not in DEFAULT_SECTIONS)
+    return [name for name in DEFAULT_SECTIONS if name in PROFILES] + rest
+
+
+def _aliases() -> dict:
+    """Имя (любое) -> идентификатор раздела. Пересборка каждый раз намеренна:
+    PROFILES меняется на лету командами /feed и правкой profiles.json."""
+    table = {}
+    for name, body in PROFILES.items():
+        table[name.lower()] = name
+        table[str(body.get("title") or name).lower()] = name
+        for alias in (body.get("aliases") or ()):
+            table[str(alias).lower()] = name
+    return table
+
+
+def resolve(name: str) -> str:
+    """'Мед' -> 'medicine'. Незнакомое имя -> пустая строка."""
+    key = str(name or "").strip().lower().lstrip("/#").rstrip(",;")
+    if not key:
+        return ""
+    table = _aliases()
+    if key in table:
+        return table[key]
+    # «медицин» и «медицинa» тоже должны находиться: ищем по началу слова,
+    # но только если совпадение однозначное
+    hits = {topic for alias, topic in table.items() if alias.startswith(key)}
+    return hits.pop() if len(hits) == 1 else ""
+
+
+def parse(raw) -> tuple:
+    """Строка или список имён -> (разделы без повторов, непонятые имена)."""
+    if isinstance(raw, (list, tuple, set)):
+        words = [str(x) for x in raw]
+    else:
+        words = str(raw or "").replace(",", " ").split()
+    found, unknown = [], []
+    for word in words:
+        topic = resolve(word)
+        if not topic:
+            unknown.append(word)
+        elif topic not in found:
+            found.append(topic)
+    return found, unknown
+
+
+def store(topics) -> str:
+    """Как список разделов лежит в базе и в env."""
+    return ",".join(topics)
+
+
+def defaults() -> list:
+    """Разделы по умолчанию — из CFG, а если там пусто, то встроенная подборка."""
+    topics, _unknown = parse(CFG.get("sections") or DEFAULT_SECTIONS)
+    return topics
+
+
+def for_sub(sub=None) -> list:
+    """Разделы конкретного подписчика: личные, а если их нет — общие."""
+    personal = ""
+    if sub is not None:
+        try:
+            personal = (sub["sections"] or "").strip()
+        except (IndexError, KeyError):       # база ещё не знает про колонку
+            personal = ""
+    if personal:
+        topics, _unknown = parse(personal)
+        if topics:
+            return topics
+    return defaults()
+
+
+def plan(sub=None) -> list:
+    """Что попадёт в утренний выпуск. Пустой список разделов = старое
+    поведение: один выпуск по основной теме (CFG['topic'])."""
+    topics = for_sub(sub)
+    if not topics:
+        return [CFG["topic"]] if CFG["topic"] in PROFILES else []
+    return topics[:MAX_SECTIONS]
+
+
+def per_section(sub=None) -> int:
+    """Сколько новостей на раздел в утреннем выпуске."""
+    value = 0
+    if sub is not None:
+        try:
+            value = int(sub["per_section"] or 0)
+        except (IndexError, KeyError, TypeError, ValueError):
+            value = 0
+    return max(1, value or int(CFG["per_section"]))
+
+
+def persona(topics) -> str:
+    """Портрет читателя для запросов, охватывающих несколько разделов.
+
+    По одному разделу берём его собственный портрет — он точнее. Для смеси
+    склеивать портреты бессмысленно (получится противоречивый текст), поэтому
+    описываем читателя через список его интересов.
+    """
+    topics = [t for t in topics if t in PROFILES]
+    if not topics:
+        return "внимательный читатель, которому важны факты, а не мнения."
+    if len(topics) == 1:
+        return PROFILES[topics[0]]["persona"]
+    return ("читатель ежедневного дайджеста. Его разделы: %s. Он ценит факты, "
+            "конкретику и последствия события; не любит пересказ пресс-релизов, "
+            "спекуляции и тексты без новости внутри."
+            % ", ".join(title(t) for t in topics))
+
+
+def describe(topics) -> str:
+    """«🩺 Медицина, ⚽ Спорт» — для сообщений бота."""
+    return ", ".join(label(t) for t in topics) or "нет ни одного"

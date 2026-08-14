@@ -14,10 +14,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, feedback, settings, subscribers, userprofiles
+from . import config, feedback, sections, settings, subscribers, userprofiles
 from .config import CFG, log, tz_label
-from .pipeline import build_and_send
-from .profiles import profile
+from .pipeline import build_and_send, build_section
+from .profiles import label, profile, title
 from .render import esc, mark_pressed
 from .sources import all_feeds, collect, fetch_source
 from .storage import db, item_facts, meta_get, meta_set, take_leftover
@@ -120,6 +120,9 @@ class Ctx:
     def next_send(self) -> str:
         return subscribers.next_send_human(self.sub)
 
+    def sections(self) -> list:
+        return sections.plan(self.sub)
+
 
 # --------------------------------------------------------------------- доступ
 _REFUSED = set()
@@ -197,18 +200,25 @@ def cmd_help(ctx):
             continue
         if cmd.owner and not ctx.owner:
             continue
-        lines.append("/%s — %s" % (name, cmd.help))
-    topic = (ctx.sub["topic"] if ctx.sub is not None and ctx.sub["topic"]
-             else CFG["topic"])
-    lines += ["", "Тема: <b>%s</b>, выпуск %s."
-              % (esc(topic), esc(ctx.next_send()))]
+        # подсказки живут и в чате, и на странице: угловые скобки в тексте
+        # вроде «/subs rm <id>» Telegram примет за тег и отклонит разметку
+        lines.append("/%s — %s" % (name, esc(cmd.help)))
+    mine = ctx.sections()
+    lines += ["",
+              "Утром: по %d новости из %d разделов, выпуск %s."
+              % (sections.per_section(ctx.sub), len(mine), esc(ctx.next_send())),
+              "Топ одного раздела прямо сейчас: <code>/news спорт 10</code>.",
+              "Разделы и их выбор: /sections"]
     return "\n".join(lines)
 
 
 @command("digest", "собрать и прислать выпуск сейчас", heavy=True)
 def cmd_digest(ctx):
+    if ctx.args:                    # /digest космос 7 — то же, что /news
+        return cmd_news(ctx)
     chat_id, sub = ctx.chat_id, ctx.sub
-    tg_send(chat_id, "🔄 Собираю свежее — займёт минуту-другую.")
+    tg_send(chat_id, "🔄 Собираю свежее по %d разделам — займёт минуту-другую."
+            % len(ctx.sections()))
 
     def job():
         collect()
@@ -220,6 +230,108 @@ def cmd_digest(ctx):
     if not ctx.worker.submit("digest", job, chat_id):
         return "⏳ Уже собираю выпуск, подождите."
     return None
+
+
+def split_count(args):
+    """'спорт 10' -> ('спорт', 10). Числа в конце — это сколько новостей."""
+    args = list(args)
+    count = 0
+    if args and args[-1].isdigit():
+        count = int(args[-1])
+        args = args[:-1]
+    return " ".join(args).strip(), count
+
+
+@command("news", "топ раздела сейчас: /news спорт 10", heavy=True,
+         aliases=("раздел", "топ"))
+def cmd_news(ctx):
+    name, count = split_count(ctx.args)
+    topic = sections.resolve(name) if name else CFG["topic"]
+    if not topic:
+        return ("Не знаю раздел «%s». Список — /sections" % esc(name))
+    limit = max(1, min(count or CFG["section_items"], CFG["section_max_items"]))
+    chat_id, sub = ctx.chat_id, ctx.sub
+
+    def job():
+        collect([topic])            # только источники этого раздела — так быстрее
+        stats = build_section(topic, limit, chat_id=chat_id, sub=sub)
+        if not stats.get("sent"):
+            tg_send(chat_id, "🌘 В разделе %s нового нет: либо тихо, либо всё "
+                             "уже уходило вам раньше." % esc(label(topic)))
+
+    if not ctx.worker.submit("news:%s" % topic, job, chat_id):
+        return "⏳ Этот раздел уже собираю."
+    return "🔎 Собираю топ-%d: %s — минуту." % (limit, esc(label(topic)))
+
+
+SECTION_HELP = ("\n<i>/sections add кино · /sections rm спорт · "
+                "/sections all · /sections reset</i>\n"
+                "<i>Новости одного раздела: /news медицина 10</i>")
+
+
+@command("sections", "разделы выпуска: список и выбор",
+         aliases=("разделы", "topics"))
+def cmd_sections(ctx):
+    action = (ctx.arg(0) or "list").lower()
+    rest = " ".join(ctx.args[1:])
+    mine = ctx.sections()
+
+    if action in ("add", "добавить", "+"):
+        topics, unknown = sections.parse(rest)
+        if unknown or not topics:
+            return "Не знаю раздел(ы): %s. Список — /sections" % esc(
+                ", ".join(unknown) or "—")
+        return set_sections(ctx, mine + [t for t in topics if t not in mine])
+
+    if action in ("rm", "remove", "убрать", "-", "del"):
+        topics, unknown = sections.parse(rest)
+        if unknown or not topics:
+            return "Не знаю раздел(ы): %s. Список — /sections" % esc(
+                ", ".join(unknown) or "—")
+        left = [t for t in mine if t not in topics]
+        if not left:
+            return ("Так не останется ни одного раздела. "
+                    "Хотите тишины — /pause.")
+        return set_sections(ctx, left)
+
+    if action in ("all", "все", "всё"):
+        return set_sections(ctx, sections.known())
+
+    if action in ("reset", "сброс", "default", "умолчание"):
+        return set_sections(ctx, [])
+
+    if action in ("only", "только", "set"):
+        topics, unknown = sections.parse(rest)
+        if unknown or not topics:
+            return "Не знаю раздел(ы): %s. Список — /sections" % esc(
+                ", ".join(unknown) or "—")
+        return set_sections(ctx, topics)
+
+    chosen = set(mine)
+    lines = ["🗂 <b>Разделы</b> — в выпуске %d из %d, по %d новости в каждом"
+             % (len(mine), len(sections.known()), sections.per_section(ctx.sub)),
+             ""]
+    for topic in sections.known():
+        lines.append("%s %s — <code>%s</code>"
+                     % ("✅" if topic in chosen else "▫️", esc(label(topic)),
+                        esc(topic)))
+    lines.append(SECTION_HELP)
+    return "\n".join(lines)
+
+
+def set_sections(ctx, topics):
+    """Меняет список разделов: владельцу — для всех, подписчику — себе."""
+    try:
+        _key, shown, scope = settings.apply_for(
+            ctx.conn, ctx.chat_id, ctx.owner, "sections",
+            sections.store(topics) if topics else "по умолчанию")
+    except settings.Invalid as exc:
+        return "⚠️ %s" % esc(exc)
+    ctx.sub = subscribers.get(ctx.conn, ctx.chat_id)
+    where = "для всех" if scope == "global" else "лично для вас"
+    return ("✅ Разделы (%s): <b>%s</b>\nВ утреннем выпуске будет до %d новостей."
+            % (where, esc(shown),
+               len(ctx.sections()) * sections.per_section(ctx.sub)))
 
 
 @command("more", "ещё новости, не попавшие в выпуск")
@@ -316,13 +428,15 @@ def cmd_status(ctx):
         except (ValueError, TypeError):
             pass
 
-    topic = (ctx.sub["topic"] if ctx.sub is not None and ctx.sub["topic"]
-             else CFG["topic"])
+    mine = ctx.sections()
+    feeds = len({f[0] for topic in mine for f in profile(topic)["feeds"]})
+    shown = ", ".join(title(topic) for topic in mine[:4])
     lines = [
         "📊 <b>Состояние</b>",
-        "Тема: <b>%s</b> · источников: %d" % (esc(topic),
-                                              len(profile(topic)["feeds"])),
-        "Следующий выпуск: %s" % esc(ctx.next_send()),
+        "Разделов: <b>%d</b> (%s%s) · источников: %d"
+        % (len(mine), esc(shown), " …" if len(mine) > 4 else "", feeds),
+        "Следующий выпуск: %s — по %d новости на раздел"
+        % (esc(ctx.next_send()), sections.per_section(ctx.sub)),
         "Материалов за сутки: %d · отправлено вам за неделю: %d" % (fresh, sent),
         "Расход модели за неделю: $%.4f" % cost,
     ]
@@ -360,22 +474,40 @@ def cmd_feeds(ctx):
     return None
 
 
-FEED_HELP = ("Источники темы <b>%s</b>:\n"
+FEED_HELP = ("Источники раздела <b>%s</b>:\n"
              "/feed list — список\n"
              "/feed add &lt;ссылка&gt; [tier 1-3] [категория]\n"
              "/feed rm &lt;имя&gt;\n\n"
+             "Первым словом можно назвать раздел: "
+             "<code>/feed медицина add &lt;ссылка&gt;</code>.\n"
              "tier: 1 первоисточник, 2 СМИ, 3 агрегатор.\n"
              "категории: %s")
+
+ACTIONS = ("list", "список", "add", "добавить", "rm", "remove", "del", "убрать")
+
+
+def topic_args(ctx):
+    """Первым словом может идти раздел: /feed космос add &lt;ссылка&gt;."""
+    args = list(ctx.args)
+    if args and args[0].lower() not in ACTIONS:
+        topic = sections.resolve(args[0])
+        if topic:
+            return topic, args[1:]
+    return CFG["topic"], args
 
 
 @command("feed", "добавить или убрать источник", owner=True)
 def cmd_feed(ctx):
-    topic = CFG["topic"]
-    action = (ctx.arg(0) or "list").lower()
+    topic, args = topic_args(ctx)
+    action = (args[0] if args else "list").lower()
+
+    def arg(index, default=""):
+        return args[index] if index < len(args) else default
 
     if action in ("list", "список"):
-        feeds = profile()["feeds"]
-        lines = ["📚 <b>%d источников темы «%s»</b>" % (len(feeds), esc(topic)), ""]
+        feeds = profile(topic)["feeds"]
+        lines = ["📚 <b>%d источников раздела «%s»</b>"
+                 % (len(feeds), esc(title(topic))), ""]
         for source_id, url, tier, category in sorted(feeds):
             mark = " ✏️" if userprofiles.is_custom(topic, source_id) else ""
             lines.append("<code>%s</code>%s · t%d · %s"
@@ -384,13 +516,11 @@ def cmd_feed(ctx):
         return "\n".join(lines)
 
     if action in ("add", "добавить"):
-        url = ctx.arg(1)
+        url = arg(1)
         if not url:
-            return FEED_HELP % (esc(topic), ", ".join(userprofiles.CATEGORIES))
-        tier = ctx.arg(2, "2")
-        category = ctx.arg(3, "media")
+            return FEED_HELP % (esc(title(topic)), ", ".join(userprofiles.CATEGORIES))
         try:
-            feed = userprofiles.add_feed(topic, url, tier, category)
+            feed = userprofiles.add_feed(topic, url, arg(2, "2"), arg(3, "media"))
         except ValueError as exc:
             return "Не вышло: %s" % esc(exc)
 
@@ -402,40 +532,42 @@ def cmd_feed(ctx):
                     "Проверьте, что это ссылка именно на RSS/Atom." % esc(err[:80]))
         note = ("свежих записей: %d" % len(items) if items
                 else "свежего пока нет — это нормально для редких блогов")
-        return ("✅ Добавил <code>%s</code> (t%d, %s), %s.\nВ теме теперь %d источников."
-                % (esc(feed[0]), feed[2], esc(feed[3]), note, len(profile()["feeds"])))
+        return ("✅ Добавил <code>%s</code> (t%d, %s), %s.\n"
+                "В разделе «%s» теперь %d источников."
+                % (esc(feed[0]), feed[2], esc(feed[3]), note,
+                   esc(title(topic)), len(profile(topic)["feeds"])))
 
     if action in ("rm", "remove", "del", "убрать"):
-        source_id = ctx.arg(1)
+        source_id = arg(1)
         if not source_id:
             return "Что убрать? /feed rm &lt;имя&gt;, список — /feed list"
         if not userprofiles.remove_feed(topic, source_id):
-            return "В теме «%s» нет источника <code>%s</code>." % (esc(topic),
-                                                                   esc(source_id))
+            return "В разделе «%s» нет источника <code>%s</code>." % (
+                esc(title(topic)), esc(source_id))
         return ("🗑 Убрал <code>%s</code>. Осталось %d источников.\n"
                 "<i>Вернуть: /feed add со ссылкой.</i>"
-                % (esc(source_id), len(profile()["feeds"])))
+                % (esc(source_id), len(profile(topic)["feeds"])))
 
-    return FEED_HELP % (esc(topic), ", ".join(userprofiles.CATEGORIES))
+    return FEED_HELP % (esc(title(topic)), ", ".join(userprofiles.CATEGORIES))
 
 
 @command("keywords", "ключевые слова для фильтра Hacker News", owner=True)
 def cmd_keywords(ctx):
-    topic = CFG["topic"]
-    action = (ctx.arg(0) or "list").lower()
-    if action in ("add", "добавить") and len(ctx.args) > 1:
-        words = userprofiles.edit_keywords(topic, add=ctx.args[1:])
+    topic, args = topic_args(ctx)
+    action = (args[0] if args else "list").lower()
+    if action in ("add", "добавить") and len(args) > 1:
+        words = userprofiles.edit_keywords(topic, add=args[1:])
         return "✅ Добавил. Сейчас %d слов:\n<code>%s</code>" % (len(words),
                                                                 esc(", ".join(words)))
-    if action in ("rm", "remove", "убрать") and len(ctx.args) > 1:
-        words = userprofiles.edit_keywords(topic, remove=ctx.args[1:])
+    if action in ("rm", "remove", "убрать") and len(args) > 1:
+        words = userprofiles.edit_keywords(topic, remove=args[1:])
         return "🗑 Убрал. Осталось %d слов:\n<code>%s</code>" % (len(words),
                                                                  esc(", ".join(words)))
-    words = profile()["keywords"]
-    return ("🔑 <b>Ключевые слова темы «%s»</b> (%d)\n<code>%s</code>\n\n"
-            "<i>Ими фильтруется Hacker News. /keywords add слово, "
-            "/keywords rm слово.</i>"
-            % (esc(topic), len(words), esc(", ".join(words))))
+    words = profile(topic)["keywords"]
+    return ("🔑 <b>Ключевые слова раздела «%s»</b> (%d)\n<code>%s</code>\n\n"
+            "<i>Ими фильтруется Hacker News — у нетехнических разделов их нет. "
+            "/keywords add слово, /keywords rm слово.</i>"
+            % (esc(title(topic)), len(words), esc(", ".join(words)) or "—"))
 
 
 @command("pause", "приостановить рассылку")
@@ -532,8 +664,13 @@ def cmd_set(ctx):
     if key in ("time", "tz"):
         tail = "\nСледующий выпуск: %s" % esc(ctx.next_send())
     if key == "topic":
-        tail = ("\nИсточников в теме: %d. Первый выпуск по новой теме соберётся "
-                "после ближайшего сбора." % len(profile(shown)["feeds"]))
+        topic = sections.resolve(shown) or shown
+        tail = ("\nИсточников в разделе: %d. Это раздел для /news без имени и "
+                "для срочных; утренний выпуск задаётся командой /sections."
+                % len(profile(topic)["feeds"]))
+    if key in ("sections", "each"):
+        tail = ("\nВ утреннем выпуске будет до %d новостей."
+                % (len(ctx.sections()) * sections.per_section(ctx.sub)))
     where = "для всех" if scope == "global" else "лично для вас"
     return "✅ <code>%s</code> = <b>%s</b> (%s)%s" % (esc(key), esc(shown),
                                                      where, tail)

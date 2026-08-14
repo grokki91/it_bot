@@ -147,9 +147,10 @@ def rank_clusters(clusters, persona):
     return as_list(data), usage
 
 
-def summarize(picked, persona, language):
+def summarize_batch(picked, persona, language, offset=0):
+    """Карточки для одной пачки новостей. Ключи ответа — индексы в picked."""
     payload = []
-    for idx, (group, _score, _cat) in enumerate(picked):
+    for idx, (group, _score, _cat) in enumerate(picked, offset):
         main = primary_of(group)
         body = " ".join("[%s] %s. %s" % (i["source_id"], i["title"], i["summary"][:350])
                         for i in group[:3])
@@ -164,4 +165,31 @@ def summarize(picked, persona, language):
             cards[int(card.get("id", -1))] = card
         except (TypeError, ValueError):
             continue
+    return cards, usage
+
+
+def summarize(picked, persona, language):
+    """Карточки на весь выпуск. Длинный выпуск идёт пачками.
+
+    Двадцать с лишним новостей в одном запросе упираются в потолок ответа
+    модели, и обрывается тогда весь выпуск сразу. Пачками дешевле не станет,
+    зато сбой стоит одной пачки: остальные разделы всё равно получат карточки.
+    """
+    size = max(1, int(CFG["summary_batch"]))
+    cards, usage = {}, {"in": 0, "out": 0, "cached": 0}
+    failed = []
+    for start in range(0, len(picked), size):
+        part = picked[start:start + size]
+        try:
+            got, used = summarize_batch(part, persona, language, start)
+        except LLMError as exc:
+            failed.append(exc)
+            log.warning("Саммари для новостей %d-%d не написалось: %s",
+                        start + 1, start + len(part), exc)
+            continue
+        cards.update(got)
+        for key in usage:
+            usage[key] += used.get(key, 0)
+    if failed and not cards:
+        raise LLMError(str(failed[0]))
     return cards, usage

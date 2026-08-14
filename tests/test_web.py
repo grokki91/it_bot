@@ -17,7 +17,8 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, storage, subscribers, web  # noqa: E402
+from newsdigest import bot, config, feedback, profiles, storage  # noqa: E402
+from newsdigest import subscribers, web  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.profiles import profile  # noqa: E402
 
@@ -169,10 +170,12 @@ class TestFeed(WebCase):
         _code, body = self.ask("/api/feed")
         self.assertEqual(body["messages"], [])
 
-    def test_state_reports_topic_and_schedule(self):
+    def test_state_reports_sections_and_schedule(self):
         self.login()
         _code, body = self.ask("/api/feed")
-        self.assertEqual(body["state"]["topic"], CFG["topic"])
+        ids = [s["id"] for s in body["state"]["sections"]]
+        self.assertIn(CFG["topic"], ids)
+        self.assertGreaterEqual(body["state"]["each"], 1)
         self.assertIn("в ", body["state"]["next"])
         self.assertTrue(body["state"]["owner"])
         self.assertTrue(any(c["name"] == "digest" for c in body["commands"]))
@@ -358,7 +361,7 @@ class TestDigestOnThePage(WebCase):
         self.server.worker.queue.join()
         _code, body = self.ask("/api/feed?after=%d" % body["last"])
         html = "\n".join(m["html"] for m in body["messages"])
-        self.assertIn("Дайджест", html)
+        self.assertIn(profiles.title("ai"), html)     # заголовок раздела
         self.assertIn("Карточка 0", html)
         # и кнопки под выпуском живые
         keys = [b for m in body["messages"] for row in m["buttons"] for b in row]

@@ -13,14 +13,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, userprofiles
+from . import config, sections, userprofiles
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
 from .llm import llm_cost, llm_json
 from .net import post_json
-from .pipeline import build_and_send
-from .profiles import PROFILES, profile
+from .pipeline import build_and_send, build_section
+from .profiles import PROFILES, label, profile
+from .profiles import title as topic_title       # 'title' занято чатами в setup
 from .sources import all_feeds, collect, fetch_source
 from .storage import db
 from .telegram import tg_call, tg_detect_chat
@@ -88,10 +89,14 @@ def cmd_setup(_args):
     if key != have:
         config.DS_KEY = key
 
-    topics = ", ".join(PROFILES)
-    topic = ask("4/6 Тема (%s)" % topics, CFG["topic"])
-    if topic not in PROFILES:
-        print("      неизвестная тема, оставляю %s" % CFG["topic"])
+    print("4/6 Утренний выпуск идёт по разделам: %s."
+          % ", ".join(topic_title(t) for t in sections.defaults()))
+    print("    Менять их потом — командой /sections в чате.")
+    topic = ask("    Раздел по умолчанию (для /news и срочных)", CFG["topic"])
+    if sections.resolve(topic):
+        topic = sections.resolve(topic)
+    else:
+        print("      неизвестный раздел, оставляю %s" % CFG["topic"])
         topic = CFG["topic"]
 
     send_at = ask("5/6 Время отправки ЧЧ:ММ (по вашему времени)", CFG["send_at"])
@@ -136,14 +141,18 @@ def cmd_chatid(_args):
 
 
 def cmd_doctor(_args):
+    plan = sections.plan()
+    feeds = {f[0] for topic in plan for f in profile(topic)["feeds"]}
     print("Каталог      :", HOME)
-    print("Тема         :", CFG["topic"], "| источников:", len(profile()["feeds"]))
+    print("Разделы      : %d (%s) | источников: %d"
+          % (len(plan), ", ".join(topic_title(t) for t in plan), len(feeds)))
+    print("По умолчанию :", CFG["topic"], "— раздел для /news и срочных")
     print("Часовой пояс :", tz_label(), "| сейчас у вас", local_now().strftime("%H:%M"),
           "| на сервере", datetime.now(timezone.utc).strftime("%H:%M UTC"))
     print("Расписание   : отправка в %s, сбор раз в %d ч"
           % (CFG["send_at"], CFG["collect_every_h"]))
-    print("Новостей     : %d-%d, порог важности %.1f"
-          % (CFG["min_items"], CFG["max_items"], CFG["min_score"]))
+    print("Новостей     : по %d на раздел (до %d за выпуск), порог важности %.1f"
+          % (CFG["per_section"], CFG["per_section"] * len(plan), CFG["min_score"]))
     print("Модели       :", CFG["model_rank"], "/", CFG["model_summary"])
     if CFG["web"]:
         print("Страница     : http://%s:%s/ (пароль в %s, ND_WEB_TOKEN)"
@@ -227,9 +236,19 @@ def cmd_run(args):
         require_secrets()
     elif not config.DS_KEY:
         sys.exit("Для dry-run нужен хотя бы DEEPSEEK_API_KEY")
+    topic = ""
+    if args.section:
+        topic = sections.resolve(args.section)
+        if not topic:
+            sys.exit("Неизвестный раздел %r. Список: python3 %s topics"
+                     % (args.section, PROG))
     if not args.no_collect:
-        collect()
-    build_and_send(dry_run=args.dry_run)
+        collect([topic] if topic else None)
+    if topic:
+        print("Раздел: %s\n" % label(topic))
+        build_section(topic, args.count, dry_run=args.dry_run)
+    else:
+        build_and_send(dry_run=args.dry_run)
     return 0
 
 
@@ -395,7 +414,10 @@ def build_parser():
     sub.add_parser("doctor", help="проверить Telegram, DeepSeek, базу").set_defaults(
         func=cmd_doctor)
     sub.add_parser("feeds", help="проверить каждый источник").set_defaults(func=cmd_feeds)
-    sub.add_parser("topics", help="темы и их источники").set_defaults(func=cmd_topics)
+    sub.add_parser("topics", help="разделы и их источники").set_defaults(
+        func=cmd_topics)
+    sub.add_parser("sections", help="то же, что topics").set_defaults(
+        func=cmd_topics)
     sub.add_parser("collect", help="только собрать новости").set_defaults(
         func=cmd_collect)
 
@@ -403,6 +425,10 @@ def build_parser():
     run.add_argument("--dry-run", action="store_true", help="показать, не отправлять")
     run.add_argument("--no-collect", action="store_true",
                      help="не собирать заново, взять из базы")
+    run.add_argument("--section", default="",
+                     help="только один раздел, например: --section спорт")
+    run.add_argument("--count", type=int, default=0,
+                     help="сколько новостей в разделе (с --section)")
     run.set_defaults(func=cmd_run)
 
     sub.add_parser("daemon", help="фоновый режим по расписанию").set_defaults(
@@ -421,16 +447,20 @@ def build_parser():
 
 
 def cmd_topics(_args):
-    print("Темы (★ — активная). ✏️ помечены источники из %s\n" % PROFILES_FILE)
-    for name in sorted(PROFILES):
+    plan = set(sections.plan())
+    print("Разделы (★ — в утреннем выпуске). ✏️ помечены источники из %s\n"
+          % PROFILES_FILE)
+    for name in sections.known():
         prof = PROFILES[name]
-        mark = "★" if name == CFG["topic"] else " "
+        mark = "★" if name in plan else " "
         custom = sum(1 for f in prof["feeds"] if userprofiles.is_custom(name, f[0]))
-        print("%s %-12s источников: %2d%s, ключевых слов: %d"
-              % (mark, name, len(prof["feeds"]),
+        print("%s %-11s %-22s источников: %2d%s, ключевых слов: %d"
+              % (mark, name, topic_title(name), len(prof["feeds"]),
                  " (из них своих %d)" % custom if custom else "",
                  len(prof["keywords"])))
-    print("\nСменить тему: ND_TOPIC=<имя> или /set topic <имя> в чате.")
+    print("\nВыбрать разделы: /sections add|rm|all|reset в чате "
+          "или ND_SECTIONS=<через,запятую>.")
+    print("Топ одного раздела: %s run --section спорт --count 10" % PROG)
     print("Править источники: /feed add|rm в чате или %s руками." % PROFILES_FILE)
     return 0
 

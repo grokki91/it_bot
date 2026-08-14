@@ -23,10 +23,10 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import bot, config, feedback, subscribers
+from . import bot, config, feedback, sections, subscribers
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
-from .profiles import profile
+from .profiles import label, profile
 from .render import esc
 from .storage import db, item_facts, outbox_page, save_outbox
 from .telegram import tg_send
@@ -137,10 +137,11 @@ def state(worker) -> dict:
         sub = subscribers.get(conn, chat_id())
     finally:
         conn.close()
-    topic = (sub["topic"] if sub is not None and sub["topic"] else CFG["topic"])
+    mine = sections.plan(sub)
     return {
-        "topic": topic,
-        "feeds": len(profile(topic)["feeds"]),
+        "sections": [{"id": topic, "label": label(topic)} for topic in mine],
+        "each": sections.per_section(sub),
+        "feeds": len({f[0] for topic in mine for f in profile(topic)["feeds"]}),
         "next": subscribers.next_send_human(sub),
         "tz": tz_label(),
         "paused": bool(sub["paused"]) if sub is not None else False,

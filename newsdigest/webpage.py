@@ -112,11 +112,12 @@ footer {
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
 }
 .wrap { max-width: 820px; margin: 0 auto; }
-#chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
-#chips button {
+#chips, #topics { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
+#chips button, #topics button {
   background: var(--bg); border: 1px solid var(--line); color: var(--ink);
   border-radius: 999px; padding: 6px 12px; font-size: 14px; white-space: nowrap;
 }
+#topics button { border-color: var(--accent); color: var(--accent); }
 #ask { display: flex; gap: 8px; }
 #ask input { flex: 1; }
 #ask button {
@@ -160,6 +161,7 @@ footer {
 
   <footer>
     <div class="wrap">
+      <div id="topics"></div>
       <div id="chips"></div>
       <form id="ask" onsubmit="return send(event)">
         <input type="text" id="text" placeholder="Команда, например /digest"
@@ -225,12 +227,28 @@ function esc(text) {
 }
 
 function drawStatus(state) {
-  var bits = ['Тема: <b>' + esc(state.topic) + '</b> · источников ' + state.feeds,
-              'Выпуск ' + esc(state.next)];
+  var sections = state.sections || [];
+  var bits = ['Разделов: <b>' + sections.length + '</b> · источников ' + state.feeds,
+              'Выпуск ' + esc(state.next) + ', по ' + state.each + ' на раздел'];
   if (state.paused) { bits.push('<b>⏸ на паузе</b>'); }
   if (state.busy) { bits.push('<span id="busy">выполняется: ' + esc(state.busy) + '</span>'); }
   if (!state.owner) { bits.push('<span id="busy">TELEGRAM_CHAT_ID не задан</span>'); }
   $('status').innerHTML = bits.join(' · ');
+}
+
+/* раздел одной кнопкой: то же, что /news <раздел> в чате */
+function drawTopics(sections) {
+  var box = $('topics');
+  if (box.childNodes.length === sections.length) { return; }
+  box.innerHTML = '';
+  sections.forEach(function (section) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = section.label;
+    button.title = 'Топ новостей раздела';
+    button.onclick = function () { run('/news ' + section.id); };
+    box.appendChild(button);
+  });
 }
 
 function drawChips(commands) {
@@ -277,7 +295,7 @@ function drawKey(button) {
 function apply(data) {
   var scroll = $('scroll');
   var atBottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 80;
-  if (data.state) { drawStatus(data.state); }
+  if (data.state) { drawStatus(data.state); drawTopics(data.state.sections || []); }
   if (data.commands) { drawChips(data.commands); }
   var feed = $('feed');
   (data.messages || []).forEach(function (message) {

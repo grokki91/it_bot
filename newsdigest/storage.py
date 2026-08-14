@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS subscribers (
     kind        TEXT NOT NULL DEFAULT 'private',
     role        TEXT NOT NULL DEFAULT 'member',
     topic       TEXT NOT NULL DEFAULT '',
+    sections    TEXT NOT NULL DEFAULT '',
+    per_section INTEGER NOT NULL DEFAULT 0,
     send_at     TEXT NOT NULL DEFAULT '',
     tz          TEXT NOT NULL DEFAULT '',
     language    TEXT NOT NULL DEFAULT '',
@@ -166,6 +168,29 @@ def upgrade(conn) -> None:
     на таблицу, оставшуюся от прошлой версии.
     """
     split_sent_by_chat(conn)
+    add_sections(conn)
+
+
+def add_sections(conn) -> None:
+    """Разделы подписчика (3.2). У кого их нет — читает подборку по умолчанию.
+
+    Кто раньше выбрал себе личную тему, тот выбирал именно её и не должен
+    внезапно получить выпуск на двенадцать разделов: при переезде личная тема
+    становится его личным списком разделов. Дальше он волен добавить ещё —
+    /sections add. Общая тема (CFG['topic']) сюда не переносится: у владельца
+    она стояла у всех по умолчанию и означала просто «о чём бот».
+    """
+    if not table_exists(conn, "subscribers"):
+        return                      # новая база: колонки придут из SCHEMA
+    ensure_column(conn, "subscribers", "per_section", "INTEGER NOT NULL DEFAULT 0")
+    if not ensure_column(conn, "subscribers", "sections", "TEXT NOT NULL DEFAULT ''"):
+        return
+    cur = conn.execute("UPDATE subscribers SET sections=topic "
+                       "WHERE sections='' AND topic!=''")
+    conn.commit()
+    if cur.rowcount:
+        log.info("Личная тема %d подписчика(ов) стала их списком разделов",
+                 cur.rowcount)
 
 
 def split_sent_by_chat(conn) -> None:
