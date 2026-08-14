@@ -66,14 +66,121 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
 
 
 def _loads(text: str):
+    """Разбор ответа модели. Терпим к типичному браку в её JSON.
+
+    Даже в режиме json_object модель регулярно отдаёт то кавычку внутри
+    строки («фильм "Дюна"» — а это ровно `Expecting ',' delimiter`), то
+    висячую запятую, то перенос строки прямо в значении, то обрыв по
+    max_tokens. Раньше любая такая мелочь роняла весь раздел, поэтому
+    пробуем починить текст, а в самом плохом случае — спасти начало ответа.
+    """
     cleaned = re.sub(r"^\s*```(?:json)?|```\s*$", "", text.strip(), flags=re.MULTILINE)
-    try:
-        return json.loads(cleaned)
-    except ValueError:
-        match = re.search(r"[\[{].*[\]}]", cleaned, re.DOTALL)
-        if not match:
-            raise LLMError("не удалось разобрать JSON: %s" % text[:200])
-        return json.loads(match.group(0))
+    match = re.search(r"[\[{].*[\]}]", cleaned, re.DOTALL)
+    body = match.group(0) if match else cleaned
+    repaired = _repair(body)
+    for candidate in (cleaned, body, repaired, _close_truncated(repaired)):
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except ValueError:
+            continue
+    raise LLMError("не удалось разобрать JSON: %s" % text[:200])
+
+
+#: чем может начинаться значение после запятой в валидном JSON
+_VALUE_START = '"{[-0123456789tfn'
+#: ...либо закрывающая скобка — тогда запятая просто висячая
+
+
+def _closes_string(text: str, index: int) -> bool:
+    """Кавычка на позиции index закрывает строку — или это забытое экранирование?
+
+    После настоящей закрывающей кавычки идёт `:`, `}`, `]` или запятая, а за
+    запятой — начало следующего значения или ключа. Если после запятой идёт
+    обычный текст («фильм "Дюна", сборы»), значит кавычка была внутри строки.
+    """
+    rest = text[index + 1:].lstrip()
+    if not rest:
+        return True
+    if rest[0] in ":}]":
+        return True
+    if rest[0] != ",":
+        return False
+    after = rest[1:].lstrip()
+    return not after or after[0] in _VALUE_START or after[0] in "}]"
+
+
+def _repair(text: str) -> str:
+    """Экранирует лишние кавычки и управляющие символы, убирает висячие запятые."""
+    out = []
+    in_string = False
+    index, length = 0, len(text)
+    while index < length:
+        char = text[index]
+        if in_string:
+            if char == "\\" and index + 1 < length:
+                out.append(text[index:index + 2])
+                index += 2
+                continue
+            if char == '"':
+                if _closes_string(text, index):
+                    in_string = False
+                    out.append(char)
+                else:  # кавычка внутри значения — модель забыла её экранировать
+                    out.append('\\"')
+                index += 1
+                continue
+            if char in "\n\r\t":
+                out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+            elif ord(char) < 0x20:
+                out.append("\\u%04x" % ord(char))
+            else:
+                out.append(char)
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+        elif char == "," and text[index + 1:].lstrip()[:1] in ("}", "]"):
+            pass  # висячая запятая
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _close_truncated(text: str) -> str:
+    """Обрезает оборванный ответ по последнему целому элементу и закрывает скобки.
+
+    Ответ упёрся в max_tokens — лучше отдать те карточки, что уже пришли,
+    чем потерять весь раздел.
+    """
+    stack, in_string = [], False
+    safe_end, safe_stack = 0, []
+    index, length = 0, len(text)
+    while index < length:
+        char = text[index]
+        if in_string:
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            stack.append("]" if char == "[" else "}")
+        elif char in "]}":
+            if not stack:
+                break
+            stack.pop()
+            if stack:  # закрылось вложенное значение — досюда точно целое
+                safe_end, safe_stack = index + 1, list(stack)
+        index += 1
+    if not safe_end:
+        return ""
+    return text[:safe_end] + "".join(reversed(safe_stack))
 
 
 def as_list(data, key="items"):
