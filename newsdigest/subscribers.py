@@ -20,11 +20,12 @@ from . import config
 from .config import CFG, local_now, log, now_iso
 
 #: настройки, которые подписчик может держать своими
-PERSONAL = ("topic", "send_at", "tz", "language", "max_items", "min_score", "silent")
+PERSONAL = ("topic", "sections", "per_section", "send_at", "tz", "language",
+            "max_items", "min_score", "silent")
 
 #: как «пусто» выглядит для каждого поля
-BLANK = {"topic": "", "send_at": "", "tz": "", "language": "",
-         "max_items": 0, "min_score": 0.0, "silent": -1}
+BLANK = {"topic": "", "sections": "", "per_section": 0, "send_at": "", "tz": "",
+         "language": "", "max_items": 0, "min_score": 0.0, "silent": -1}
 
 ROLES = ("owner", "member", "pending")
 
@@ -118,13 +119,21 @@ def set_last_digest(conn, chat_id, day):
 
 
 # ------------------------------------------------------------ личные значения
+def field_of(sub, field):
+    """Значение поля подписчика или «пусто», если колонки ещё нет."""
+    try:
+        return sub[field]
+    except (IndexError, KeyError):       # база старше этой версии
+        return BLANK[field]
+
+
 def overrides(sub) -> dict:
     """Только то, что подписчик задал сам, в виде ключей CFG."""
     if sub is None:
         return {}
     out = {}
     for field in PERSONAL:
-        value = sub[field]
+        value = field_of(sub, field)
         if value != BLANK[field] and value is not None:
             out["silent" if field == "silent" else field] = (
                 bool(value) if field == "silent" else value)
@@ -134,7 +143,7 @@ def overrides(sub) -> dict:
 def describe(sub) -> str:
     parts = []
     for field in PERSONAL:
-        value = sub[field]
+        value = field_of(sub, field)
         if value != BLANK[field] and value is not None:
             parts.append("%s=%s" % (field, "вкл" if field == "silent" and value
                                     else "выкл" if field == "silent" else value))

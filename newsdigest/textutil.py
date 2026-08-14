@@ -54,11 +54,18 @@ def signature(text: str) -> str:
     return " ".join(sorted({t for t in tokens if len(t) > 1 and t not in STOPWORDS}))
 
 
-def similarity(sig_a: str, sig_b: str) -> float:
+def sim_sets(a: set, b: set) -> float:
     """0.5*Жаккар + 0.5*перекрытие. Перекрытие спасает, когда один заголовок
-    заметно длиннее другого — частый случай у агрегаторов."""
-    a, b = set(sig_a.split()), set(sig_b.split())
+    заметно длиннее другого — частый случай у агрегаторов.
+
+    Принимает готовые множества слов: в выпуске по десятку разделов одни и те
+    же сигнатуры сравниваются тысячи раз, и разбор строки каждый раз заметен.
+    """
     if not a or not b:
         return 0.0
     inter = len(a & b)
     return 0.5 * (inter / len(a | b)) + 0.5 * (inter / min(len(a), len(b)))
+
+
+def similarity(sig_a: str, sig_b: str) -> float:
+    return sim_sets(set(sig_a.split()), set(sig_b.split()))

@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Темы: набор источников, ключевых слов и портрет читателя.
+"""Разделы: набор источников, ключевых слов и портрет читателя.
 
-Сменить тематику = поменять CFG["topic"] и, если надо, дописать фиды.
-    tier: 1 = первоисточник, 2 = профильное СМИ, 3 = агрегатор/форум.
+Раздел (он же «тема») — это единица, по которой бот собирает и выдаёт новости:
+ИИ, медицина, политика, спорт, космос и так далее. Утренний выпуск проходит
+по всем разделам подписчика, а команда `/news <раздел>` показывает топ одного.
+
+    title/emoji  как раздел выглядит в списках и заголовках выпуска
+    aliases      как его можно назвать в команде («мед», «кино», «hardware»)
+    persona      портрет читателя: им калибруется оценка модели
+    keywords     фильтр для Hacker News (у нетехнических разделов пуст)
+    feeds        tier: 1 = первоисточник, 2 = профильное СМИ, 3 = агрегатор
+
 Сломанный фид сам отключится на сутки и будет виден в `digest.py status`.
+Добавить свой источник можно, не трогая этот файл: `/feed add <ссылка>`.
 """
 from __future__ import annotations
 
@@ -14,6 +23,9 @@ from .config import CFG
 BUILTIN = {
 
     "ai": {
+        "title": "ИИ и технологии",
+        "emoji": "🤖",
+        "aliases": ("ии", "аи", "нейросети", "it", "ai"),
         "persona": (
             "инженер-разработчик. Ему интересны: новые модели и их реальные "
             "возможности, инструменты и библиотеки, применимые в работе, "
@@ -64,7 +76,283 @@ BUILTIN = {
         ],
     },
 
+    "hardware": {
+        "title": "Компьютерное железо",
+        "emoji": "🖥",
+        "aliases": ("железо", "хардвар", "hw", "комплектующие", "гаджеты"),
+        "persona": (
+            "человек, который собирает и обслуживает компьютеры. Интересны: "
+            "анонсы и тесты процессоров, видеокарт, памяти и накопителей, "
+            "реальная производительность и энергопотребление, цены и доступность, "
+            "серверное железо, поддержка в драйверах и ядре. НЕ интересны: "
+            "пресс-релизы без цифр, «топ-10 сборок», обзоры чехлов и мышек, "
+            "слухи без источника."
+        ),
+        "keywords": ["cpu", "gpu", "nvidia", "amd", "intel", "arm", "risc-v", "ryzen",
+                     "radeon", "geforce", "ssd", "nvme", "ddr5", "chip", "tsmc",
+                     "benchmark", "silicon", "motherboard"],
+        "feeds": [
+            ("tomshardware",  "https://www.tomshardware.com/feeds/all",        2, "media"),
+            ("techpowerup",   "https://www.techpowerup.com/rss/news",          2, "media"),
+            ("phoronix",      "https://www.phoronix.com/rss.php",              2, "media"),
+            ("servethehome",  "https://www.servethehome.com/feed/",            2, "media"),
+            ("ars-gadgets",   "https://arstechnica.com/gadgets/feed/",         2, "media"),
+            ("nvidia-blog",   "https://blogs.nvidia.com/feed/",                1, "labs"),
+            ("ixbt",          "https://www.ixbt.com/export/news.rss",          2, "media"),
+            ("3dnews",        "https://3dnews.ru/news/rss/",                   2, "media"),
+            ("notebookcheck", "https://www.notebookcheck-ru.com/rss.xml",      2, "media"),
+            ("overclockers",  "https://overclockers.ru/rss/all.rss",           3, "media"),
+        ],
+    },
+
+    "robots": {
+        "title": "Роботы",
+        "emoji": "🦾",
+        "aliases": ("роботы", "робототехника", "robotics", "дроны"),
+        "persona": (
+            "инженер, которому интересна робототехника. Интересны: новые "
+            "платформы и их реальные возможности, автономность и управление, "
+            "промышленное и складское применение, дроны и беспилотный транспорт, "
+            "открытые стеки вроде ROS, цена и серийность. НЕ интересны: "
+            "постановочные ролики без подробностей, обещания «через пять лет», "
+            "рассуждения о восстании машин."
+        ),
+        "keywords": ["robot", "robotics", "humanoid", "drone", "autonomous", "ros",
+                     "manipulator", "lidar", "actuator", "warehouse automation"],
+        "feeds": [
+            ("ieee-robotics",  "https://spectrum.ieee.org/feeds/topic/robotics.rss", 1, "media"),
+            ("robotreport",    "https://www.therobotreport.com/feed/",               2, "media"),
+            ("robohub",        "https://robohub.org/feed/",                          2, "community"),
+            ("techxplore-bot", "https://techxplore.com/rss-feed/robotics-news/",     2, "media"),
+            ("dronelife",      "https://dronelife.com/feed/",                        2, "media"),
+            ("gh-ros2",        "https://github.com/ros2/ros2/releases.atom",         1, "opensource"),
+        ],
+    },
+
+    "space": {
+        "title": "Космос",
+        "emoji": "🚀",
+        "aliases": ("космос", "space", "астрономия", "ракеты"),
+        "persona": (
+            "человек, который следит за космонавтикой и астрономией. Интересны: "
+            "запуски и их результаты, ход миссий, открытия телескопов и "
+            "аппаратов, новые аппараты и двигатели, контракты и бюджеты агентств. "
+            "НЕ интересны: гороскопы, уфология, пересказ старых снимков, "
+            "«учёные не исключают» без данных."
+        ),
+        "keywords": ["nasa", "spacex", "esa", "rocket", "launch", "satellite",
+                     "mars", "moon", "lunar", "telescope", "orbit", "starship",
+                     "astronaut", "asteroid"],
+        "feeds": [
+            ("nasa",            "https://www.nasa.gov/feed/",                             1, "labs"),
+            ("esa",             "https://www.esa.int/rssfeed/Our_Activities/Space_News",  1, "labs"),
+            ("spacenews",       "https://spacenews.com/feed/",                            2, "media"),
+            ("nasaspaceflight", "https://www.nasaspaceflight.com/feed/",                  2, "media"),
+            ("ars-space",       "https://arstechnica.com/space/feed/",                    2, "media"),
+            ("phys-space",      "https://phys.org/rss-feed/space-news/",                  2, "media"),
+            ("universetoday",   "https://www.universetoday.com/feed",                     2, "media"),
+        ],
+    },
+
+    "science": {
+        "title": "Наука",
+        "emoji": "🔬",
+        "aliases": ("наука", "science", "исследования"),
+        "persona": (
+            "любознательный читатель с техническим образованием. Интересны: "
+            "результаты исследований с понятной методикой, крупные эксперименты, "
+            "физика, биология, климат, археология, воспроизводимость и опровержения. "
+            "НЕ интересны: пересказ пресс-релиза университета без сути работы, "
+            "«учёные доказали» на выборке в 12 человек, научпоп ни о чём."
+        ),
+        "keywords": ["research", "study", "physics", "quantum", "biology", "genome",
+                     "climate", "fusion", "materials", "chemistry", "archaeology"],
+        "feeds": [
+            ("nature",       "https://www.nature.com/nature.rss",                 1, "research"),
+            ("science-news", "https://www.science.org/rss/news_current.xml",      1, "research"),
+            ("quanta",       "https://api.quantamagazine.org/feed/",              2, "media"),
+            ("phys-all",     "https://phys.org/rss-feed/",                        2, "media"),
+            ("sd-science",   "https://www.sciencedaily.com/rss/top/science.xml",  2, "media"),
+            ("newscientist", "https://www.newscientist.com/feed/home/",           2, "media"),
+            ("nplus1",       "https://nplus1.ru/rss",                             2, "media"),
+        ],
+    },
+
+    "medicine": {
+        "title": "Медицина",
+        "emoji": "🩺",
+        "aliases": ("медицина", "мед", "medicine", "фарма"),
+        "persona": (
+            "врач или человек, читающий медицинские новости по существу. "
+            "Интересны: результаты клинических испытаний с цифрами, одобрения и "
+            "отзывы препаратов регуляторами, вспышки заболеваний, новые методы "
+            "диагностики и лечения, крупные метаанализы. НЕ интересны: "
+            "advertorial производителей, БАДы и «чудо-средства», единичные "
+            "случаи, поданные как открытие, страшилки без данных."
+        ),
+        "keywords": ["clinical trial", "fda", "vaccine", "cancer", "drug",
+                     "antibiotic", "outbreak", "gene therapy", "crispr", "who"],
+        "feeds": [
+            ("statnews",      "https://www.statnews.com/feed/",                             2, "media"),
+            ("medicalxpress", "https://medicalxpress.com/rss-feed/",                        2, "media"),
+            ("nature-med",    "https://www.nature.com/nm.rss",                              1, "research"),
+            ("lancet",        "https://www.thelancet.com/rssfeed/lancet_current.xml",       1, "research"),
+            ("who-news",      "https://www.who.int/rss-feeds/news-english.xml",             1, "policy"),
+            ("fda-press",     "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", 1, "policy"),
+            ("sd-medicine",   "https://www.sciencedaily.com/rss/health_medicine.xml",       2, "media"),
+        ],
+    },
+
+    "health": {
+        "title": "Здоровье",
+        "emoji": "🥗",
+        "aliases": ("здоровье", "зож", "health", "питание", "фитнес"),
+        "persona": (
+            "человек, который следит за своим здоровьем и хочет решений, "
+            "подкреплённых данными. Интересны: питание, сон, физическая "
+            "активность, психическое здоровье, профилактика, разбор популярных "
+            "мифов, рекомендации организаций здравоохранения. НЕ интересны: "
+            "детокс и очищение, реклама добавок, «одно упражнение, которое "
+            "заменит спортзал», выводы из исследований на мышах, поданные как "
+            "готовый совет."
+        ),
+        "keywords": ["nutrition", "sleep", "exercise", "diet", "mental health",
+                     "longevity", "obesity", "fitness", "prevention"],
+        "feeds": [
+            ("harvard-health",  "https://www.health.harvard.edu/blog/feed",                     1, "research"),
+            ("nih-news",        "https://www.nih.gov/news-releases/feed.xml",                   1, "policy"),
+            ("guardian-health", "https://www.theguardian.com/society/health/rss",               2, "media"),
+            ("npr-health",      "https://feeds.npr.org/1128/rss.xml",                           2, "media"),
+            ("sd-nutrition",    "https://www.sciencedaily.com/rss/health_medicine/nutrition.xml", 2, "media"),
+            ("sd-fitness",      "https://www.sciencedaily.com/rss/health_medicine/fitness.xml", 2, "media"),
+        ],
+    },
+
+    "politics": {
+        "title": "Политика",
+        "emoji": "🏛",
+        "aliases": ("политика", "politics", "мир", "world"),
+        "persona": (
+            "читатель, которому нужны факты о происходящем, а не колонка "
+            "мнений. Интересны: решения властей и их последствия, выборы, "
+            "международные соглашения и санкции, конфликты, законы, которые "
+            "что-то меняют на практике. НЕ интересны: пересказ чужого твита, "
+            "прогнозы политологов, заголовки в жанре «а что если», материалы "
+            "без указания источника."
+        ),
+        "keywords": [],
+        "feeds": [
+            ("bbc-russian",    "https://feeds.bbci.co.uk/russian/rss.xml",              2, "media"),
+            ("bbc-world",      "https://feeds.bbci.co.uk/news/world/rss.xml",           2, "media"),
+            ("guardian-world", "https://www.theguardian.com/world/rss",                 2, "media"),
+            ("aljazeera",      "https://www.aljazeera.com/xml/rss/all.xml",             2, "media"),
+            ("politico",       "https://rss.politico.com/politics-news.xml",            2, "media"),
+            ("dw-russian",     "https://rss.dw.com/rdf/rss-ru-all",                     2, "media"),
+            ("un-news",        "https://news.un.org/feed/subscribe/ru/news/all/rss.xml", 1, "policy"),
+            ("tass",           "https://tass.ru/rss/v2.xml",                            2, "media"),
+            ("rbc",            "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",     2, "media"),
+        ],
+    },
+
+    "economy": {
+        "title": "Экономика",
+        "emoji": "💰",
+        "aliases": ("экономика", "economy", "финансы", "бизнес", "рынки"),
+        "persona": (
+            "читатель, который следит за экономикой и рынками. Интересны: "
+            "решения центробанков, инфляция и статистика, крупные сделки и "
+            "банкротства, отчётности значимых компаний, налоги и регулирование, "
+            "цены на сырьё. НЕ интересны: «акция взлетит», гадания аналитиков, "
+            "реклама брокеров, ежедневный шум котировок без события."
+        ),
+        "keywords": ["inflation", "central bank", "recession", "tariff", "gdp",
+                     "interest rate", "earnings", "ipo", "bankruptcy"],
+        "feeds": [
+            ("kommersant-econ",  "https://www.kommersant.ru/RSS/section-economics.xml",   2, "media"),
+            ("interfax",         "https://www.interfax.ru/rss.asp",                       2, "media"),
+            ("cbr",              "https://www.cbr.ru/rss/eventrss",                       1, "policy"),
+            ("economist-fin",    "https://www.economist.com/finance-and-economics/rss.xml", 1, "media"),
+            ("guardian-business","https://www.theguardian.com/business/rss",              2, "media"),
+            ("marketwatch",      "https://feeds.content.dowjones.io/public/rss/mw_topstories", 2, "media"),
+            ("yahoo-finance",    "https://finance.yahoo.com/news/rssindex",               3, "media"),
+        ],
+    },
+
+    "sports": {
+        "title": "Спорт",
+        "emoji": "⚽",
+        "aliases": ("спорт", "sport", "sports", "футбол"),
+        "persona": (
+            "болельщик, которому важны результаты и события, а не слухи. "
+            "Интересны: итоги матчей и турниров, рекорды, переходы, травмы "
+            "ключевых игроков, допинг и дисквалификации, календарь крупных "
+            "соревнований. НЕ интересны: «источник сообщил», разбор слухов о "
+            "трансферах, колонки о том, кто величайший, ставки и прогнозы."
+        ),
+        "keywords": [],
+        "feeds": [
+            ("bbc-sport",      "https://feeds.bbci.co.uk/sport/rss.xml",     2, "media"),
+            ("espn",           "https://www.espn.com/espn/rss/news",         2, "media"),
+            ("guardian-sport", "https://www.theguardian.com/sport/rss",      2, "media"),
+            ("skysports",      "https://www.skysports.com/rss/12040",        2, "media"),
+            ("sports-ru",      "https://www.sports.ru/rss/all_news.xml",     2, "media"),
+            ("championat",     "https://www.championat.com/rss/news/",       2, "media"),
+            ("cbssports",      "https://www.cbssports.com/rss/headlines/",   2, "media"),
+        ],
+    },
+
+    "incidents": {
+        "title": "Происшествия",
+        "emoji": "🚨",
+        "aliases": ("происшествия", "чп", "катастрофы", "incidents", "аварии"),
+        "persona": (
+            "читатель, которому нужна проверенная сводка происшествий. "
+            "Интересны: землетрясения, наводнения, извержения, крупные пожары, "
+            "аварии на транспорте, техногенные катастрофы, эвакуации — с "
+            "масштабом, местом и последствиями. НЕ интересны: криминальная "
+            "хроника районного масштаба, «шок-видео», непроверенные сообщения "
+            "очевидцев, повтор одной и той же новости через сутки."
+        ),
+        "keywords": [],
+        "feeds": [
+            ("gdacs",       "https://www.gdacs.org/xml/rss.xml",                                          1, "policy"),
+            ("usgs-quakes", "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.atom",     1, "policy"),
+            ("reliefweb",   "https://reliefweb.int/updates/rss.xml",                                      1, "policy"),
+            ("nhc-storms",  "https://www.nhc.noaa.gov/index-at.xml",                                      1, "policy"),
+            ("volcanoes",   "https://volcano.si.edu/news/WeeklyVolcanoRSS.xml",                           1, "policy"),
+            ("ria",         "https://ria.ru/export/rss2/archive/index.xml",                               2, "media"),
+            ("lenta",       "https://lenta.ru/rss/news",                                                  2, "media"),
+        ],
+    },
+
+    "cinema": {
+        "title": "Кино и сериалы",
+        "emoji": "🎬",
+        "aliases": ("кино", "сериалы", "фильмы", "cinema", "movies", "тв"),
+        "persona": (
+            "зритель, который следит за кино и сериалами. Интересны: даты "
+            "выхода и трейлеры значимых проектов, кастинг и смена режиссёров, "
+            "сборы и продления/закрытия сериалов, крупные премии, сделки "
+            "студий и стримингов. НЕ интересны: «10 фильмов, которые вы "
+            "пропустили», пересказ слухов из соцсетей, рецензии на всё подряд, "
+            "новости про личную жизнь актёров."
+        ),
+        "keywords": [],
+        "feeds": [
+            ("variety",         "https://variety.com/feed/",                  2, "media"),
+            ("hollywoodreporter","https://www.hollywoodreporter.com/feed/",   2, "media"),
+            ("deadline",        "https://deadline.com/feed/",                 2, "media"),
+            ("indiewire",       "https://www.indiewire.com/feed",             2, "media"),
+            ("vulture",         "https://www.vulture.com/rss/index.xml",      2, "media"),
+            ("guardian-film",   "https://www.theguardian.com/film/rss",       2, "media"),
+            ("collider",        "https://collider.com/feed/",                 3, "media"),
+        ],
+    },
+
     "crypto": {
+        "title": "Криптовалюты",
+        "emoji": "₿",
+        "aliases": ("крипта", "криптовалюты", "crypto", "блокчейн"),
         "persona": (
             "разработчик и инвестор в криптовалютах. Интересны: протоколы и "
             "обновления сетей, регулирование, крупные движения капитала, взломы и "
@@ -84,6 +372,9 @@ BUILTIN = {
     },
 
     "cybersec": {
+        "title": "Кибербезопасность",
+        "emoji": "🛡",
+        "aliases": ("безопасность", "инфобез", "кибербез", "security", "cybersec"),
         "persona": (
             "инженер по информационной безопасности. Интересны: активно "
             "эксплуатируемые уязвимости, крупные утечки и взломы, новые техники "
@@ -103,8 +394,12 @@ BUILTIN = {
         ],
     },
 
-    # Своя тема: скопируйте блок, замените фиды/persona и поставьте topic = "custom".
+    # Свой раздел: скопируйте блок, замените фиды/persona и включите его
+    # командой /sections add custom.
     "custom": {
+        "title": "Свой раздел",
+        "emoji": "📌",
+        "aliases": ("свой", "custom"),
         "persona": "внимательный читатель, которому важны факты, а не мнения.",
         "keywords": ["news"],
         "feeds": [
@@ -113,14 +408,36 @@ BUILTIN = {
     },
 }
 
-#: то, чем пользуется остальной код. Наполняется встроенными темами, а поверх
-#: них — пользовательскими из ~/.newsdigest/profiles.json (см. userprofiles.py).
+#: разделы утреннего выпуска по умолчанию и порядок, в котором они идут.
+#: Крипта, инфобез и «свой» остаются доступными, но в подборку не лезут:
+#: их включают вручную — /sections add crypto.
+DEFAULT_SECTIONS = [
+    "ai", "hardware", "robots", "space", "science", "medicine", "health",
+    "politics", "economy", "sports", "incidents", "cinema",
+]
+
+#: то, чем пользуется остальной код. Наполняется встроенными разделами, а
+#: поверх них — пользовательскими из ~/.newsdigest/profiles.json (userprofiles).
 PROFILES = {name: dict(body) for name, body in BUILTIN.items()}
 
 
 def profile(topic: str = "") -> dict:
     prof = PROFILES.get(topic or CFG["topic"])
     if not prof:
-        sys.exit("Неизвестная тема %r. Доступны: %s"
+        sys.exit("Неизвестный раздел %r. Доступны: %s"
                  % (topic or CFG["topic"], ", ".join(PROFILES)))
     return prof
+
+
+def title(topic: str) -> str:
+    """Человеческое название раздела: «Медицина» вместо medicine."""
+    return str(PROFILES.get(topic, {}).get("title") or topic)
+
+
+def emoji(topic: str) -> str:
+    return str(PROFILES.get(topic, {}).get("emoji") or "📌")
+
+
+def label(topic: str) -> str:
+    """«🩺 Медицина» — то, что видно в списках и заголовках выпуска."""
+    return "%s %s" % (emoji(topic), title(topic))

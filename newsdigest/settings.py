@@ -11,9 +11,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config, subscribers
+from . import config, sections, subscribers
 from .config import CFG, write_env
-from .profiles import PROFILES
+from .profiles import title
 
 TRUE = ("1", "true", "yes", "on", "да", "вкл", "включить")
 FALSE = ("0", "false", "no", "off", "нет", "выкл", "выключить")
@@ -91,10 +91,37 @@ def as_quiet(raw):
 
 
 def as_topic(raw):
-    value = raw.strip()
-    if value not in PROFILES:
-        raise Invalid("такой темы нет. Есть: %s" % ", ".join(sorted(PROFILES)))
+    value = sections.resolve(raw)
+    if not value:
+        raise Invalid("такого раздела нет. Есть: %s"
+                      % ", ".join(sections.known()))
     return value
+
+
+def as_sections(raw):
+    """Список разделов утреннего выпуска. Понимает «все» и «по умолчанию»."""
+    value = raw.strip().lower()
+    if value in ("все", "всё", "all", "*"):
+        return sections.store(sections.known())
+    if value in ("по умолчанию", "умолчание", "default", "сброс", "reset", "-"):
+        return ""
+    topics, unknown = sections.parse(raw)
+    if unknown:
+        raise Invalid("не знаю раздел(ы): %s. Список — /sections"
+                      % ", ".join(unknown))
+    if not topics:
+        raise Invalid("не выбрано ни одного раздела. Список — /sections")
+    if len(topics) > sections.MAX_SECTIONS:
+        raise Invalid("больше %d разделов в выпуске — это уже лента"
+                      % sections.MAX_SECTIONS)
+    return sections.store(topics)
+
+
+def show_sections(value):
+    topics, _unknown = sections.parse(value or "")
+    if not topics:
+        return "по умолчанию (%d)" % len(sections.defaults())
+    return ", ".join(title(topic) for topic in topics)
 
 
 def as_tz(raw):
@@ -122,14 +149,19 @@ def on_off(value):
 # ------------------------------------------------------------------- реестр
 SPEC = {
     "topic": Setting("topic", "ND_TOPIC", as_topic,
-                     "тема выпуска: " + ", ".join(sorted(PROFILES))),
+                     "раздел по умолчанию: для /news без имени и для срочных"),
+    "sections": Setting("sections", "ND_SECTIONS", as_sections,
+                        "разделы утреннего выпуска через запятую "
+                        "(«все», «по умолчанию»)", show_sections),
+    "each": Setting("per_section", "ND_PER_SECTION", as_int(1, 5),
+                    "сколько новостей на раздел в утреннем выпуске"),
     "time": Setting("send_at", "ND_SEND_AT", as_time,
                     "во сколько присылать выпуск, ЧЧ:ММ"),
     "tz": Setting("tz", "ND_TZ", as_tz, "часовой пояс, например Europe/Riga"),
     "max": Setting("max_items", "ND_MAX_ITEMS", as_int(1, 20),
-                   "сколько новостей в выпуске максимум"),
+                   "новостей в выпуске, когда раздел всего один"),
     "min": Setting("min_items", "ND_MIN_ITEMS", as_int(1, 20),
-                   "ниже этого числа выпуск считается тихим днём"),
+                   "ниже этого числа выпуск из одного раздела считается тихим днём"),
     "score": Setting("min_score", "ND_MIN_SCORE", as_float(1, 10),
                      "порог важности 1-10: ниже не публикуем"),
     "every": Setting("collect_every_h", "ND_COLLECT_EVERY", as_int(1, 24),
@@ -159,6 +191,8 @@ ALIASES = {
     "порог": "score", "collect_every": "every", "язык": "language",
     "тихо": "quiet", "срочные": "breaking", "кнопки": "buttons",
     "feedback_weight": "taste", "вкусы": "taste", "звук": "silent",
+    "разделы": "sections", "темы": "sections", "topics": "sections",
+    "per_section": "each", "на_раздел": "each", "поразделу": "each",
 }
 
 
@@ -204,7 +238,8 @@ def overview():
 
 # ---------------------------------------------------- личные настройки чата
 #: что подписчик волен менять у себя; остальное — только владелец
-PERSONAL = {"topic": "topic", "time": "send_at", "tz": "tz", "language": "language",
+PERSONAL = {"topic": "topic", "sections": "sections", "each": "per_section",
+            "time": "send_at", "tz": "tz", "language": "language",
             "max": "max_items", "score": "min_score", "silent": "silent"}
 
 
@@ -214,7 +249,7 @@ def personal_view(sub) -> dict:
         return {}
     out = {}
     for name, field in PERSONAL.items():
-        value = sub[field]
+        value = subscribers.field_of(sub, field)
         if value in (None, subscribers.BLANK[field]):
             continue
         out[name] = SPEC[name].show(bool(value) if field == "silent" else value)

@@ -32,8 +32,11 @@ class PipelineCase(unittest.TestCase):
             conn.execute("DELETE FROM %s" % table)
         conn.commit()
         conn.close()
-        self.saved_topic = CFG["topic"]
+        # классические проверки — про выпуск одного раздела: отбор, лимиты,
+        # история. Подборка по всем разделам проверяется в test_sections.py
+        self.saved = {"topic": CFG["topic"], "sections": CFG["sections"]}
         CFG["topic"] = "ai"
+        CFG["sections"] = "ai"
 
         self.sent = []
         self.ranked_personas = []
@@ -45,7 +48,7 @@ class PipelineCase(unittest.TestCase):
 
     def tearDown(self):
         pipeline.tg_send, pipeline.rank_clusters, pipeline.summarize = self._real
-        CFG["topic"] = self.saved_topic
+        CFG.update(self.saved)
 
     def fake_rank(self, clusters, persona):
         """Все кандидаты выше порога — так проверяется отбор, а не порог."""
@@ -225,10 +228,10 @@ class TestPerSubscriber(PipelineCase):
         # повтор тому же читателю — молчок, а второму всё ещё есть что слать
         self.assertEqual(pipeline.build_and_send(sub=first)["sent"], 0)
 
-    def test_personal_topic_filters_sources(self):
+    def test_personal_sections_filter_sources(self):
         self.fill(5, topic="ai")
         self.fill(5, topic="crypto")
-        sub = self.subscriber("c", topic="crypto")
+        sub = self.subscriber("c", sections="crypto")
         pipeline.build_and_send(sub=sub)
         conn = storage.db()
         try:

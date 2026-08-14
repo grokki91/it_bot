@@ -18,13 +18,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, subscribers
+from . import config, sections, subscribers
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .llm import LLMError, llm_cost, rank_clusters, summarize
-from .pipeline import fresh_items
-from .profiles import profile
-from .rank import already_sent, cluster, prescore, primary_of
+from .pipeline import for_topic, fresh_rows
+from .rank import SentIndex, cluster, prescore, primary_of
 from .render import breaking_card, feedback_keyboard
 from .storage import db, log_run, meta_get, meta_set
 from .telegram import tg_send
@@ -82,15 +81,26 @@ def is_hot(group) -> bool:
     return max(i["social"] for i in group) >= CFG["breaking_social"]
 
 
-def candidates(conn, chat_id=""):
-    """Свежие неотправленные кластеры, похожие на срочные, лучшие — первыми."""
+def candidates(conn, chat_id="", topics=None):
+    """Свежие неотправленные кластеры, похожие на срочные, лучшие — первыми.
+
+    Смотрим по всем разделам читателя: землетрясение или отставка правительства
+    ждать до утра должны не больше, чем релиз новой модели.
+    """
     cutoff = (datetime.now(timezone.utc)
               - timedelta(hours=CFG["breaking_window_h"])).isoformat()
-    rows = [r for r in fresh_items(conn, CFG["topic"]) if r["fetched_at"] > cutoff]
+    everything = fresh_rows(conn)
+    seen, rows = set(), []
+    for topic in (topics or [CFG["topic"]]):
+        for row in for_topic(everything, topic):
+            if row["fetched_at"] > cutoff and row["url_hash"] not in seen:
+                seen.add(row["url_hash"])
+                rows.append(row)
     if not rows:
         return []
+    index = SentIndex(conn, chat_id)
     hot = [g for g in cluster(rows, CFG["similarity"]) if is_hot(g)]
-    hot = [g for g in hot if not already_sent(conn, g, CFG["similarity"], chat_id)]
+    hot = [g for g in hot if not index.seen(g, CFG["similarity"])]
     return sorted(hot, key=prescore, reverse=True)[:MAX_CANDIDATES]
 
 
@@ -125,13 +135,13 @@ def _check(chat_id, sub) -> int:
             log.debug("Срочные не проверяю: %s", skip)
             return 0
 
-        groups = candidates(conn, chat_id)
+        topics = sections.plan(sub)
+        groups = candidates(conn, chat_id, topics)
         stats["candidates"] = len(groups)
         if not groups:
             return 0
 
-        prof = profile()
-        persona = prof["persona"] + persona_hint(conn, chat_id)
+        persona = sections.persona(topics) + persona_hint(conn, chat_id)
         try:
             ranking, usage = rank_clusters(groups, persona)
             stats["cost"] += llm_cost(usage)

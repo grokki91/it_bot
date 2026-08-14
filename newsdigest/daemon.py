@@ -13,7 +13,7 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import breaking, config, subscribers
+from . import breaking, config, sections, subscribers
 from .bot import Worker, drain_backlog, poll_forever
 from .config import CFG, HOME, LOG_FILE, log, tz_label
 from .feedparse import parse_date
@@ -99,8 +99,11 @@ def scheduler_loop(worker, stop) -> None:
 
 
 def daemon():
-    log.info("Демон запущен. Тема: %s. Отправка в %s (%s). Сбор раз в %d ч.",
-             CFG["topic"], CFG["send_at"], tz_label(), CFG["collect_every_h"])
+    plan = sections.plan()
+    log.info("Демон запущен. Разделов: %d (%s). Отправка в %s (%s) по %d новости "
+             "на раздел. Сбор раз в %d ч.",
+             len(plan), ", ".join(plan), CFG["send_at"], tz_label(),
+             CFG["per_section"], CFG["collect_every_h"])
     log.info("Каталог данных: %s | лог: %s", HOME, LOG_FILE)
     from .cli import require_secrets
     require_secrets()

@@ -51,7 +51,7 @@ def fetch_source(src):
     return src, out, ""
 
 
-def fetch_hackernews():
+def fetch_hackernews(keywords=None):
     """HN даёт готовый числовой сигнал важности — баллы и комментарии."""
     since = int(time.time()) - CFG["window_hours"] * 3600
     url = ("https://hn.algolia.com/api/v1/search_by_date?tags=story"
@@ -64,7 +64,7 @@ def fetch_hackernews():
         log.warning("Hacker News недоступен: %s", exc)
         return []
 
-    keywords = keywords_for()
+    keywords = keywords_for() if keywords is None else keywords
     out = []
     for hit in hits:
         title = strip_html(hit.get("title") or "", 300)
@@ -116,10 +116,15 @@ def mark_health(conn, source_id, ok, err="", count=0):
     conn.commit()
 
 
-def collect() -> dict:
+def collect(topics=None) -> dict:
+    """Обходит источники. topics=None — все разделы, которые кто-то читает;
+    список разделов — только их фиды (так /news отвечает за секунды, а не
+    ждёт обхода сотни источников)."""
     conn = db()
     stats = {"ok": 0, "failed": 0, "muted": 0, "fetched": 0, "new": 0}
-    feeds = all_feeds(topics_in_use(conn))
+    partial = topics is not None
+    topics = list(topics) if partial else topics_in_use(conn)
+    feeds = all_feeds(topics)
     sources = [s for s in feeds if not is_muted(conn, s[0])]
     stats["muted"] = len(feeds) - len(sources)
 
@@ -136,7 +141,7 @@ def collect() -> dict:
                 rows.extend(items)
 
     if CFG["use_hackernews"]:
-        rows.extend(fetch_hackernews())
+        rows.extend(fetch_hackernews(keywords_for(topics)))
 
     stats["fetched"] = len(rows)
     before = conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
@@ -159,7 +164,12 @@ def collect() -> dict:
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
     conn.commit()
 
-    meta_set(conn, "last_collect", now_iso())
+    # частичный сбор (один раздел по команде /news) не считается обходом всего
+    # списка: иначе плановый сбор отложился бы на несколько часов
+    if partial:
+        stats["topics"] = topics
+    else:
+        meta_set(conn, "last_collect", now_iso())
     log_run(conn, "collect", "ok", stats)
     conn.close()
     log.info("Сбор: источников ok=%d, ошибок=%d, отключено=%d, получено=%d, новых=%d",
@@ -168,21 +178,31 @@ def collect() -> dict:
 
 
 def topics_in_use(conn=None) -> list:
-    """Темы, которые кто-то читает: общая плюс личные темы подписчиков.
+    """Разделы, которые кто-то читает: общие плюс личные разделы подписчиков.
 
     Собирать надо для всех сразу — один обход фидов на всех подписчиков,
     а не по обходу на каждого.
     """
+    from .sections import defaults, for_sub
     from .subscribers import active
 
-    topics = [CFG["topic"]]
+    topics = []
+
+    def add(name):
+        name = (name or "").strip()
+        if name and name in PROFILES and name not in topics:
+            topics.append(name)
+
+    add(CFG["topic"])               # раздел по умолчанию: /news и срочные
+    for name in defaults():
+        add(name)
     close = conn is None
     conn = conn or db()
     try:
         for sub in active(conn):
-            topic = (sub["topic"] or "").strip()
-            if topic and topic in PROFILES and topic not in topics:
-                topics.append(topic)
+            add(sub["topic"])
+            for name in for_sub(sub):
+                add(name)
     except sqlite3.Error as exc:                # база ещё не готова — не беда
         log.debug("Не смог прочитать подписчиков: %s", exc)
     finally:

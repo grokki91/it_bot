@@ -15,7 +15,10 @@
         "keywords":     ["mlops"],
         "persona":      "…"                 // заменяет встроенный портрет
       },
-      "гаджеты": { "persona": "…", "keywords": [...], "feeds": [...] }
+      "гаджеты": {
+        "title": "Гаджеты", "emoji": "📱", "aliases": ["gadgets"],
+        "persona": "…", "keywords": [...], "feeds": [...]
+      }
     }
 
 Для встроенной темы правка ДОПОЛНЯЕТ её (а remove_feeds убирает лишнее);
@@ -79,22 +82,25 @@ def _feed_tuple(raw):
 
 
 def apply() -> dict:
-    """Пересобирает PROFILES: встроенные темы плюс пользовательская правка."""
+    """Пересобирает PROFILES: встроенные разделы плюс пользовательская правка."""
     user = read()
     merged = {}
     for name, body in BUILTIN.items():
-        merged[name] = {"persona": body["persona"],
-                        "keywords": list(body["keywords"]),
-                        "feeds": list(body["feeds"])}
+        merged[name] = dict(body, keywords=list(body["keywords"]),
+                            feeds=list(body["feeds"]))
 
     for name, patch in user.items():
         if not isinstance(patch, dict):
-            log.error("profiles.json: тема %r описана неправильно — пропускаю", name)
+            log.error("profiles.json: раздел %r описан неправильно — пропускаю", name)
             continue
         base = merged.setdefault(name, {"persona": "внимательный читатель.",
-                                        "keywords": [], "feeds": []})
-        if patch.get("persona"):
-            base["persona"] = str(patch["persona"])
+                                        "title": name, "emoji": "📌",
+                                        "aliases": (), "keywords": [], "feeds": []})
+        for field in ("persona", "title", "emoji"):
+            if patch.get(field):
+                base[field] = str(patch[field])
+        if patch.get("aliases"):
+            base["aliases"] = tuple(str(a) for a in patch["aliases"])
 
         drop = {str(x) for x in (patch.get("remove_feeds") or [])}
         if drop:
