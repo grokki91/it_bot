@@ -114,6 +114,12 @@ def daemon():
     threading.Thread(target=scheduler_loop, args=(worker, stop),
                      name="nd-scheduler", daemon=True).start()
 
+    if CFG["web"]:
+        # страница живёт в том же процессе: ей нужен тот же worker, иначе
+        # /digest со страницы не увидит, что выпуск уже собирается
+        from . import web as webui
+        webui.start_background(worker)
+
     if not CFG["listen"]:
         log.info("Приём команд выключен (ND_LISTEN=0) — работаю только по расписанию")
         try:

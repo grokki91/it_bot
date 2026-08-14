@@ -37,7 +37,26 @@ def tg_call(method, payload, attempts=4, timeout=30):
     raise RuntimeError("Telegram недоступен: %s" % last)
 
 
+def mirror(chat_id, text, keyboard=None, kind="bot") -> None:
+    """Копия сообщения в базу — из неё читает веб-страница.
+
+    Делается ДО отправки: страница задумана как замена Telegram, и выпуск
+    должен быть виден в браузере, даже если Bot API сейчас недоступен.
+    Сбой записи не должен мешать отправке, поэтому глушим всё.
+    """
+    try:
+        from .storage import db, save_outbox
+        conn = db()
+        try:
+            save_outbox(conn, chat_id, text, keyboard, kind)
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — зеркало не важнее отправки
+        log.debug("Копия сообщения не сохранилась: %s", exc)
+
+
 def tg_send(chat_id, text, keyboard=None, silent=None):
+    mirror(chat_id, text, keyboard)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "disable_web_page_preview": not CFG["link_preview"],
                "disable_notification": bool(CFG["silent"] if silent is None else silent)}

@@ -145,6 +145,12 @@ def cmd_doctor(_args):
     print("Новостей     : %d-%d, порог важности %.1f"
           % (CFG["min_items"], CFG["max_items"], CFG["min_score"]))
     print("Модели       :", CFG["model_rank"], "/", CFG["model_summary"])
+    if CFG["web"]:
+        print("Страница     : http://%s:%s/ (пароль в %s, ND_WEB_TOKEN)"
+              % ("<ip-вашего-vps>" if CFG["web_host"] == "0.0.0.0"
+                 else CFG["web_host"], CFG["web_port"], ENV_FILE))
+    else:
+        print("Страница     : выключена (ND_WEB=1 включит)")
     print()
     good = True
 
@@ -224,6 +230,22 @@ def cmd_run(args):
     if not args.no_collect:
         collect()
     build_and_send(dry_run=args.dry_run)
+    return 0
+
+
+def cmd_web(args):
+    """Страница отдельно от демона: удобно, когда демон уже крутится."""
+    from .bot import Worker
+    from .web import serve, token
+
+    require_secrets()
+    print("Пароль страницы: %s" % token())
+    print("Открывать: http://<ip-вашего-vps>:%s/\n"
+          % (args.port or CFG["web_port"]))
+    print("Это обычный HTTP без шифрования — пускайте только себя.")
+    print("Безопаснее так: ND_WEB_HOST=127.0.0.1 и ssh -L %s:localhost:%s user@vps\n"
+          % (args.port or CFG["web_port"], args.port or CFG["web_port"]))
+    serve(Worker().start(), args.host, args.port)
     return 0
 
 
@@ -385,6 +407,12 @@ def build_parser():
 
     sub.add_parser("daemon", help="фоновый режим по расписанию").set_defaults(
         func=lambda a: daemon())
+
+    web = sub.add_parser("web", help="только страница в браузере, без демона")
+    web.add_argument("--host", default="", help="по умолчанию ND_WEB_HOST")
+    web.add_argument("--port", type=int, default=0, help="по умолчанию ND_WEB_PORT")
+    web.set_defaults(func=cmd_web)
+
     sub.add_parser("status", help="прогоны, расход, здоровье источников").set_defaults(
         func=cmd_status)
     sub.add_parser("service", help="напечатать unit-файл systemd").set_defaults(
