@@ -237,5 +237,94 @@ class TestCheck(BreakingCase):
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
 
 
+class TestGrouped(BreakingCase):
+    """Группировка подписчиков: один запрос к модели на одинаковые разделы."""
+
+    def setUp(self):
+        super().setUp()
+        self.ranked = []          # по запросу на каждый заход модели
+        self.written = []         # то же для карточек
+
+        def rank(groups, persona):
+            self.ranked.append(len(groups))
+            return ([{"id": i, "score": 9.2, "category": "labs"}
+                     for i in range(len(groups))], {"in": 5, "out": 5})
+
+        def write(picked, persona, language):
+            self.written.append(language)
+            return ({0: {"headline": "Срочный заголовок", "what": "суть",
+                         "why": "важно"}}, {"in": 5, "out": 5})
+
+        breaking.rank_clusters = rank
+        breaking.summarize = write
+
+    def reader(self, chat_id, topics="", **fields):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, chat_id, role="member", title="тест")
+            if topics:
+                subscribers.set_field(conn, chat_id, "sections", topics)
+            for field, value in fields.items():
+                subscribers.set_field(conn, chat_id, field, value)
+            return subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
+
+    def chats(self):
+        return sorted(chat for chat, _text in self.sent)
+
+    def test_same_sections_share_one_ranking(self):
+        readers = [self.reader(c, "ai") for c in ("101", "102", "103")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check_all(readers), 3)
+        self.assertEqual(self.chats(), ["101", "102", "103"])
+        self.assertEqual(self.ranked, [1])     # один заход на всю группу
+        self.assertEqual(self.written, ["русский"])   # и одна карточка на всех
+
+    def test_different_sections_are_ranked_apart(self):
+        readers = [self.reader("101", "ai"), self.reader("102", "crypto")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.fill(["coindesk", "cointelegraph", "ethereum-blog"],
+                  title="Крупное обновление сети", tiers={"ethereum-blog": 1})
+        self.assertEqual(breaking.check_all(readers), 2)
+        self.assertEqual(self.chats(), ["101", "102"])
+        self.assertEqual(self.ranked, [1, 1])  # разделы разные — запросы тоже
+
+    def test_history_stays_personal_inside_group(self):
+        readers = [self.reader("101", "ai"), self.reader("102", "ai")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check(chat_id="101"), 1)
+
+        self.sent, self.ranked, self.written = [], [], []
+        self.assertEqual(breaking.check_all(readers), 1)
+        self.assertEqual(self.chats(), ["102"])
+        self.assertEqual(self.ranked, [1])     # 101 своё уже видел — остался один
+
+    def test_language_of_the_card_stays_personal(self):
+        readers = [self.reader("101", "ai"),
+                   self.reader("102", "ai", language="english")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check_all(readers), 2)
+        self.assertEqual(self.ranked, [1])
+        self.assertEqual(sorted(self.written), ["english", "русский"])
+
+    def test_blocked_readers_do_not_reach_the_model(self):
+        readers = [self.reader("101", "ai", paused=1),
+                   self.reader("102", "ai", paused=1)]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check_all(readers), 0)
+        self.assertEqual(self.ranked, [])      # платить не за кого
+
+    def test_model_failure_leaves_everyone_silent(self):
+        def broken(groups, persona):
+            raise LLMError("нет связи")
+
+        breaking.rank_clusters = broken
+        readers = [self.reader("101", "ai"), self.reader("102", "ai")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check_all(readers), 0)
+        self.assertEqual(self.sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()

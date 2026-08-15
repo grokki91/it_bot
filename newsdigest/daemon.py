@@ -84,11 +84,12 @@ def tick(worker) -> None:
 
     if need_collect:
         # срочное ищем сразу после сбора: свежие материалы уже в базе,
-        # а до планового выпуска может оставаться много часов
+        # а до планового выпуска может оставаться много часов. Подписчиков
+        # проверяем разом: у кого разделы совпадают, тем хватит одной оценки
+        # модели на всех
         def job():
             collect()
-            for sub in waiting:
-                breaking.check(sub=sub)
+            breaking.check_all(waiting)
         worker.submit("collect", job)
 
 
