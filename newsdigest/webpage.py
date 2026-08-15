@@ -105,6 +105,8 @@ main {
   border-radius: 999px; padding: 5px 12px; font-size: 14px;
 }
 .key.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.key.fold { color: var(--dim); }
+.folded { display: none; }
 .empty { color: var(--dim); text-align: center; padding: 40px 0; }
 
 footer {
@@ -273,13 +275,39 @@ function drawMessage(message) {
       '<div class="at">' + esc(message.at) + '</div>';
   box.innerHTML = head + '<div class="body">' + message.html + '</div>';
   /* ряд кнопок = одна новость, как в Telegram */
-  (message.buttons || []).forEach(function (row) {
+  var rows = message.buttons || [];
+  var wrap = document.createElement('div');
+  rows.forEach(function (row) {
     var keys = document.createElement('div');
     keys.className = 'keys';
     row.forEach(function (button) { keys.appendChild(drawKey(button)); });
-    box.appendChild(keys);
+    wrap.appendChild(keys);
   });
+  /* десяток рядов реакций перетягивает на себя весь выпуск — прячем их
+     под одну кнопку, ровно как в Telegram */
+  if (message.fold) {
+    wrap.className = 'folded';
+    box.appendChild(drawFold(wrap, rows.length));
+  }
+  if (rows.length) { box.appendChild(wrap); }
   return box;
+}
+
+function drawFold(wrap, count) {
+  var keys = document.createElement('div');
+  keys.className = 'keys';
+  var el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'key fold';
+  el.textContent = '👍 👎 🔖 Оценить новости (' + count + ')';
+  el.onclick = function () {
+    var open = wrap.className !== 'folded';
+    wrap.className = open ? 'folded' : '';
+    el.textContent = open ? '👍 👎 🔖 Оценить новости (' + count + ')'
+                          : '▲ Свернуть';
+  };
+  keys.appendChild(el);
+  return keys;
 }
 
 function drawKey(button) {

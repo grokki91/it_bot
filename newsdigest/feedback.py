@@ -50,6 +50,19 @@ def save_bookmark(conn, chat_id, url_hash, facts=None) -> bool:
     return True
 
 
+def press_state(conn, chat_id):
+    """Что этот читатель уже нажал: {хэш: оценка} и множество закладок.
+
+    Нужно и странице, и боту: раскладку кнопок мы храним без отметок, а
+    галочки расставляем по базе в тот момент, когда показываем кнопки.
+    """
+    verdicts = {r["url_hash"]: r["verdict"] for r in conn.execute(
+        "SELECT url_hash, verdict FROM feedback WHERE chat_id=?", (str(chat_id),))}
+    saved = {r["url_hash"] for r in conn.execute(
+        "SELECT url_hash FROM saved WHERE chat_id=?", (str(chat_id),))}
+    return verdicts, saved
+
+
 def bookmarks(conn, chat_id, limit=15):
     return list(conn.execute(
         "SELECT title, url, source_id, at FROM saved WHERE chat_id=? "

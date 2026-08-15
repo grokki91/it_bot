@@ -57,6 +57,15 @@ class TestUpgradeFrom20(unittest.TestCase):
             [("h%d" % i, "сиг %d" % i, "Старая новость %d" % i,
               "https://e.com/%d" % i, "2026-08-01", "2026-08-01T09:00:00+00:00")
              for i in range(7)])
+        # копии сообщений версии 3.2: без message_id
+        old.executescript("""
+            CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL
+                DEFAULT '', kind TEXT NOT NULL DEFAULT 'bot', text TEXT NOT NULL,
+                keyboard TEXT NOT NULL DEFAULT '', at TEXT NOT NULL);
+        """)
+        old.execute("INSERT INTO outbox(chat_id,text,keyboard,at) VALUES "
+                    "(?,'старый выпуск','[]','2026-08-01T09:00:00+00:00')",
+                    (self.OWNER,))
         old.execute("INSERT INTO meta(k,v) VALUES ('extra_chats','555, 666')")
         old.execute("INSERT INTO meta(k,v) VALUES ('paused','1')")
         old.execute("INSERT INTO meta(k,v) VALUES ('last_digest_date','2026-08-01')")
@@ -99,6 +108,24 @@ class TestUpgradeFrom20(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("INSERT INTO sent(chat_id,url_hash,title,digest_date,"
                              "sent_at) VALUES ('другой','h0','дубль','2026-08-02','x')")
+        finally:
+            conn.close()
+
+    def test_outbox_gets_message_id(self):
+        """Старые копии сообщений остаются, у новых появляется номер в Telegram."""
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT * FROM outbox").fetchone()
+            self.assertEqual(row["text"], "старый выпуск")
+            self.assertEqual(row["message_id"], 0)      # старое развернуть нечем
+            self.assertEqual(storage.outbox_keyboard(conn, self.OWNER, 0), [])
+
+            new = storage.save_outbox(conn, self.OWNER, "выпуск",
+                                      [[{"text": "1 👍",
+                                         "callback_data": "fb:up:h1"}]])
+            storage.link_outbox(conn, new, 77)
+            keyboard = storage.outbox_keyboard(conn, self.OWNER, 77)
+            self.assertEqual(keyboard[0][0]["callback_data"], "fb:up:h1")
         finally:
             conn.close()
 

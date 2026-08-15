@@ -18,9 +18,10 @@ from . import config, feedback, sections, settings, subscribers, userprofiles
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
-from .render import esc, mark_pressed
+from .render import collapse, esc, expand, mark_pressed
 from .sources import all_feeds, collect, fetch_source
-from .storage import db, item_facts, meta_get, meta_set, take_leftover
+from .storage import (db, item_facts, meta_get, meta_set, outbox_keyboard,
+                      take_leftover)
 from .telegram import tg_answer_callback, tg_call, tg_edit_markup, tg_send
 
 #: сколько секунд держим long-poll соединение открытым
@@ -396,8 +397,9 @@ def cmd_taste(ctx):
     total = ctx.conn.execute("SELECT COUNT(*) c FROM feedback WHERE chat_id=?",
                              (ctx.chat_id,)).fetchone()["c"]
     if not total:
-        return ("Пока ничего не знаю о ваших вкусах. Жмите 👍 и 👎 под новостями — "
-                "через неделю выпуск начнёт подстраиваться.")
+        return ("Пока ничего не знаю о ваших вкусах. Под выпуском есть строка "
+                "«Оценить новости» — разверните и жмите 👍 или 👎, через неделю "
+                "выпуск начнёт подстраиваться.")
     liked, disliked = aff.top()
     lines = ["🎯 <b>Что я о вас понял</b>",
              "оценок собрано: %d, вес в отборе: %.2f" % (total, CFG["feedback_weight"])]
@@ -765,6 +767,31 @@ def handle_signup_callback(cb, chat_id, data) -> None:
     tg_send(chat_id, note, silent=True)
 
 
+def handle_fold_callback(cb, chat_id, message, kind) -> None:
+    """«Оценить новости» / «Свернуть»: разворачивает и прячет ряды реакций.
+
+    Полная раскладка берётся из копии сообщения: в callback_data все хэши не
+    влезут, а копия для веб-страницы хранится и так.
+    """
+    conn = db()
+    try:
+        full = outbox_keyboard(conn, chat_id, message.get("message_id"))
+        verdicts, saved = feedback.press_state(conn, chat_id)
+    finally:
+        conn.close()
+    if not full:
+        tg_answer_callback(cb.get("id"),
+                           "Кнопки этого выпуска уже не найти — он старый.")
+        return
+
+    keyboard = (expand(full, verdicts, saved) if kind == "more" else collapse(full))
+    tg_answer_callback(cb.get("id"))
+    try:
+        tg_edit_markup(chat_id, message.get("message_id"), keyboard)
+    except RuntimeError as exc:
+        log.debug("Разметку свернуть/развернуть не удалось: %s", exc)
+
+
 def handle_callback(cb, worker) -> None:
     """Нажатие кнопки: оценка под карточкой или решение по заявке."""
     message = cb.get("message") or {}
@@ -781,6 +808,9 @@ def handle_callback(cb, worker) -> None:
         return
 
     _, kind, url_hash = data.split(":", 2)
+    if kind in ("more", "less"):
+        handle_fold_callback(cb, chat_id, message, kind)
+        return
     conn = db()
     try:
         facts = item_facts(conn, url_hash)

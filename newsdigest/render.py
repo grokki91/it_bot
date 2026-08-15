@@ -206,6 +206,78 @@ def feedback_keyboard(cards):
     return keyboard
 
 
+#: свёрнутый вид: одна строка вместо десятков кнопок
+MORE, LESS = "fb:more:x", "fb:less:x"
+
+
+def data_of(button) -> str:
+    """callback_data кнопки. Раскладка может прийти из базы — не доверяем форме."""
+    return str(button.get("callback_data") or "") if isinstance(button, dict) else ""
+
+
+def is_feedback(keyboard) -> bool:
+    """True, если это раскладка реакций, а не заявка на подписку."""
+    rows = [row for row in (keyboard or []) if row]
+    return bool(rows) and all(data_of(b).startswith("fb:")
+                              for row in rows for b in row)
+
+
+def rows_of(keyboard) -> list:
+    """Ряды новостей: без служебных «показать/свернуть»."""
+    return [row for row in (keyboard or [])
+            if row and all(data_of(b) not in (MORE, LESS) for b in row)]
+
+
+def collapse(keyboard):
+    """Сворачивает раскладку в одну кнопку «Оценить новости».
+
+    Сворачивать нечего, если новость всего одна (срочное) или это вообще не
+    реакции: один ряд из трёх кнопок глаз не режет.
+    """
+    news = rows_of(keyboard)
+    if len(news) < 2 or not is_feedback(news):
+        return keyboard
+    return [[{"text": "👍 👎 🔖 Оценить новости (%d)" % len(news),
+              "callback_data": MORE}]]
+
+
+def expand(keyboard, verdicts=None, saved=None):
+    """Разворачивает свёрнутое: ряды новостей плюс строка «Свернуть».
+
+    Отметки о нажатом ставим заново из базы: сохранённая раскладка их не
+    помнит, а читателю важно видеть, что он уже оценил.
+    """
+    news = [[dict(button) for button in row if isinstance(button, dict)]
+            for row in rows_of(keyboard)]
+    news = [row for row in news if row]
+    if not news:
+        return keyboard             # разворачивать нечего — ничего не трогаем
+    for row in news:
+        for button in row:
+            bare = str(button.get("text") or "").replace(MARK, "")
+            button["text"] = bare + MARK if is_pressed(
+                data_of(button), verdicts, saved) else bare
+    return news + [[{"text": "▲ Свернуть", "callback_data": LESS}]]
+
+
+def is_pressed(data, verdicts=None, saved=None) -> bool:
+    """Нажата ли кнопка сейчас — по тому, что записано в базе."""
+    parts = str(data or "").split(":")
+    if len(parts) < 3 or parts[0] != "fb":
+        return False
+    kind, url_hash = parts[1], parts[2]
+    if kind == "save":
+        return url_hash in (saved or ())
+    return (verdicts or {}).get(url_hash) == kind
+
+
+def for_delivery(keyboard):
+    """Что показать под сообщением: свёрнутое или полное — по настройке."""
+    if not keyboard or str(CFG["feedback_style"]).lower() != "compact":
+        return keyboard
+    return collapse(keyboard)
+
+
 def mark_pressed(keyboard, data, pressed=True):
     """Отмечает нажатую кнопку галочкой прямо в присланной Telegram разметке.
 

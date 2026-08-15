@@ -120,6 +120,12 @@ class TestApply(SettingsCase):
         self.assertEqual(CFG["send_at"], before)
         self.assertFalse(config.ENV_FILE.exists())
 
+    def test_feedback_style(self):
+        self.assertEqual(settings.as_style(" Rows "), "rows")
+        self.assertEqual(settings.as_style("свёрнуто"), "compact")
+        with self.assertRaises(settings.Invalid):
+            settings.as_style("наполовину")
+
     def test_overview_covers_every_setting(self):
         rows = settings.overview()
         self.assertEqual(len(rows), len(settings.SPEC))

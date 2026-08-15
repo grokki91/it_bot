@@ -146,6 +146,25 @@ def on_off(value):
     return "вкл" if value else "выкл"
 
 
+#: свои названия свёрнутого и развёрнутого вида кнопок — чтобы не заучивать
+STYLES = {"compact": "compact", "свёрнуто": "compact", "свернуто": "compact",
+          "мало": "compact", "rows": "rows", "ряды": "rows", "все": "rows",
+          "полностью": "rows"}
+
+
+def as_style(raw):
+    value = STYLES.get(raw.strip().lower())
+    if not value:
+        raise Invalid("бывает compact (кнопки свёрнуты в одну строку) "
+                      "или rows (ряд под каждой новостью)")
+    return value
+
+
+def show_style(value):
+    return ("compact — свёрнуто в одну строку" if value == "compact"
+            else "rows — ряд под каждой новостью")
+
+
 # ------------------------------------------------------------------- реестр
 SPEC = {
     "topic": Setting("topic", "ND_TOPIC", as_topic,
@@ -177,6 +196,9 @@ SPEC = {
                      lambda v: v or "нет"),
     "buttons": Setting("feedback_buttons", "ND_FEEDBACK", as_bool,
                        "кнопки 👍/👎/🔖 под выпуском", on_off),
+    "style": Setting("feedback_style", "ND_FEEDBACK_STYLE", as_style,
+                     "как показывать кнопки: compact — свёрнуты в одну строку, "
+                     "rows — ряд под каждой новостью", show_style),
     "taste": Setting("feedback_weight", "ND_FEEDBACK_WEIGHT", as_float(0, 1),
                      "насколько сильно реакции двигают отбор, 0-1",
                      lambda v: "%.2f" % v),
@@ -190,6 +212,7 @@ ALIASES = {
     "max_items": "max", "min_items": "min", "min_score": "score",
     "порог": "score", "collect_every": "every", "язык": "language",
     "тихо": "quiet", "срочные": "breaking", "кнопки": "buttons",
+    "feedback_style": "style", "реакции": "style", "вид_кнопок": "style",
     "feedback_weight": "taste", "вкусы": "taste", "звук": "silent",
     "разделы": "sections", "темы": "sections", "topics": "sections",
     "per_section": "each", "на_раздел": "each", "поразделу": "each",

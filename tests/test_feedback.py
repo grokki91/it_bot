@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, rank, storage  # noqa: E402
+from newsdigest import bot, config, feedback, rank, render, storage  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 from test_core import item  # noqa: E402
@@ -110,8 +110,8 @@ class TestPersonaHint(FeedbackCase):
         self.assertIn("важное событие публикуй в любом случае", hint)
 
 
-class TestCallback(unittest.TestCase):
-    """Полный путь нажатия: апдейт → база → всплывашка → новая разметка."""
+class CallbackCase(unittest.TestCase):
+    """Общая обвязка нажатий: Telegram подменён списками ответов и правок."""
 
     def setUp(self):
         self.answers, self.edits = [], []
@@ -144,6 +144,10 @@ class TestCallback(unittest.TestCase):
             "message": {"message_id": 5, "chat": {"id": chat_id},
                         "reply_markup": {"inline_keyboard": keyboard or default}},
         }}, worker=None)
+
+
+class TestCallback(CallbackCase):
+    """Полный путь нажатия: апдейт → база → всплывашка → новая разметка."""
 
     def test_upvote_is_stored_with_facts_from_items(self):
         self.press("fb:up:hash1")
@@ -178,6 +182,55 @@ class TestCallback(unittest.TestCase):
         self.press("что-то не то")
         self.assertEqual(self.edits, [])
         self.assertEqual(self.answers, [""])
+
+
+class TestFolding(CallbackCase):
+    """Свёрнутые реакции: «Оценить» разворачивает, «Свернуть» прячет обратно."""
+
+    #: как выглядит полная раскладка двух новостей, сохранённая в outbox
+    FULL = [[{"text": "1 👍", "callback_data": "fb:up:hash1"},
+             {"text": "1 👎", "callback_data": "fb:down:hash1"},
+             {"text": "1 🔖", "callback_data": "fb:save:hash1"}],
+            [{"text": "2 👍", "callback_data": "fb:up:hash2"},
+             {"text": "2 👎", "callback_data": "fb:down:hash2"},
+             {"text": "2 🔖", "callback_data": "fb:save:hash2"}]]
+
+    def setUp(self):
+        super().setUp()
+        conn = storage.db()
+        conn.execute("DELETE FROM outbox")
+        conn.commit()
+        row = storage.save_outbox(conn, CHAT, "выпуск", self.FULL)
+        storage.link_outbox(conn, row, 5)       # сообщение №5, как в press()
+        conn.close()
+
+    def folded(self):
+        return [[{"text": "👍 👎 🔖 Оценить новости (2)",
+                  "callback_data": render.MORE}]]
+
+    def test_more_expands_saved_keyboard(self):
+        self.press(render.MORE, keyboard=self.folded())
+        self.assertEqual(len(self.edits[-1]), 3)            # 2 новости + «свернуть»
+        self.assertEqual(self.edits[-1][0][0]["text"], "1 👍")
+        self.assertEqual(self.edits[-1][-1][0]["callback_data"], render.LESS)
+
+    def test_expanded_view_shows_past_votes(self):
+        self.press("fb:up:hash1", keyboard=self.FULL)
+        self.press(render.MORE, keyboard=self.folded())
+        self.assertEqual(self.edits[-1][0][0]["text"], "1 👍✓")
+
+    def test_less_folds_back(self):
+        self.press(render.LESS, keyboard=self.FULL)
+        self.assertEqual(self.edits[-1], self.folded())
+
+    def test_unknown_message_says_so_instead_of_failing(self):
+        conn = storage.db()
+        conn.execute("DELETE FROM outbox")
+        conn.commit()
+        conn.close()
+        self.press(render.MORE, keyboard=self.folded())
+        self.assertEqual(self.edits, [])
+        self.assertIn("старый", self.answers[-1])
 
 
 if __name__ == "__main__":

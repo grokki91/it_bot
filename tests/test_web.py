@@ -191,6 +191,33 @@ class TestFeed(WebCase):
         self.assertIn("Дайджест", message["html"])
         self.assertEqual(message["buttons"][0][0]["text"], "1 👍")
         self.assertFalse(message["buttons"][0][0]["pressed"])
+        self.assertFalse(message["fold"])        # одна новость — прятать нечего
+
+    def test_many_reaction_rows_are_folded_on_the_page(self):
+        """Кнопки приезжают все, но страница прячет их под одну — как в чате."""
+        from newsdigest import telegram
+        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n},
+                     {"text": "%d 👎" % n, "callback_data": "fb:down:h%d" % n}]
+                    for n in (1, 2, 3)]
+        telegram.mirror(OWNER, "📡 <b>Дайджест</b>", keyboard)
+        self.login()
+        _code, body = self.ask("/api/feed")
+        message = body["messages"][-1]
+        self.assertTrue(message["fold"])
+        self.assertEqual(len(message["buttons"]), 3)
+
+    def test_rows_style_shows_everything_at_once(self):
+        from newsdigest import telegram
+        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n}]
+                    for n in (1, 2)]
+        telegram.mirror(OWNER, "выпуск", keyboard)
+        CFG["feedback_style"] = "rows"
+        try:
+            self.login()
+            _code, body = self.ask("/api/feed")
+        finally:
+            CFG["feedback_style"] = "compact"
+        self.assertFalse(body["messages"][-1]["fold"])
 
 
 class TestCommands(WebCase):

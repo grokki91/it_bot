@@ -23,7 +23,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import bot, config, feedback, sections, subscribers
+from . import bot, config, feedback, render, sections, subscribers
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile
@@ -162,22 +162,8 @@ def commands() -> list:
     return out
 
 
-def press_state(conn, chat):
-    verdicts = {r["url_hash"]: r["verdict"] for r in conn.execute(
-        "SELECT url_hash, verdict FROM feedback WHERE chat_id=?", (chat,))}
-    saved = {r["url_hash"] for r in conn.execute(
-        "SELECT url_hash FROM saved WHERE chat_id=?", (chat,))}
-    return verdicts, saved
-
-
-def is_pressed(data, verdicts, saved) -> bool:
-    parts = str(data or "").split(":")
-    if len(parts) < 3 or parts[0] != "fb":
-        return False
-    kind, url_hash = parts[1], parts[2]
-    if kind == "save":
-        return url_hash in saved
-    return verdicts.get(url_hash) == kind
+press_state = feedback.press_state
+is_pressed = render.is_pressed
 
 
 def buttons(raw, verdicts, saved) -> list:
@@ -186,7 +172,7 @@ def buttons(raw, verdicts, saved) -> list:
     except ValueError:
         return []
     rows = []
-    for line in keyboard:
+    for line in render.rows_of(keyboard):
         row = [{"text": str(b.get("text") or "").replace("✓", ""),
                 "data": str(b.get("callback_data") or ""),
                 "pressed": is_pressed(b.get("callback_data"), verdicts, saved)}
@@ -194,6 +180,13 @@ def buttons(raw, verdicts, saved) -> list:
         if row:
             rows.append(row)
     return rows
+
+
+def folded(rows) -> bool:
+    """Прятать ли реакции под одну кнопку — как и в Telegram, по настройке."""
+    return (len(rows) > 1
+            and str(CFG["feedback_style"]).lower() == "compact"
+            and all(str(b["data"]).startswith("fb:") for row in rows for b in row))
 
 
 def when(iso: str) -> str:
@@ -210,9 +203,12 @@ def feed(after=None, worker=None, toast="") -> dict:
         verdicts, saved = press_state(conn, chat)
     finally:
         conn.close()
-    messages = [{"id": r["id"], "kind": r["kind"], "at": when(r["at"]),
-                 "html": safe_html(r["text"]),
-                 "buttons": buttons(r["keyboard"], verdicts, saved)} for r in rows]
+    messages = []
+    for r in rows:
+        keys = buttons(r["keyboard"], verdicts, saved)
+        messages.append({"id": r["id"], "kind": r["kind"], "at": when(r["at"]),
+                         "html": safe_html(r["text"]), "buttons": keys,
+                         "fold": folded(keys)})
     last = messages[-1]["id"] if messages else (int(after or 0))
     return {"messages": messages, "last": last, "toast": toast,
             "state": state(worker), "commands": commands()}

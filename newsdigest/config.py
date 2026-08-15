@@ -109,6 +109,13 @@ CFG = {
 
     # --- обратная связь ------------------------------------------------------
     "feedback_buttons": True,      # [env ND_FEEDBACK] кнопки 👍/👎/🔖 под выпуском
+    # Ряд кнопок на каждую новость — это до тридцати кнопок под выпуском:
+    # столбик «1 👍 1 👎 1 🔖 / 2 👍 …» перетягивает на себя внимание и мешает
+    # читать сам дайджест. Поэтому по умолчанию кнопки свёрнуты в одну строку
+    # и разворачиваются по нажатию — оценить по-прежнему можно, но выпуск
+    # выглядит как выпуск, а не как пульт.
+    "feedback_style":  "compact",  # [env ND_FEEDBACK_STYLE] compact — свёрнуто
+                                   # в один ряд, rows — ряд под каждой новостью
     "feedback_weight":  0.25,      # насколько реакции двигают прескоринг.
                                    # 0 = кнопки собирают статистику, но ни на что
                                    # не влияют; 0.5 — вкусы почти важнее свежести
@@ -165,6 +172,7 @@ ENV_MAP = {
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_FEEDBACK": ("feedback_buttons",
                     lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_FEEDBACK_STYLE": ("feedback_style", str),
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
     "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),

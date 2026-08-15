@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import feedparse, rank, render, storage, textutil  # noqa: E402
+from newsdigest import (feedback, feedparse, rank, render, storage,  # noqa: E402
+                        textutil)
 from newsdigest.config import CFG  # noqa: E402
 
 
@@ -207,6 +208,45 @@ class TestRender(unittest.TestCase):
         finally:
             CFG["feedback_buttons"] = True
 
+    def test_collapse_hides_rows_behind_one_button(self):
+        keyboard = render.feedback_keyboard(self.cards(6))
+        folded = render.collapse(keyboard)
+        self.assertEqual(len(folded), 1)
+        self.assertEqual(len(folded[0]), 1)
+        self.assertIn("(6)", folded[0][0]["text"])
+        self.assertEqual(folded[0][0]["callback_data"], render.MORE)
+
+    def test_single_news_stays_as_is(self):
+        # три кнопки под срочной новостью прятать не за чем
+        keyboard = render.feedback_keyboard(self.cards(1))
+        self.assertEqual(render.collapse(keyboard), keyboard)
+
+    def test_expand_restores_rows_with_marks(self):
+        keyboard = render.feedback_keyboard(self.cards(3))
+        url_hash = keyboard[1][0]["callback_data"].split(":")[2]
+        rows = render.expand(keyboard, {url_hash: feedback.UP}, set())
+        self.assertEqual(len(rows), 4)                      # 3 новости + «свернуть»
+        self.assertEqual(rows[1][0]["text"], "2 👍✓")        # оценка видна сразу
+        self.assertEqual(rows[1][1]["text"], "2 👎")
+        self.assertEqual(rows[-1][0]["callback_data"], render.LESS)
+        # исходную раскладку разворачивание не портит
+        self.assertEqual(keyboard[1][0]["text"], "2 👍")
+
+    def test_delivery_follows_style(self):
+        keyboard = render.feedback_keyboard(self.cards(4))
+        CFG["feedback_style"] = "rows"
+        try:
+            self.assertEqual(render.for_delivery(keyboard), keyboard)
+        finally:
+            CFG["feedback_style"] = "compact"
+        self.assertEqual(len(render.for_delivery(keyboard)), 1)
+
+    def test_signup_keyboard_is_never_folded(self):
+        keyboard = [[{"text": "✅ Пустить", "callback_data": "sub:ok:1"},
+                     {"text": "🚫 Нет", "callback_data": "sub:no:1"}],
+                    [{"text": "ещё", "callback_data": "sub:ok:2"}]]
+        self.assertEqual(render.for_delivery(keyboard), keyboard)
+
     def test_mark_pressed_is_exclusive_for_verdicts(self):
         keyboard = render.feedback_keyboard(self.cards(2))
         up = keyboard[0][0]["callback_data"]
@@ -228,6 +268,41 @@ class TestRender(unittest.TestCase):
         render.mark_pressed(keyboard, save, pressed=False)
         self.assertEqual(keyboard[0][2]["text"], "1 🔖")
         self.assertEqual(keyboard[1][0]["text"], "2 👍")     # соседний ряд не тронут
+
+
+class TestSending(unittest.TestCase):
+    """Что уходит в Telegram и что при этом остаётся в базе."""
+
+    def setUp(self):
+        from newsdigest import telegram
+        self.payloads = []
+        self._real = telegram.tg_call
+        telegram.tg_call = lambda method, payload, **kw: (
+            self.payloads.append(payload) or {"message_id": 4242})
+        conn = storage.db()
+        conn.execute("DELETE FROM outbox")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        from newsdigest import telegram
+        telegram.tg_call = self._real
+
+    def test_long_keyboard_goes_out_folded_but_is_stored_whole(self):
+        from newsdigest import telegram
+        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n}]
+                    for n in (1, 2, 3)]
+        telegram.tg_send("77", "выпуск", keyboard=keyboard)
+        sent = self.payloads[0]["reply_markup"]["inline_keyboard"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0]["callback_data"], render.MORE)
+
+        conn = storage.db()
+        try:
+            # по номеру сообщения бот найдёт полную раскладку и развернёт её
+            self.assertEqual(len(storage.outbox_keyboard(conn, "77", 4242)), 3)
+        finally:
+            conn.close()
 
 
 class TestStorage(unittest.TestCase):

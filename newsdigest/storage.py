@@ -123,15 +123,20 @@ CREATE TABLE IF NOT EXISTS saved (
 
 -- Копии сообщений бота: их показывает веб-страница. Всё, что уходит в
 -- Telegram, попадает и сюда, поэтому в браузере видно ровно то же самое.
+-- message_id — номер того же сообщения в Telegram. По нему бот достаёт полную
+-- раскладку кнопок, когда читатель разворачивает свёрнутые реакции: в самой
+-- кнопке места нет (64 байта на всё), а в копии сообщения раскладка уже есть.
 CREATE TABLE IF NOT EXISTS outbox (
-    id       INTEGER PRIMARY KEY,
-    chat_id  TEXT NOT NULL DEFAULT '',
-    kind     TEXT NOT NULL DEFAULT 'bot',
-    text     TEXT NOT NULL,
-    keyboard TEXT NOT NULL DEFAULT '',
-    at       TEXT NOT NULL
+    id         INTEGER PRIMARY KEY,
+    chat_id    TEXT NOT NULL DEFAULT '',
+    kind       TEXT NOT NULL DEFAULT 'bot',
+    text       TEXT NOT NULL,
+    keyboard   TEXT NOT NULL DEFAULT '',
+    message_id INTEGER NOT NULL DEFAULT 0,
+    at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_chat ON outbox(chat_id, id);
+CREATE INDEX IF NOT EXISTS idx_outbox_message ON outbox(chat_id, message_id);
 """
 
 #: сколько последних сообщений храним для страницы (на каждый чат)
@@ -169,6 +174,13 @@ def upgrade(conn) -> None:
     """
     split_sent_by_chat(conn)
     add_sections(conn)
+    add_outbox_message_id(conn)
+
+
+def add_outbox_message_id(conn) -> None:
+    """Связь копии сообщения с номером в Telegram (3.3, свёрнутые реакции)."""
+    if table_exists(conn, "outbox"):
+        ensure_column(conn, "outbox", "message_id", "INTEGER NOT NULL DEFAULT 0")
 
 
 def add_sections(conn) -> None:
@@ -287,6 +299,27 @@ def save_outbox(conn, chat_id, text, keyboard=None, kind="bot") -> int:
                      (str(chat_id), new_id - OUTBOX_KEEP))
         conn.commit()
     return new_id
+
+
+def link_outbox(conn, row_id, message_id) -> None:
+    """Запоминает, каким номером сообщение ушло в Telegram."""
+    conn.execute("UPDATE outbox SET message_id=? WHERE id=?",
+                 (int(message_id), int(row_id)))
+    conn.commit()
+
+
+def outbox_keyboard(conn, chat_id, message_id) -> list:
+    """Полная раскладка кнопок отправленного сообщения (пусто — не нашли)."""
+    if not message_id:
+        return []
+    row = conn.execute(
+        "SELECT keyboard FROM outbox WHERE chat_id=? AND message_id=? "
+        "ORDER BY id DESC LIMIT 1", (str(chat_id), int(message_id))).fetchone()
+    try:
+        keyboard = json.loads(row["keyboard"]) if row and row["keyboard"] else []
+    except ValueError:
+        return []
+    return keyboard if isinstance(keyboard, list) else []
 
 
 def outbox_page(conn, chat_id, after=None, limit=60):
