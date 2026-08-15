@@ -79,8 +79,10 @@ def adopt_legacy(conn, owner):
         conn.execute("UPDATE subscribers SET paused=1 WHERE chat_id=?", (owner,))
     last = meta_get(conn, "last_digest_date", "")
     if last:
+        # день из одиночной версии закрываем целиком: в нём был ровно один
+        # выпуск, а метка теперь хранит ещё и его номер в сутках
         conn.execute("UPDATE subscribers SET last_digest=? WHERE chat_id=?",
-                     (last, owner))
+                     ("%s#%d" % (last, per_day()), owner))
     conn.commit()
 
 
@@ -112,9 +114,10 @@ def set_field(conn, chat_id, field, value):
     conn.commit()
 
 
-def set_last_digest(conn, chat_id, day):
+def set_last_digest(conn, chat_id, mark):
+    """Запоминает, какой выпуск подписчику уже ушёл. Метка — из slot_mark()."""
     conn.execute("UPDATE subscribers SET last_digest=? WHERE chat_id=?",
-                 (day, str(chat_id)))
+                 (mark, str(chat_id)))
     conn.commit()
 
 
@@ -219,6 +222,59 @@ def send_at_for(sub) -> tuple:
         return 9, 0
 
 
+#: больше четырёх выпусков в сутки — это уже лента, а не дайджест
+MAX_PER_DAY = 4
+
+
+def per_day() -> int:
+    """Сколько выпусков в сутки. Настройка общая: разделение по подписчикам
+    удорожало бы модель, а расписание у всех и так одно."""
+    try:
+        value = int(CFG["per_day"])
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(value, MAX_PER_DAY))
+
+
+def slots_for(sub=None) -> list:
+    """Минуты суток, в которые идёт выпуск: [540, 1260] — это 09:00 и 21:00.
+
+    Выпуски раскладываются по суткам равномерно от send_at, поэтому «дважды
+    в день» — это ваше время и оно же плюс 12 часов. Отсчёт ведётся от начала
+    суток (send_at % шаг), иначе последний выпуск наезжал бы на первый.
+    """
+    hour, minute = send_at_for(sub)
+    step = 1440 // per_day()
+    first = (hour * 60 + minute) % step
+    return [first + step * i for i in range(1440 // step)]
+
+
+def slot_index(sub=None, now=None) -> int:
+    """Какой выпуск суток уже пора отправить: 1, 2… 0 — первый ещё впереди."""
+    now = now if now is not None else now_for(sub)
+    minutes = now.hour * 60 + now.minute
+    passed = [i for i, at in enumerate(slots_for(sub), 1) if minutes >= at]
+    return passed[-1] if passed else 0
+
+
+def slot_mark(sub=None, now=None) -> str:
+    """Метка выпуска для колонки last_digest: «2026-08-15#2» — второй за день.
+
+    Раньше там лежала просто дата: один выпуск в сутки, один день — одна
+    запись. С несколькими выпусками дня уже мало, нужен ещё и номер.
+    """
+    now = now if now is not None else now_for(sub)
+    return "%s#%d" % (now.strftime("%Y-%m-%d"), slot_index(sub, now) or 1)
+
+
+def schedule_human(sub=None) -> str:
+    """«09:00 и 21:00» — все выпуски суток одной строкой, для логов и справки."""
+    times = ["%02d:%02d" % (at // 60, at % 60) for at in slots_for(sub)]
+    if len(times) == 1:
+        return times[0]
+    return "%s и %s" % (", ".join(times[:-1]), times[-1])
+
+
 #: пустой выпуск не занимает день целиком, но и повторять его каждую минуту
 #: нельзя: ранжирование стоит денег. Пробуем снова через час.
 RETRY_AFTER_H = 1
@@ -242,14 +298,18 @@ def retry_pending(conn, chat_id) -> bool:
 
 
 def due(conn):
-    """Кому пора отправлять выпуск прямо сейчас."""
+    """Кому пора отправлять выпуск прямо сейчас.
+
+    Пропущенный выпуск не догоняется: если бот молчал с утра, в девять вечера
+    придёт вечерний выпуск, а не два подряд — метка сравнивается с текущим
+    слотом, а не со всеми прошедшими.
+    """
     ready = []
     for sub in active(conn):
         now = now_for(sub)
-        if sub["last_digest"] == now.strftime("%Y-%m-%d"):
+        if not slot_index(sub, now):       # первый выпуск суток ещё впереди
             continue
-        hour, minute = send_at_for(sub)
-        if now.hour * 60 + now.minute < hour * 60 + minute:
+        if sub["last_digest"] == slot_mark(sub, now):
             continue
         if retry_pending(conn, sub["chat_id"]):
             continue
@@ -257,16 +317,12 @@ def due(conn):
     return ready
 
 
-def next_send_human(sub) -> str:
-    hour, minute = send_at_for(sub)
-    now = now_for(sub)
-    done_today = sub is not None and sub["last_digest"] == now.strftime("%Y-%m-%d")
-    passed = now.hour * 60 + now.minute >= hour * 60 + minute
-    when = "завтра" if (done_today or passed) else "сегодня"
+def next_send_human(sub=None, now=None) -> str:
+    """«сегодня в 21:00 (Europe/Riga)» — когда ждать следующий выпуск."""
+    now = now if now is not None else now_for(sub)
+    minutes = now.hour * 60 + now.minute
+    slots = slots_for(sub)
+    ahead = [at for at in slots if at > minutes]
+    when, at = ("сегодня", ahead[0]) if ahead else ("завтра", slots[0])
     label = (sub["tz"] if sub is not None and sub["tz"] else config.tz_label())
-    return "%s в %02d:%02d (%s)" % (when, hour, minute, label)
-
-
-def stale_day(sub) -> str:
-    """Вчерашняя дата в поясе подписчика — чтобы /digest не блокировал утренний."""
-    return (now_for(sub) - timedelta(days=1)).strftime("%Y-%m-%d")
+    return "%s в %02d:%02d (%s)" % (when, at // 60, at % 60, label)

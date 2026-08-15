@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Тесты диалогового слоя: разбор команд, доступ, фоновая очередь.
+"""Тесты диалогового слоя: разбор команд, доступ, расписание, фоновая очередь.
 
-Сеть не трогается: tg_send подменяется на список отправленных сообщений.
+Команд в Telegram нет — их выполняет страница, поэтому здесь они зовутся
+напрямую через HANDLERS, тем же путём, что и в web.run_command. Сеть не
+трогается: tg_send подменяется на список отправленных сообщений.
 """
 import logging
 import os
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
@@ -42,6 +45,7 @@ class BotCase(unittest.TestCase):
         config.TG_CHAT = self.OWNER
         self._signup = CFG["signup"]
         bot._REFUSED.clear()
+        bot._TOLD.clear()
         conn = storage.db()
         try:
             for table in ("leftover", "meta", "subscribers", "sent"):
@@ -60,6 +64,17 @@ class BotCase(unittest.TestCase):
         conn = storage.db()
         try:
             return subscribers.get(conn, chat_id or self.OWNER)
+        finally:
+            conn.close()
+
+    def command(self, text, chat_id=None, worker=None):
+        """Команда со страницы: тот же обработчик, что зовёт web.run_command."""
+        name, args = bot.parse_command(text)
+        cmd = bot.HANDLERS.get(name)
+        self.assertIsNotNone(cmd, "нет такой команды: %s" % text)
+        conn = storage.db()
+        try:
+            return cmd.fn(bot.Ctx(chat_id or self.OWNER, args, conn, worker)) or ""
         finally:
             conn.close()
 
@@ -149,45 +164,76 @@ class TestAccess(BotCase):
         self.assertTrue(bot.is_allowed("999"))
         self.assertTrue(bot.is_allowed("777"))
 
-    def test_owner_only_command_is_blocked_for_members(self):
+    def test_command_from_member_is_not_executed(self):
         conn = storage.db()
         subscribers.add(conn, "888", role="member")
         conn.close()
         self.message("/feed list", chat_id="888")
-        self.assertIn("только владельцу", self.sent.texts())
+        self.assertNotIn("источников раздела", self.sent.texts())
+        self.assertIn("только присылаю выпуски", self.sent.texts())
 
 
-class TestCommands(BotCase):
-    def test_help_lists_commands(self):
+class TestTelegramIsSendOnly(BotCase):
+    """В чате бот только рассылает: команды там не выполняются."""
+
+    def test_command_is_answered_once_and_does_nothing(self):
+        self.message("/pause")
+        self.assertFalse(self.sub()["paused"])
+        self.assertIn("команды в чате отключены", self.sent.texts())
+        before = len(self.sent)
+        self.message("/pause")
+        self.message("/status")
+        self.assertEqual(len(self.sent), before)   # объясняем один раз
+
+    def test_owner_is_pointed_at_the_page(self):
         self.message("/help")
-        text = self.sent.texts()
-        for name in ("/digest", "/more", "/status", "/pause"):
-            self.assertIn(name, text)
+        self.assertIn("на странице в браузере", self.sent.texts())
 
-    def test_start_is_alias_of_help(self):
-        self.message("/start")
-        self.assertIn("/digest", self.sent.texts())
-
-    def test_unknown_command(self):
-        self.message("/nosuchthing")
-        self.assertIn("Не знаю команду", self.sent.texts())
+    def test_member_is_pointed_at_the_owner(self):
+        conn = storage.db()
+        subscribers.add(conn, "888", role="member")
+        conn.close()
+        self.message("/help", chat_id="888")
+        self.assertIn("владельцу бота", self.sent.texts())
 
     def test_non_command_ignored(self):
         self.message("просто текст")
         self.assertEqual(self.sent, [])
 
+    def test_buttons_still_work(self):
+        answers = []
+        bot.tg_answer_callback = lambda cb, text="", alert=False: answers.append(text)
+        bot.tg_edit_markup = lambda *a, **kw: None
+        bot.handle_update({"update_id": 5, "callback_query": {
+            "id": "c", "data": "fb:up:hash1",
+            "message": {"message_id": 1, "chat": {"id": self.OWNER}}}})
+        self.assertIn("👍", answers[0])
+
+
+class TestCommands(BotCase):
+    """Команды выполняются со страницы — обработчики те же."""
+
+    def test_help_lists_commands(self):
+        text = self.command("/help")
+        for name in ("/digest", "/more", "/status", "/pause"):
+            self.assertIn(name, text)
+        self.assertIn("на странице", text)
+
+    def test_start_is_alias_of_help(self):
+        self.assertIn("/digest", self.command("/start"))
+
     def test_pause_and_resume(self):
-        self.message("/pause")
+        self.command("/pause")
         self.assertTrue(self.sub()["paused"])
-        self.message("/resume")
+        text = self.command("/resume")
         self.assertFalse(self.sub()["paused"])
-        self.assertIn("паузе", self.sent.texts())
+        self.assertIn("включена", text)
 
     def test_pause_is_personal(self):
         conn = storage.db()
         subscribers.add(conn, "888", role="member")
         conn.close()
-        self.message("/pause", chat_id="888")
+        self.command("/pause", chat_id="888")
         self.assertTrue(self.sub("888")["paused"])
         self.assertFalse(self.sub()["paused"])
 
@@ -195,15 +241,13 @@ class TestCommands(BotCase):
         conn = storage.db()
         subscribers.add(conn, "888", role="member")
         conn.close()
-        self.message("/stop", chat_id="888")
+        self.command("/stop", chat_id="888")
         self.assertFalse(bot.is_allowed("888"))
-        self.message("/stop")
-        self.assertIn("владелец", self.sent.texts())
+        self.assertIn("владелец", self.command("/stop"))
         self.assertTrue(bot.is_allowed(self.OWNER))
 
     def test_more_without_stock(self):
-        self.message("/more")
-        self.assertIn("Запас пуст", self.sent.texts())
+        self.assertIn("Запас пуст", self.command("/more"))
 
     def test_more_returns_and_consumes_stock(self):
         conn = storage.db()
@@ -212,35 +256,68 @@ class TestCommands(BotCase):
              "url": "https://e.com/%d" % i, "source_id": "src",
              "category": "media", "score": 9 - i} for i in range(4)])
         conn.close()
-        self.message("/more 2")
-        self.assertIn("Новость 0", self.sent.texts())
-        self.assertIn("Новость 1", self.sent.texts())
-        self.assertNotIn("Новость 2", self.sent.texts())
-        self.message("/more 2")            # второй заход отдаёт следующие
-        self.assertIn("Новость 2", self.sent.texts())
+        text = self.command("/more 2")
+        self.assertIn("Новость 0", text)
+        self.assertIn("Новость 1", text)
+        self.assertNotIn("Новость 2", text)
+        self.assertIn("Новость 2", self.command("/more 2"))   # следующие
 
     def test_status_reports_schedule(self):
-        self.message("/status")
-        self.assertIn("Следующий выпуск", self.sent.texts())
+        text = self.command("/status")
+        self.assertIn("Выпуски:", text)
+        self.assertIn("следующий", text)
 
     def test_settings_shows_topic(self):
-        self.message("/settings")
-        self.assertIn(config.CFG["topic"], self.sent.texts())
+        self.assertIn(config.CFG["topic"], self.command("/settings"))
 
 
 class TestSchedule(BotCase):
-    def test_next_send_switches_to_tomorrow(self):
-        saved = CFG["send_at"]
-        sub = self.sub()
-        try:
-            CFG["send_at"] = "00:01"       # уже прошло
-            self.assertIn("завтра", subscribers.next_send_human(sub))
-            CFG["send_at"] = "23:59"       # ещё будет
-            self.assertIn("сегодня", subscribers.next_send_human(sub))
-            CFG["send_at"] = "лунный полдень"
-            self.assertIn("09:00", subscribers.next_send_human(sub))
-        finally:
-            CFG["send_at"] = saved
+    """Расписание: выпуск в назначенное время и, если попросили, ещё раз."""
+
+    def setUp(self):
+        super().setUp()
+        self.saved = {k: CFG[k] for k in ("send_at", "per_day")}
+
+    def tearDown(self):
+        CFG.update(self.saved)
+        super().tearDown()
+
+    def test_twice_a_day_is_send_at_plus_twelve_hours(self):
+        CFG["send_at"], CFG["per_day"] = "09:00", 2
+        self.assertEqual(subscribers.slots_for(None), [9 * 60, 21 * 60])
+        self.assertEqual(subscribers.schedule_human(None), "09:00 и 21:00")
+
+        CFG["send_at"] = "21:00"           # тот же набор с другого конца
+        self.assertEqual(subscribers.slots_for(None), [9 * 60, 21 * 60])
+
+        CFG["per_day"] = 1
+        self.assertEqual(subscribers.slots_for(None), [21 * 60])
+        self.assertEqual(subscribers.schedule_human(None), "21:00")
+
+    def test_slot_number_grows_through_the_day(self):
+        CFG["send_at"], CFG["per_day"] = "09:00", 2
+        day = "2026-08-15"
+        for hour, expected in ((8, 0), (9, 1), (20, 1), (21, 2), (23, 2)):
+            now = datetime(2026, 8, 15, hour, 0)
+            self.assertEqual(subscribers.slot_index(None, now), expected, hour)
+            if expected:
+                self.assertEqual(subscribers.slot_mark(None, now),
+                                 "%s#%d" % (day, expected))
+
+    def test_next_send_walks_to_the_nearest_slot(self):
+        CFG["send_at"], CFG["per_day"] = "09:00", 2
+        at = lambda hour: subscribers.next_send_human(  # noqa: E731
+            None, datetime(2026, 8, 15, hour, 0))
+        self.assertIn("сегодня в 09:00", at(8))
+        self.assertIn("сегодня в 21:00", at(10))
+        self.assertIn("завтра в 09:00", at(22))
+
+        CFG["per_day"] = 1
+        self.assertIn("завтра в 09:00", at(10))
+
+    def test_broken_time_falls_back_to_nine(self):
+        CFG["send_at"], CFG["per_day"] = "лунный полдень", 1
+        self.assertIn("09:00", subscribers.next_send_human(None))
 
     def test_personal_time_wins_over_global(self):
         conn = storage.db()
@@ -250,22 +327,59 @@ class TestSchedule(BotCase):
             sub = subscribers.get(conn, "888")
         finally:
             conn.close()
+        CFG["per_day"] = 1
         self.assertEqual(subscribers.send_at_for(sub), (23, 59))
         self.assertIn("23:59", subscribers.next_send_human(sub))
 
-    def test_due_respects_pause_and_last_digest(self):
+    def test_due_respects_pause_and_the_mark(self):
+        CFG["send_at"], CFG["per_day"] = "00:00", 1
         conn = storage.db()
         try:
-            subscribers.set_field(conn, self.OWNER, "send_at", "00:01")
             self.assertIn(self.OWNER, [s["chat_id"] for s in subscribers.due(conn)])
 
             subscribers.set_field(conn, self.OWNER, "paused", 1)
             self.assertEqual(subscribers.due(conn), [])
 
             subscribers.set_field(conn, self.OWNER, "paused", 0)
-            today = subscribers.now_for(subscribers.get(conn, self.OWNER))
-            subscribers.set_last_digest(conn, self.OWNER, today.strftime("%Y-%m-%d"))
+            sub = subscribers.get(conn, self.OWNER)
+            subscribers.set_last_digest(conn, self.OWNER, subscribers.slot_mark(sub))
             self.assertEqual(subscribers.due(conn), [])
+        finally:
+            conn.close()
+
+    def test_second_slot_is_not_closed_by_the_first(self):
+        # 00:00 и 12:00 — в какое бы время ни шли тесты, один слот уже позади
+        CFG["send_at"], CFG["per_day"] = "00:00", 2
+        conn = storage.db()
+        try:
+            sub = subscribers.get(conn, self.OWNER)
+            now = subscribers.now_for(sub)
+            here = subscribers.slot_index(sub, now)
+            subscribers.set_last_digest(conn, self.OWNER,
+                                        subscribers.slot_mark(sub, now))
+            self.assertEqual(subscribers.due(conn), [])
+
+            neighbour = "%s#%d" % (now.strftime("%Y-%m-%d"), 3 - here)
+            subscribers.set_last_digest(conn, self.OWNER, neighbour)
+            self.assertIn(self.OWNER, [s["chat_id"] for s in subscribers.due(conn)])
+        finally:
+            conn.close()
+
+    def test_old_date_mark_is_upgraded_not_repeated(self):
+        """Метка из прошлой версии — просто дата — закрывает день целиком."""
+        CFG["send_at"], CFG["per_day"] = "00:00", 2
+        conn = storage.db()
+        try:
+            today = subscribers.now_for(subscribers.get(conn, self.OWNER))
+            conn.execute("UPDATE subscribers SET last_digest=? WHERE chat_id=?",
+                         (today.strftime("%Y-%m-%d"), self.OWNER))
+            conn.commit()
+        finally:
+            conn.close()
+        conn = storage.db()                # миграция идёт при открытии базы
+        try:
+            self.assertEqual(subscribers.get(conn, self.OWNER)["last_digest"],
+                             "%s#2" % today.strftime("%Y-%m-%d"))
         finally:
             conn.close()
 

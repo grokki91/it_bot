@@ -175,6 +175,29 @@ def upgrade(conn) -> None:
     split_sent_by_chat(conn)
     add_sections(conn)
     add_outbox_message_id(conn)
+    add_digest_slot(conn)
+
+
+def add_digest_slot(conn) -> None:
+    """Метка выпуска обзавелась номером (3.4, несколько выпусков в сутки).
+
+    Раньше в last_digest лежала дата: один выпуск в день — одна запись.
+    Теперь метка выглядит как «2026-08-15#2», поэтому старую дату закрываем
+    последним выпуском суток: иначе сразу после обновления пришёл бы лишний.
+    """
+    if not table_exists(conn, "subscribers"):
+        return                      # новая база: колонки придут из SCHEMA
+    if "last_digest" not in columns(conn, "subscribers"):
+        return
+    from .subscribers import per_day
+
+    cur = conn.execute(
+        "UPDATE subscribers SET last_digest = last_digest || ? "
+        "WHERE last_digest != '' AND instr(last_digest, '#') = 0",
+        ("#%d" % per_day(),))
+    conn.commit()
+    if cur.rowcount:
+        log.info("Метка выпуска обновлена у %d подписчика(ов)", cur.rowcount)
 
 
 def add_outbox_message_id(conn) -> None:
@@ -187,7 +210,7 @@ def add_sections(conn) -> None:
     """Разделы подписчика (3.2). У кого их нет — читает подборку по умолчанию.
 
     Кто раньше выбрал себе личную тему, тот выбирал именно её и не должен
-    внезапно получить выпуск на двенадцать разделов: при переезде личная тема
+    внезапно получить выпуск на полтора десятка разделов: при переезде личная тема
     становится его личным списком разделов. Дальше он волен добавить ещё —
     /sections add. Общая тема (CFG['topic']) сюда не переносится: у владельца
     она стояла у всех по умолчанию и означала просто «о чём бот».

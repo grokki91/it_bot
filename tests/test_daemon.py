@@ -45,8 +45,10 @@ class TestTick(unittest.TestCase):
         self.worker = FakeWorker()
         self._owner = config.TG_CHAT
         config.TG_CHAT = self.OWNER
-        self.saved = {k: CFG[k] for k in ("send_at", "collect_every_h", "breaking")}
+        self.saved = {k: CFG[k] for k in ("send_at", "per_day", "collect_every_h",
+                                          "breaking")}
         CFG["breaking"] = False
+        CFG["per_day"] = 1              # один выпуск в сутки: так «23:59» = «ещё рано»
 
         self.collected = []
         self.digests = []
@@ -127,6 +129,33 @@ class TestTick(unittest.TestCase):
             conn.close()
         self.worker.run_all()             # задача уже в очереди, но пауза важнее
         self.assertEqual(self.digests, [])
+
+    def test_second_digest_of_the_day_is_queued_again(self):
+        """Выпуск дважды в сутки: утренняя метка вечерний выпуск не закрывает."""
+        CFG["send_at"], CFG["per_day"] = "00:00", 2      # слоты 00:00 и 12:00
+        self.mark_collected(0)
+        conn = storage.db()
+        try:
+            sub = subscribers.get(conn, self.OWNER)
+            now = subscribers.now_for(sub)
+            here = subscribers.slot_index(sub, now)
+            subscribers.set_last_digest(conn, self.OWNER,
+                                        subscribers.slot_mark(sub, now))
+        finally:
+            conn.close()
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), [])        # этот выпуск уже ушёл
+
+        conn = storage.db()
+        try:                              # метка соседнего слота не считается
+            subscribers.set_last_digest(
+                conn, self.OWNER,
+                "%s#%d" % (now.strftime("%Y-%m-%d"), 3 - here))
+        finally:
+            conn.close()
+        again = FakeWorker()
+        daemon.tick(again)
+        self.assertIn("digest:%s" % self.OWNER, again.names())
 
     def test_empty_digest_backs_off_for_an_hour(self):
         CFG["send_at"] = "00:01"

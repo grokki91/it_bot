@@ -154,6 +154,36 @@ BUILTIN = {
         ],
     },
 
+    "climate": {
+        "title": "Климат и экология",
+        "emoji": "🌍",
+        "aliases": ("климат", "climate", "экология", "потепление", "природа"),
+        "persona": (
+            "читатель, которому нужны данные о климате и окружающей среде, а не "
+            "лозунги. Интересны: измерения и рекорды (температура, лёд, уровень "
+            "моря, выбросы), доклады IPCC и метеослужб, экстремальная погода с "
+            "разбором причин, энергопереход и его экономика, климатическое "
+            "регулирование и суды, загрязнение и биоразнообразие. НЕ интересны: "
+            "алармизм без цифр, колонки активистов и отрицателей, «через N лет "
+            "всё погибнет», корпоративный greenwashing, прогноз погоды на выходные."
+        ),
+        "keywords": ["climate", "emissions", "carbon", "warming", "renewable",
+                     "solar power", "wind power", "ipcc", "drought", "wildfire",
+                     "sea level", "biodiversity", "deforestation"],
+        "feeds": [
+            ("carbonbrief",     "https://www.carbonbrief.org/feed/",                    1, "research"),
+            ("nature-climate",  "https://www.nature.com/nclimate.rss",                  1, "research"),
+            ("noaa-climate",    "https://www.climate.gov/feeds/news-features.rss",      1, "policy"),
+            ("guardian-environment", "https://www.theguardian.com/environment/rss",     2, "media"),
+            ("insideclimate",   "https://insideclimatenews.org/feed/",                  2, "media"),
+            ("yale-e360",       "https://e360.yale.edu/feed.xml",                       2, "media"),
+            ("climatehome",     "https://www.climatechangenews.com/feed/",              2, "media"),
+            ("grist",           "https://grist.org/feed/",                              2, "media"),
+            ("phys-earth",      "https://phys.org/rss-feed/earth-news/",                2, "media"),
+            ("sd-climate",      "https://www.sciencedaily.com/rss/earth_climate.xml",   2, "media"),
+        ],
+    },
+
     "science": {
         "title": "Наука",
         "emoji": "🔬",
@@ -161,12 +191,13 @@ BUILTIN = {
         "persona": (
             "любознательный читатель с техническим образованием. Интересны: "
             "результаты исследований с понятной методикой, крупные эксперименты, "
-            "физика, биология, климат, археология, воспроизводимость и опровержения. "
+            "физика, химия, биология, археология, воспроизводимость и опровержения. "
             "НЕ интересны: пересказ пресс-релиза университета без сути работы, "
-            "«учёные доказали» на выборке в 12 человек, научпоп ни о чём."
+            "«учёные доказали» на выборке в 12 человек, научпоп ни о чём, "
+            "климат и экология — для них есть отдельный раздел."
         ),
         "keywords": ["research", "study", "physics", "quantum", "biology", "genome",
-                     "climate", "fusion", "materials", "chemistry", "archaeology"],
+                     "fusion", "materials", "chemistry", "archaeology"],
         "feeds": [
             ("nature",       "https://www.nature.com/nature.rss",                 1, "research"),
             ("science-news", "https://www.science.org/rss/news_current.xml",      1, "research"),
@@ -349,6 +380,41 @@ BUILTIN = {
         ],
     },
 
+    "games": {
+        "title": "Игры",
+        "emoji": "🎮",
+        "aliases": ("игры", "games", "гейминг", "видеоигры", "gaming", "консоли"),
+        "persona": (
+            "человек, который играет и следит за индустрией. Интересны: даты "
+            "выхода, переносы и отмены, крупные патчи и обновления, техническое "
+            "состояние релизов (производительность, баги, требования), железо и "
+            "прошивки консолей, покупки студий, закрытия и увольнения, движки и "
+            "инструменты разработки, заметные инди. НЕ интересны: «топ-10 игр "
+            "месяца», слухи из твитов и «инсайдеры сообщают», гайды и "
+            "прохождения, косплей и мерч, рецензии без новости внутри."
+        ),
+        "keywords": ["game", "gaming", "godot", "unreal engine", "nintendo",
+                     "playstation", "xbox", "steam deck", "valve", "roguelike",
+                     "speedrun"],
+        "feeds": [
+            # --- индустрия: цифры, сделки, разработка ---
+            ("gamesindustry",   "https://www.gamesindustry.biz/feed",           1, "business"),
+            ("gamedeveloper",   "https://www.gamedeveloper.com/rss.xml",        1, "business"),
+            # --- издатели и платформы (первоисточники) ---
+            ("playstation-blog","https://blog.playstation.com/feed/",           1, "labs"),
+            ("xbox-wire",       "https://news.xbox.com/en-us/feed/",            1, "labs"),
+            ("gh-godot",        "https://github.com/godotengine/godot/releases.atom", 1, "opensource"),
+            # --- профильные СМИ ---
+            ("eurogamer",       "https://www.eurogamer.net/feed",               2, "media"),
+            ("polygon",         "https://www.polygon.com/rss/index.xml",        2, "media"),
+            ("pcgamer",         "https://www.pcgamer.com/rss/",                 2, "media"),
+            ("rockpapershotgun","https://www.rockpapershotgun.com/feed",        2, "media"),
+            ("vgc",             "https://www.videogameschronicle.com/feed/",    2, "media"),
+            ("nintendolife",    "https://www.nintendolife.com/feeds/latest",    2, "media"),
+            ("dtf",             "https://dtf.ru/rss/all",                       3, "community"),
+        ],
+    },
+
     "crypto": {
         "title": "Криптовалюты",
         "emoji": "₿",
@@ -408,12 +474,16 @@ BUILTIN = {
     },
 }
 
-#: разделы утреннего выпуска по умолчанию и порядок, в котором они идут.
+#: разделы выпуска по умолчанию и порядок, в котором они идут.
 #: Крипта, инфобез и «свой» остаются доступными, но в подборку не лезут:
 #: их включают вручную — /sections add crypto.
+#:
+#: Климат идёт ПЕРЕД наукой намеренно: одно событие показывается один раз, в
+#: разделе, который стоит раньше, — иначе климатические новости так и остались
+#: бы в «Науке», ради чего раздел и выделяли.
 DEFAULT_SECTIONS = [
-    "ai", "hardware", "robots", "space", "science", "medicine", "health",
-    "politics", "economy", "sports", "incidents", "cinema",
+    "ai", "hardware", "robots", "space", "climate", "science", "medicine",
+    "health", "politics", "economy", "sports", "incidents", "cinema", "games",
 ]
 
 #: то, чем пользуется остальной код. Наполняется встроенными разделами, а

@@ -86,6 +86,21 @@ class TestApply(SettingsCase):
         settings.apply("send_at", "10:00")
         self.assertEqual(CFG["send_at"], "10:00")
 
+    def test_times_per_day_roundtrip(self):
+        CFG["send_at"] = "09:00"
+        key, shown = settings.apply("times", "2")
+        self.assertEqual(key, "times")
+        self.assertIn("09:00 и 21:00", shown)
+        self.assertEqual(CFG["per_day"], 2)
+        config.load_env()                      # как при перезапуске демона
+        self.assertEqual(CFG["per_day"], 2)
+        self.assertEqual(subscribers.slots_for(None), [9 * 60, 21 * 60])
+
+        settings.apply("расписание", "1")       # синоним той же настройки
+        self.assertEqual(CFG["per_day"], 1)
+        with self.assertRaises(settings.Invalid):
+            settings.apply("times", "24")
+
     def test_bool_roundtrip(self):
         settings.apply("breaking", "выкл")
         self.assertFalse(CFG["breaking"])
@@ -135,7 +150,7 @@ class TestApply(SettingsCase):
 
 
 class TestSetCommand(SettingsCase):
-    """Тот же путь, но через сообщение в чате."""
+    """Тот же путь, но через команду со страницы."""
 
     def setUp(self):
         super().setUp()
@@ -153,8 +168,13 @@ class TestSetCommand(SettingsCase):
         super().tearDown()
 
     def say(self, text):
-        bot.handle_update({"update_id": 1, "message": {
-            "chat": {"id": "1"}, "from": {}, "text": text}}, worker=None)
+        name, args = bot.parse_command(text)
+        conn = storage.db()
+        try:
+            reply = bot.HANDLERS[name].fn(bot.Ctx("1", args, conn, None))
+        finally:
+            conn.close()
+        self.sent.append(reply or "")
         return self.sent[-1]
 
     def test_set_applies(self):

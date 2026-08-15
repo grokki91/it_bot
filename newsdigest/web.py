@@ -300,7 +300,9 @@ def signup(data, chat) -> str:
     try:
         if verdict == "ok":
             subscribers.add(conn, applicant, role="member")
-            tg_send(applicant, "✅ Владелец одобрил подписку. Справка: /help")
+            tg_send(applicant, "✅ Владелец одобрил подписку. Выпуски будут "
+                               "приходить сами: %s."
+                    % subscribers.schedule_human())
             return "Пустил %s" % applicant
         subscribers.remove(conn, applicant)
         return "Отказал %s" % applicant

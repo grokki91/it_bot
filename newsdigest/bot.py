@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Разбор входящих апдейтов: команды в чате и фоновые задачи.
+"""Команды, нажатия кнопок и фоновые задачи.
 
-Демон не просто ждёт назначенного часа — он слушает Telegram и отвечает.
+В Telegram бот только рассылает: команд там нет, он принимает лишь нажатия
+кнопок под выпуском (👍/👎/🔖) и решения владельца по заявкам новых чатов.
+Сами команды никуда не делись — их выполняет страница в браузере (web.py),
+и обработчики у них те же, что здесь, в HANDLERS.
+
 Тяжёлое (сбор фидов, запросы к модели) уходит в отдельную нить: пока идёт
-прогон, бот продолжает отвечать на команды.
+прогон, бот продолжает отвечать.
 """
 from __future__ import annotations
 
@@ -164,7 +168,8 @@ def greet_stranger(chat_id, title, kind) -> None:
             subscribers.add(conn, chat_id, role="member", title=title, kind=kind)
         finally:
             conn.close()
-        tg_send(chat_id, "👋 Подписал вас на дайджест. Справка: /help")
+        tg_send(chat_id, "👋 Подписал вас на дайджест. Выпуски будут приходить "
+                         "сами: %s." % esc(subscribers.schedule_human()))
         log.info("Новый подписчик %s (%s) — открытая подписка", chat_id, title)
         return
 
@@ -206,10 +211,15 @@ def cmd_help(ctx):
         lines.append("/%s — %s" % (name, esc(cmd.help)))
     mine = ctx.sections()
     lines += ["",
-              "Утром: по %d новости из %d разделов, выпуск %s."
-              % (sections.per_section(ctx.sub), len(mine), esc(ctx.next_send())),
+              "Выпуск идёт сам: %s — по %d новости из %d разделов. "
+              "Следующий %s."
+              % (esc(subscribers.schedule_human(ctx.sub)),
+                 sections.per_section(ctx.sub), len(mine), esc(ctx.next_send())),
               "Топ одного раздела прямо сейчас: <code>/news спорт 10</code>.",
-              "Разделы и их выбор: /sections"]
+              "Разделы и их выбор: /sections",
+              "",
+              "<i>Команды работают здесь, на странице. В Telegram бот только "
+              "присылает выпуски и принимает кнопки 👍/👎/🔖.</i>"]
     return "\n".join(lines)
 
 
@@ -330,7 +340,7 @@ def set_sections(ctx, topics):
         return "⚠️ %s" % esc(exc)
     ctx.sub = subscribers.get(ctx.conn, ctx.chat_id)
     where = "для всех" if scope == "global" else "лично для вас"
-    return ("✅ Разделы (%s): <b>%s</b>\nВ утреннем выпуске будет до %d новостей."
+    return ("✅ Разделы (%s): <b>%s</b>\nВ плановом выпуске будет до %d новостей."
             % (where, esc(shown),
                len(ctx.sections()) * sections.per_section(ctx.sub)))
 
@@ -344,7 +354,7 @@ def cmd_more(ctx):
     rows = take_leftover(ctx.conn, ctx.chat_id, count)
     if not rows:
         return ("Запас пуст. Он наполняется при сборке выпуска — "
-                "пришлите /digest или дождитесь утреннего.")
+                "пришлите /digest или дождитесь планового.")
     lines = ["📎 <b>Ещё из вчерашнего отбора</b>", ""]
     for row in rows:
         lines.append('• <a href="%s">%s</a> — %s · ⭐ %.1f'
@@ -437,8 +447,9 @@ def cmd_status(ctx):
         "📊 <b>Состояние</b>",
         "Разделов: <b>%d</b> (%s%s) · источников: %d"
         % (len(mine), esc(shown), " …" if len(mine) > 4 else "", feeds),
-        "Следующий выпуск: %s — по %d новости на раздел"
-        % (esc(ctx.next_send()), sections.per_section(ctx.sub)),
+        "Выпуски: %s · следующий %s — по %d новости на раздел"
+        % (esc(subscribers.schedule_human(ctx.sub)), esc(ctx.next_send()),
+           sections.per_section(ctx.sub)),
         "Материалов за сутки: %d · отправлено вам за неделю: %d" % (fresh, sent),
         "Расход модели за неделю: $%.4f" % cost,
     ]
@@ -601,7 +612,9 @@ def cmd_subs(ctx):
     if action in ("add", "добавить") and ctx.arg(1):
         sub = subscribers.add(ctx.conn, ctx.arg(1), role="member",
                               title=" ".join(ctx.args[2:]))
-        tg_send(sub["chat_id"], "👋 Вас подписали на дайджест. Справка: /help")
+        tg_send(sub["chat_id"], "👋 Вас подписали на дайджест. Выпуски будут "
+                                "приходить сами: %s."
+                                % esc(subscribers.schedule_human()))
         return "✅ Добавил <code>%s</code>." % esc(sub["chat_id"])
     if action in ("rm", "remove", "убрать") and ctx.arg(1):
         try:
@@ -663,15 +676,16 @@ def cmd_set(ctx):
 
     ctx.sub = subscribers.get(ctx.conn, ctx.chat_id)
     tail = ""
-    if key in ("time", "tz"):
-        tail = "\nСледующий выпуск: %s" % esc(ctx.next_send())
+    if key in ("time", "tz", "times"):
+        tail = "\nВыпуски: %s. Следующий выпуск: %s" % (
+            esc(subscribers.schedule_human(ctx.sub)), esc(ctx.next_send()))
     if key == "topic":
         topic = sections.resolve(shown) or shown
         tail = ("\nИсточников в разделе: %d. Это раздел для /news без имени и "
-                "для срочных; утренний выпуск задаётся командой /sections."
+                "для срочных; плановый выпуск задаётся командой /sections."
                 % len(profile(topic)["feeds"]))
     if key in ("sections", "each"):
-        tail = ("\nВ утреннем выпуске будет до %d новостей."
+        tail = ("\nВ плановом выпуске будет до %d новостей."
                 % (len(ctx.sections()) * sections.per_section(ctx.sub)))
     where = "для всех" if scope == "global" else "лично для вас"
     return "✅ <code>%s</code> = <b>%s</b> (%s)%s" % (esc(key), esc(shown),
@@ -689,7 +703,34 @@ def parse_command(text: str):
     return (name or None), parts[1:]
 
 
-def handle_message(msg, worker) -> None:
+#: кому уже объяснили, что команд в чате нет. Объясняем один раз за запуск:
+#: бот на рассылке не должен превращаться в автоответчик
+_TOLD = set()
+
+
+def explain_no_commands(chat_id) -> None:
+    """Ответ на команду в чате: её здесь никто не выполнит.
+
+    Молча проглатывать команду нельзя — человек решит, что бот умер. Но и
+    отвечать на каждую попытку тоже незачем: одного объяснения хватает.
+    """
+    if chat_id in _TOLD:
+        return
+    _TOLD.add(chat_id)
+    if not is_owner(chat_id):
+        where = "Если нужно что-то поменять или отписаться — напишите владельцу бота."
+    elif CFG["web"]:
+        where = ("Управление — на странице в браузере: http://<ip-вашего-vps>:%s/"
+                 % CFG["web_port"])
+    else:
+        where = "Управление — в терминале на сервере: python3 digest.py"
+    tg_send(chat_id, "🤖 Я только присылаю выпуски: команды в чате отключены.\n"
+                     "%s" % esc(where), silent=True)
+
+
+def handle_message(msg) -> None:
+    """Входящее сообщение. Команд бот не выполняет — только знакомится с
+    новым чатом и один раз объясняет старому, куда делись команды."""
     chat = msg.get("chat") or {}
     chat_id = str(chat.get("id") or "")
     text = (msg.get("text") or msg.get("caption") or "").strip()
@@ -708,27 +749,10 @@ def handle_message(msg, worker) -> None:
             log.warning("Не смог ответить чату %s: %s", chat_id, exc)
         return
 
-    name, args = parse_command(text)
-    if not name:
-        return
-    cmd = HANDLERS.get(name)
-    if not cmd:
-        tg_send(chat_id, "Не знаю команду /%s. Список: /help" % esc(name))
-        return
-    if cmd.heavy and worker is None:
-        tg_send(chat_id, "Фоновые задачи сейчас недоступны — демон не запущен.")
-        return
-    if cmd.owner and not is_owner(chat_id):
-        tg_send(chat_id, "Команда /%s доступна только владельцу бота." % esc(name))
-        return
-
-    conn = db()
-    try:
-        reply = cmd.fn(Ctx(chat_id, args, conn, worker, user))
-    finally:
-        conn.close()
-    if reply:
-        tg_send(chat_id, reply, silent=True)
+    name, _args = parse_command(text)
+    if name:
+        log.debug("Команда /%s из чата %s — в Telegram они выключены", name, chat_id)
+        explain_no_commands(chat_id)
 
 
 TOAST = {
@@ -748,7 +772,9 @@ def handle_signup_callback(cb, chat_id, data) -> None:
         if verdict == "ok":
             subscribers.add(conn, applicant, role="member")
             tg_answer_callback(cb.get("id"), "Пустил")
-            tg_send(applicant, "✅ Владелец одобрил подписку. Справка: /help")
+            tg_send(applicant, "✅ Владелец одобрил подписку. Выпуски будут "
+                               "приходить сами: %s."
+                    % esc(subscribers.schedule_human()))
             note = "✅ <code>%s</code> подписан." % esc(applicant)
         else:
             subscribers.remove(conn, applicant)
@@ -836,10 +862,10 @@ def handle_callback(cb, worker) -> None:
             log.debug("Разметку обновить не удалось: %s", exc)
 
 
-def handle_update(upd, worker) -> None:
+def handle_update(upd, worker=None) -> None:
     msg = upd.get("message") or upd.get("channel_post")
     if msg:
-        handle_message(msg, worker)
+        handle_message(msg)
     elif upd.get("callback_query"):
         handle_callback(upd["callback_query"], worker)
 
@@ -848,7 +874,7 @@ def handle_update(upd, worker) -> None:
 def drain_backlog(conn) -> None:
     """При первом запуске пропускаем то, что накопилось, пока бота не было.
 
-    Иначе после суток простоя бот выполнит всё, что ему успели написать.
+    Иначе после суток простоя посыплются ответы на старые нажатия и заявки.
     """
     if meta_get(conn, "tg_offset", ""):
         return
@@ -892,7 +918,7 @@ def poll_once(worker, timeout=POLL_TIMEOUT) -> int:
 
 
 def poll_forever(worker, stop=None) -> None:
-    """Цикл приёма команд. Сетевые сбои гасим нарастающей паузой."""
+    """Цикл приёма нажатий и заявок. Сетевые сбои гасим нарастающей паузой."""
     backoff = 1
     while not (stop and stop.is_set()):
         try:

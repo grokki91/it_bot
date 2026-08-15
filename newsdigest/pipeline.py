@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Конвейер выпуска: взять свежее из базы → отранжировать → написать → отправить.
 
-Выпуск собирается по разделам. Утром это подборка «по паре новостей из
-каждого раздела», по команде /news — топ одного раздела. Механика общая:
+Выпуск собирается по разделам. По расписанию это подборка «по паре новостей
+из каждого раздела», по команде /news — топ одного раздела. Механика общая:
 
     1) материалы за окно читаются из базы ОДИН раз на весь выпуск;
     2) каждый раздел кластеризует свои материалы и отбирает кандидатов;
     3) модель ранжирует кандидаты каждого раздела своим портретом читателя
-       (разделы идут параллельно — иначе выпуск из двенадцати разделов
+       (разделы идут параллельно — иначе выпуск из полутора десятков разделов
        собирался бы минуты);
     4) разделы разбираются по очереди, и всё уже занятое пропускается —
        поэтому одна и та же новость не приходит дважды под двумя вывесками;
@@ -88,8 +88,8 @@ def rank_shortlist(shortlist, persona):
 def limits_for(count):
     """Лимиты отбора внутри раздела.
 
-    Пара новостей раздела должна прийти из разных источников, иначе утром
-    получаешь два материала одного сайта об одном и том же. При большом
+    Пара новостей раздела должна прийти из разных источников, иначе в выпуске
+    оказываются два материала одного сайта об одном и том же. При большом
     запросе лимит ослабевает — иначе просто нечем набрать десятку.
     """
     return {"limit": count, "min_items": count,
@@ -144,7 +144,7 @@ def build_and_send(dry_run=False, chat_id=None, sub=None, topics=None,
     with subscribers.overlay(sub):
         plan = list(topics) if topics else sections.plan(sub)
         per = count if count else per_section_count(plan, sub)
-        return _build_and_send(dry_run, chat_id, plan, per, close_day)
+        return _build_and_send(dry_run, chat_id, plan, per, close_day, sub)
 
 
 def per_section_count(plan, sub) -> int:
@@ -155,10 +155,13 @@ def per_section_count(plan, sub) -> int:
     return max(CFG["max_items"], sections.per_section(sub))
 
 
-def _build_and_send(dry_run, chat_id, plan, count, close_day) -> dict:
+def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     conn = db()
     stats = {"candidates": 0, "clusters": 0, "selected": 0, "sent": 0,
              "cost": 0.0, "sections": 0, "empty": []}
+    # какой выпуск суток собираем, решаем на входе: сборка занимает минуты, и
+    # начатый в 20:59 выпуск должен закрыть свой слот, а не следующий
+    mark = subscribers.slot_mark(sub)
     plan = [topic for topic in plan if topic in PROFILES]
     if not plan:
         log.warning("Не задано ни одного раздела — выпуск не формируется")
@@ -250,7 +253,9 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day) -> dict:
                              (item["url_hash"],))
     conn.commit()
     if close_day:
-        subscribers.set_last_digest(conn, chat_id, day)
+        # метка — «дата#номер выпуска в сутках»: следующий выпуск дня ждёт
+        # своего часа, а этот повторно не соберётся
+        subscribers.set_last_digest(conn, chat_id, mark)
         meta_set(conn, "last_digest_date", day)
     log_run(conn, "digest", "ok", stats)
     conn.close()
@@ -262,7 +267,7 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day) -> dict:
 def rank_all(shortlists, hint, stats) -> dict:
     """Ранжирует разделы. Каждый — своим портретом читателя, все — параллельно.
 
-    Параллельность здесь про ожидание сети: двенадцать последовательных
+    Параллельность здесь про ожидание сети: полтора десятка последовательных
     запросов к модели складываются в минуты, а выпуск нужен к завтраку.
     """
     jobs = [(topic, shortlist) for topic, shortlist in shortlists if shortlist]

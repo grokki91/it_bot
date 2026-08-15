@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Фоновый режим: расписание в одной нити, приём команд — в главной.
+"""Фоновый режим: расписание в одной нити, приём нажатий — в главной.
 
-Раньше демон только спал и просыпался по часам. Теперь он ещё и слушает
-Telegram, поэтому нитей три:
-    главная   — long-poll getUpdates, отвечает на команды;
+Демон не только спит и просыпается по часам — он ещё и слушает Telegram,
+поэтому нитей три:
+    главная   — long-poll getUpdates: кнопки под выпуском и заявки новых чатов;
     scheduler — раз в минуту смотрит, не пора ли собрать или отправить;
     worker    — выполняет тяжёлое (сбор, запросы к модели) по одной задаче.
+
+Команд в Telegram нет: бот там только рассылает выпуски. Управление живёт на
+странице в браузере (web.py) и в терминале.
 """
 from __future__ import annotations
 
@@ -81,7 +84,7 @@ def tick(worker) -> None:
 
     if need_collect:
         # срочное ищем сразу после сбора: свежие материалы уже в базе,
-        # а до утреннего выпуска может оставаться половина суток
+        # а до планового выпуска может оставаться много часов
         def job():
             collect()
             for sub in waiting:
@@ -102,7 +105,7 @@ def daemon():
     plan = sections.plan()
     log.info("Демон запущен. Разделов: %d (%s). Отправка в %s (%s) по %d новости "
              "на раздел. Сбор раз в %d ч.",
-             len(plan), ", ".join(plan), CFG["send_at"], tz_label(),
+             len(plan), ", ".join(plan), subscribers.schedule_human(), tz_label(),
              CFG["per_section"], CFG["collect_every_h"])
     log.info("Каталог данных: %s | лог: %s", HOME, LOG_FILE)
     from .cli import require_secrets
@@ -124,7 +127,7 @@ def daemon():
         webui.start_background(worker)
 
     if not CFG["listen"]:
-        log.info("Приём команд выключен (ND_LISTEN=0) — работаю только по расписанию")
+        log.info("Telegram не слушаю (ND_LISTEN=0) — только отправка по расписанию")
         try:
             while True:
                 stop.wait(3600)
@@ -138,8 +141,9 @@ def daemon():
         count = len(subscribers.all_rows(conn))
     finally:
         conn.close()
-    log.info("Слушаю команды в Telegram. Владелец: chat_id %s, подписчиков: %d. "
-             "Справка в чате: /help", config.TG_CHAT, count)
+    log.info("Слушаю Telegram: кнопки под выпуском и заявки новых чатов. "
+             "Команды бот не выполняет — они на странице в браузере. "
+             "Владелец: chat_id %s, подписчиков: %d", config.TG_CHAT, count)
     try:
         poll_forever(worker, stop)
     except KeyboardInterrupt:

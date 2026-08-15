@@ -136,7 +136,10 @@ class TestUpgradeFrom20(unittest.TestCase):
             owner = subscribers.get(conn, self.OWNER)
             self.assertEqual(owner["role"], "owner")
             self.assertTrue(owner["paused"])          # общая пауза стала личной
-            self.assertEqual(owner["last_digest"], "2026-08-01")
+            # день из одиночной версии закрывается целиком: «#N» — номер
+            # последнего выпуска суток, иначе пришёл бы лишний выпуск
+            self.assertEqual(owner["last_digest"],
+                             "2026-08-01#%d" % subscribers.per_day())
 
             members = {s["chat_id"] for s in subscribers.all_rows(conn)}
             self.assertEqual(members, {self.OWNER, "555", "666"})

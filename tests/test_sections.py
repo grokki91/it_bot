@@ -30,8 +30,22 @@ class TestCatalog(unittest.TestCase):
 
     def test_asked_for_sections_exist(self):
         for name in ("medicine", "health", "politics", "economy", "sports",
-                     "space", "incidents", "cinema", "hardware", "robots"):
+                     "space", "incidents", "cinema", "hardware", "robots",
+                     "games", "climate"):
             self.assertIn(name, PROFILES, name)
+
+    def test_climate_is_separated_from_science(self):
+        """Климат вынесен из науки: свои источники, свой портрет читателя.
+
+        И идёт раньше науки — одно событие показывается один раз, в разделе,
+        который стоит в списке выше, иначе разделять было незачем.
+        """
+        self.assertLess(DEFAULT_SECTIONS.index("climate"),
+                        DEFAULT_SECTIONS.index("science"))
+        self.assertNotIn("climate", BUILTIN["science"]["keywords"])
+        self.assertNotIn("климат", BUILTIN["science"]["persona"].split("НЕ")[0])
+        science = {f[0] for f in BUILTIN["science"]["feeds"]}
+        self.assertFalse(science & {f[0] for f in BUILTIN["climate"]["feeds"]})
 
     def test_every_section_is_complete(self):
         for name, body in BUILTIN.items():
@@ -357,10 +371,16 @@ class TestSectionCommands(unittest.TestCase):
         os.environ.update(self.saved_env)
 
     def message(self, text, chat_id=None, worker=None):
-        bot.handle_update({"update_id": 1, "message": {
-            "chat": {"id": chat_id or self.OWNER, "type": "private"},
-            "from": {"username": "tester"},
-            "text": text}}, worker=worker)
+        """Команда со страницы: в Telegram их больше не выполняют."""
+        name, args = bot.parse_command(text)
+        cmd = bot.HANDLERS[name]
+        conn = storage.db()
+        try:
+            reply = cmd.fn(bot.Ctx(chat_id or self.OWNER, args, conn, worker))
+        finally:
+            conn.close()
+        if reply:
+            self.sent.append((chat_id or self.OWNER, reply))
         return "\n".join(t for _c, t in self.sent)
 
     def test_list_shows_every_section(self):

@@ -99,7 +99,7 @@ def as_topic(raw):
 
 
 def as_sections(raw):
-    """Список разделов утреннего выпуска. Понимает «все» и «по умолчанию»."""
+    """Список разделов планового выпуска. Понимает «все» и «по умолчанию»."""
     value = raw.strip().lower()
     if value in ("все", "всё", "all", "*"):
         return sections.store(sections.known())
@@ -122,6 +122,11 @@ def show_sections(value):
     if not topics:
         return "по умолчанию (%d)" % len(sections.defaults())
     return ", ".join(title(topic) for topic in topics)
+
+
+def show_times(value):
+    """«2 — 09:00 и 21:00»: цифра без расписания ничего не говорит."""
+    return "%s — %s" % (value, subscribers.schedule_human())
 
 
 def as_tz(raw):
@@ -170,12 +175,15 @@ SPEC = {
     "topic": Setting("topic", "ND_TOPIC", as_topic,
                      "раздел по умолчанию: для /news без имени и для срочных"),
     "sections": Setting("sections", "ND_SECTIONS", as_sections,
-                        "разделы утреннего выпуска через запятую "
+                        "разделы планового выпуска через запятую "
                         "(«все», «по умолчанию»)", show_sections),
     "each": Setting("per_section", "ND_PER_SECTION", as_int(1, 5),
-                    "сколько новостей на раздел в утреннем выпуске"),
+                    "сколько новостей на раздел в плановом выпуске"),
     "time": Setting("send_at", "ND_SEND_AT", as_time,
                     "во сколько присылать выпуск, ЧЧ:ММ"),
+    "times": Setting("per_day", "ND_PER_DAY", as_int(1, subscribers.MAX_PER_DAY),
+                     "сколько выпусков в сутки: 2 — в назначенное время и через "
+                     "12 часов", show_times),
     "tz": Setting("tz", "ND_TZ", as_tz, "часовой пояс, например Europe/Riga"),
     "max": Setting("max_items", "ND_MAX_ITEMS", as_int(1, 20),
                    "новостей в выпуске, когда раздел всего один"),
@@ -209,6 +217,8 @@ SPEC = {
 #: привычные синонимы — чтобы не гадать, как называется настройка
 ALIASES = {
     "send_at": "time", "время": "time", "тема": "topic", "пояс": "tz",
+    "per_day": "times", "в_сутки": "times", "раз_в_день": "times",
+    "выпусков": "times", "расписание": "times",
     "max_items": "max", "min_items": "min", "min_score": "score",
     "порог": "score", "collect_every": "every", "язык": "language",
     "тихо": "quiet", "срочные": "breaking", "кнопки": "buttons",

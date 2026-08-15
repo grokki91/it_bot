@@ -232,7 +232,7 @@ class TestCommands(WebCase):
     def test_slash_is_optional(self):
         self.login()
         _code, body = self.ask("/api/command", {"text": "status"})
-        self.assertIn("Следующий выпуск", body["messages"][1]["html"])
+        self.assertIn("Выпуски:", body["messages"][1]["html"])
 
     def test_unknown_command(self):
         self.login()

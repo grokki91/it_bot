@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, sections, userprofiles
+from . import config, sections, subscribers, userprofiles
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
@@ -55,7 +55,7 @@ def cmd_setup(_args):
     print("Каталог данных: %s\n" % HOME)
 
     have = "уже задан, Enter — оставить" if config.TG_TOKEN else ""
-    token = ask("1/6 Токен Telegram-бота (от @BotFather)", have, secret=True)
+    token = ask("1/7 Токен Telegram-бота (от @BotFather)", have, secret=True)
     if token != have:
         config.TG_TOKEN = token
     try:
@@ -64,7 +64,7 @@ def cmd_setup(_args):
     except Exception as exc:  # noqa: BLE001
         print("      не смог проверить токен: %s\n" % exc)
 
-    print("2/6 chat_id. СНАЧАЛА напишите боту любое сообщение в Telegram")
+    print("2/7 chat_id. СНАЧАЛА напишите боту любое сообщение в Telegram")
     print("    (для канала: добавьте бота админом и опубликуйте пост).")
     typed = input("    Enter — определить автоматически, либо введите chat_id: ").strip()
     chat = config.TG_CHAT
@@ -85,13 +85,13 @@ def cmd_setup(_args):
     config.TG_CHAT = chat
 
     have = "уже задан, Enter — оставить" if config.DS_KEY else ""
-    key = ask("3/6 Ключ DeepSeek (platform.deepseek.com)", have, secret=True)
+    key = ask("3/7 Ключ DeepSeek (platform.deepseek.com)", have, secret=True)
     if key != have:
         config.DS_KEY = key
 
-    print("4/6 Утренний выпуск идёт по разделам: %s."
+    print("4/7 Выпуск идёт по разделам: %s."
           % ", ".join(topic_title(t) for t in sections.defaults()))
-    print("    Менять их потом — командой /sections в чате.")
+    print("    Менять их потом — командой /sections на странице в браузере.")
     topic = ask("    Раздел по умолчанию (для /news и срочных)", CFG["topic"])
     if sections.resolve(topic):
         topic = sections.resolve(topic)
@@ -99,9 +99,17 @@ def cmd_setup(_args):
         print("      неизвестный раздел, оставляю %s" % CFG["topic"])
         topic = CFG["topic"]
 
-    send_at = ask("5/6 Время отправки ЧЧ:ММ (по вашему времени)", CFG["send_at"])
+    send_at = ask("5/7 Время отправки ЧЧ:ММ (по вашему времени)", CFG["send_at"])
     tz = ask("    Часовой пояс (например Europe/Riga, Europe/Warsaw)", CFG["tz"])
-    count = ask("6/6 Сколько новостей в выпуске (5-10)", str(CFG["max_items"]))
+    print("6/7 Выпусков в сутки: 1 — только в назначенное время,")
+    print("    2 — ещё один через 12 часов (каждый выпуск стоит запросов к модели).")
+    per_day = ask("    Сколько", str(CFG["per_day"]))
+    try:
+        per_day = max(1, min(int(per_day), subscribers.MAX_PER_DAY))
+    except ValueError:
+        print("      не понял число, оставляю %s" % CFG["per_day"])
+        per_day = CFG["per_day"]
+    count = ask("7/7 Сколько новостей в выпуске (5-10)", str(CFG["max_items"]))
 
     write_env({
         "TELEGRAM_BOT_TOKEN": config.TG_TOKEN,
@@ -109,10 +117,13 @@ def cmd_setup(_args):
         "DEEPSEEK_API_KEY": config.DS_KEY,
         "ND_TOPIC": topic,
         "ND_SEND_AT": send_at,
+        "ND_PER_DAY": str(per_day),
         "ND_TZ": tz,
         "ND_MAX_ITEMS": count,
     })
-    print("\nСохранено в %s (права 600).\n" % ENV_FILE)
+    CFG["send_at"], CFG["per_day"] = send_at, per_day
+    print("\nСохранено в %s (права 600)." % ENV_FILE)
+    print("Выпуски будут приходить сами: %s.\n" % subscribers.schedule_human())
     print("Дальше:")
     print("  python3 %s doctor            # проверить связь" % PROG)
     print("  python3 %s run --dry-run     # посмотреть выпуск в терминале" % PROG)
@@ -149,8 +160,9 @@ def cmd_doctor(_args):
     print("По умолчанию :", CFG["topic"], "— раздел для /news и срочных")
     print("Часовой пояс :", tz_label(), "| сейчас у вас", local_now().strftime("%H:%M"),
           "| на сервере", datetime.now(timezone.utc).strftime("%H:%M UTC"))
-    print("Расписание   : отправка в %s, сбор раз в %d ч"
-          % (CFG["send_at"], CFG["collect_every_h"]))
+    print("Расписание   : отправка в %s (%d раз(а) в сутки), сбор раз в %d ч"
+          % (subscribers.schedule_human(), subscribers.per_day(),
+             CFG["collect_every_h"]))
     print("Новостей     : по %d на раздел (до %d за выпуск), порог важности %.1f"
           % (CFG["per_section"], CFG["per_section"] * len(plan), CFG["min_score"]))
     print("Модели       :", CFG["model_rank"], "/", CFG["model_summary"])
@@ -448,7 +460,7 @@ def build_parser():
 
 def cmd_topics(_args):
     plan = set(sections.plan())
-    print("Разделы (★ — в утреннем выпуске). ✏️ помечены источники из %s\n"
+    print("Разделы (★ — в плановом выпуске). ✏️ помечены источники из %s\n"
           % PROFILES_FILE)
     for name in sections.known():
         prof = PROFILES[name]
@@ -458,10 +470,11 @@ def cmd_topics(_args):
               % (mark, name, topic_title(name), len(prof["feeds"]),
                  " (из них своих %d)" % custom if custom else "",
                  len(prof["keywords"])))
-    print("\nВыбрать разделы: /sections add|rm|all|reset в чате "
+    print("\nВыбрать разделы: /sections add|rm|all|reset на странице в браузере "
           "или ND_SECTIONS=<через,запятую>.")
     print("Топ одного раздела: %s run --section спорт --count 10" % PROG)
-    print("Править источники: /feed add|rm в чате или %s руками." % PROFILES_FILE)
+    print("Править источники: /feed add|rm на странице или %s руками."
+          % PROFILES_FILE)
     return 0
 
 
