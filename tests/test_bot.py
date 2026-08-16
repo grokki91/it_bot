@@ -44,8 +44,9 @@ class BotCase(unittest.TestCase):
         self._real_owner = config.TG_CHAT
         config.TG_CHAT = self.OWNER
         self._signup = CFG["signup"]
+        self._reply = CFG["chat_reply"]
         bot._REFUSED.clear()
-        bot._TOLD.clear()
+        bot._ANSWERED.clear()
         conn = storage.db()
         try:
             for table in ("leftover", "meta", "subscribers", "sent"):
@@ -59,6 +60,7 @@ class BotCase(unittest.TestCase):
         bot.tg_send = self._real_send
         config.TG_CHAT = self._real_owner
         CFG["signup"] = self._signup
+        CFG["chat_reply"] = self._reply
 
     def sub(self, chat_id=None):
         conn = storage.db()
@@ -174,27 +176,36 @@ class TestAccess(BotCase):
 
 
 class TestTelegramIsSendOnly(BotCase):
-    """В чате бот только рассылает: команды там не выполняются."""
+    """В чате бот только рассылает: на любую команду — одна и та же справка."""
 
-    def test_command_is_answered_once_and_does_nothing(self):
+    def test_command_answers_with_the_schedule_and_changes_nothing(self):
         self.message("/pause")
-        self.assertFalse(self.sub()["paused"])
-        self.assertIn("команды в чате отключены", self.sent.texts())
-        before = len(self.sent)
+        self.assertFalse(self.sub()["paused"])     # команда не выполнена
+        text = self.sent.texts()
+        self.assertIn("только присылаю выпуски", text)
+        self.assertIn("Рассылка:", text)
+        self.assertIn("Следующий выпуск:", text)
+        self.assertIn("через", text)
+
+    def test_every_command_gets_the_same_answer(self):
         self.message("/pause")
+        bot._ANSWERED.clear()                      # как будто прошла минута
         self.message("/status")
-        self.assertEqual(len(self.sent), before)   # объясняем один раз
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.sent[0][1], self.sent[1][1])
 
-    def test_owner_is_pointed_at_the_page(self):
-        self.message("/help")
-        self.assertIn("на странице в браузере", self.sent.texts())
+    def test_burst_of_commands_is_answered_once(self):
+        self.message("/status")
+        before = len(self.sent)
+        self.message("/status")
+        self.message("/digest")
+        self.assertEqual(len(self.sent), before)   # автоответчиком не работаем
 
-    def test_member_is_pointed_at_the_owner(self):
-        conn = storage.db()
-        subscribers.add(conn, "888", role="member")
-        conn.close()
-        self.message("/help", chat_id="888")
-        self.assertIn("владельцу бота", self.sent.texts())
+    def test_chat_reply_off_keeps_full_silence(self):
+        CFG["chat_reply"] = "off"
+        self.message("/status")
+        self.message("привет")
+        self.assertEqual(self.sent, [])
 
     def test_non_command_ignored(self):
         self.message("просто текст")
@@ -314,6 +325,23 @@ class TestSchedule(BotCase):
 
         CFG["per_day"] = 1
         self.assertIn("завтра в 09:00", at(10))
+
+    def test_next_send_gives_the_moment_and_the_wait(self):
+        CFG["send_at"], CFG["per_day"] = "09:00", 2
+        day = datetime(2026, 8, 15, 10, 20)
+        self.assertEqual(subscribers.next_send_at(None, day),
+                         datetime(2026, 8, 15, 21, 0))
+        self.assertEqual(subscribers.left_human(None, day), "10 ч 40 мин")
+
+        night = datetime(2026, 8, 15, 22, 30)     # ближайший — уже завтрашний
+        self.assertEqual(subscribers.next_send_at(None, night),
+                         datetime(2026, 8, 16, 9, 0))
+        self.assertEqual(subscribers.left_human(None, night), "10 ч 30 мин")
+
+        self.assertEqual(subscribers.left_human(
+            None, datetime(2026, 8, 15, 20, 45)), "15 мин")
+        self.assertEqual(subscribers.left_human(
+            None, datetime(2026, 8, 15, 20, 0)), "1 ч")
 
     def test_broken_time_falls_back_to_nine(self):
         CFG["send_at"], CFG["per_day"] = "лунный полдень", 1

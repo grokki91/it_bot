@@ -3,8 +3,10 @@
 
 В Telegram бот только рассылает: команд там нет, он принимает лишь нажатия
 кнопок под выпуском (👍/👎/🔖) и решения владельца по заявкам новых чатов.
-Сами команды никуда не делись — их выполняет страница в браузере (web.py),
-и обработчики у них те же, что здесь, в HANDLERS.
+На любую команду из чата приходит одна и та же справка о расписании — вся
+переписка с ботом сводится к ней (ND_CHAT_REPLY=off убирает и её). Сами
+команды никуда не делись — их выполняет страница в браузере (web.py), и
+обработчики у них те же, что здесь, в HANDLERS.
 
 Тяжёлое (сбор фидов, запросы к модели) уходит в отдельную нить: пока идёт
 прогон, бот продолжает отвечать.
@@ -22,7 +24,7 @@ from . import config, feedback, sections, settings, subscribers, userprofiles
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
-from .render import collapse, esc, expand, mark_pressed
+from .render import MONTHS, collapse, esc, expand, mark_pressed
 from .sources import all_feeds, collect, fetch_source
 from .storage import (db, item_facts, meta_get, meta_set, outbox_keyboard,
                       take_leftover)
@@ -703,34 +705,58 @@ def parse_command(text: str):
     return (name or None), parts[1:]
 
 
-#: кому уже объяснили, что команд в чате нет. Объясняем один раз за запуск:
-#: бот на рассылке не должен превращаться в автоответчик
-_TOLD = set()
+#: когда чату в последний раз отвечали расписанием (chat_id -> monotonic).
+#: Ответ один и тот же на любую команду, но не чаще раза в ANSWER_EVERY
+#: секунд: бот на рассылке не должен превращаться в автоответчик
+_ANSWERED = {}
+ANSWER_EVERY = 30
 
 
-def explain_no_commands(chat_id) -> None:
-    """Ответ на команду в чате: её здесь никто не выполнит.
+def schedule_note(sub=None) -> str:
+    """Единственное, что бот говорит в чате: когда придёт следующий выпуск.
 
-    Молча проглатывать команду нельзя — человек решит, что бот умер. Но и
-    отвечать на каждую попытку тоже незачем: одного объяснения хватает.
+    Запретить писать боту Telegram не даёт — окно ввода в чате убрать нельзя.
+    Поэтому «закрытый чат» выглядит так: что ни пришли, в ответ одна и та же
+    справка о расписании, и ничего в боте от этого не меняется.
     """
-    if chat_id in _TOLD:
+    now = subscribers.now_for(sub)
+    at = subscribers.next_send_at(sub, now)
+    lines = ["🤖 <b>Я только присылаю выпуски.</b> Команд в чате нет.",
+             "🗓 Рассылка: %s (%s)" % (esc(subscribers.schedule_human(sub)),
+                                       esc(subscribers.tz_of(sub))),
+             "⏰ Следующий выпуск: %s, %d %s в %02d:%02d — через %s"
+             % ("сегодня" if at.date() == now.date() else "завтра",
+                at.day, MONTHS[at.month - 1], at.hour, at.minute,
+                esc(subscribers.left_human(sub, now)))]
+    if sub is not None and sub["paused"]:
+        lines.append("⏸ Сейчас рассылка на паузе.")
+    return "\n".join(lines)
+
+
+def answer_schedule(chat_id) -> None:
+    """Ответ на команду: расписание — и больше ничего.
+
+    Молча проглатывать всё нельзя: человек решит, что бот умер. Отвечать на
+    каждое сообщение подряд — тоже, поэтому одному чату не чаще раза в
+    полминуты. Совсем без ответа — ND_CHAT_REPLY=off.
+    """
+    if str(CFG["chat_reply"]).lower() == "off":
         return
-    _TOLD.add(chat_id)
-    if not is_owner(chat_id):
-        where = "Если нужно что-то поменять или отписаться — напишите владельцу бота."
-    elif CFG["web"]:
-        where = ("Управление — на странице в браузере: http://<ip-вашего-vps>:%s/"
-                 % CFG["web_port"])
-    else:
-        where = "Управление — в терминале на сервере: python3 digest.py"
-    tg_send(chat_id, "🤖 Я только присылаю выпуски: команды в чате отключены.\n"
-                     "%s" % esc(where), silent=True)
+    now = time.monotonic()
+    if now - _ANSWERED.get(chat_id, 0) < ANSWER_EVERY:
+        return
+    _ANSWERED[chat_id] = now
+    conn = db()
+    try:
+        sub = subscribers.get(conn, chat_id)
+    finally:
+        conn.close()
+    tg_send(chat_id, schedule_note(sub), silent=True)
 
 
 def handle_message(msg) -> None:
     """Входящее сообщение. Команд бот не выполняет — только знакомится с
-    новым чатом и один раз объясняет старому, куда делись команды."""
+    новым чатом, а своему отвечает расписанием и на этом всё."""
     chat = msg.get("chat") or {}
     chat_id = str(chat.get("id") or "")
     text = (msg.get("text") or msg.get("caption") or "").strip()
@@ -752,7 +778,7 @@ def handle_message(msg) -> None:
     name, _args = parse_command(text)
     if name:
         log.debug("Команда /%s из чата %s — в Telegram они выключены", name, chat_id)
-        explain_no_commands(chat_id)
+        answer_schedule(chat_id)
 
 
 TOAST = {

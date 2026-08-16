@@ -325,7 +325,7 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
     stats["cost"] += spent
     main = primary_of(best)
 
-    text = breaking_card(card, best, best_score, category)
+    text = breaking_card(card, best, best_score)
     tg_send(chat_id, text,
             keyboard=feedback_keyboard([(card, best, best_score, category)]),
             silent=False)

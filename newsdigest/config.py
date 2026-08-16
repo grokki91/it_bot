@@ -88,6 +88,11 @@ CFG = {
     "listen":           True,      # [env ND_LISTEN] принимать из чата нажатия
                                    # кнопок 👍/👎/🔖 и заявки новых чатов.
                                    # 0 = ничего не слушаем, только отправка
+    "chat_reply":       "schedule",# [env ND_CHAT_REPLY] что отвечать на команду
+                                   # в чате: schedule — расписание и время
+                                   # следующего выпуска, off — вообще ничего
+                                   # (переписки с ботом не будет совсем;
+                                   # кнопки 👍/👎/🔖 при этом работают)
     "signup":           "ask",     # [env ND_SIGNUP] что делать с новым чатом:
                                    # ask — спросить владельца кнопками,
                                    # open — подписывать сразу (осторожно: каждый
@@ -179,6 +184,7 @@ ENV_MAP = {
     "ND_MODEL_SUMMARY": ("model_summary", str),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_CHAT_REPLY": ("chat_reply", str),
     "ND_FEEDBACK": ("feedback_buttons",
                     lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_FEEDBACK_STYLE": ("feedback_style", str),

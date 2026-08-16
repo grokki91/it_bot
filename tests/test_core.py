@@ -203,6 +203,21 @@ class TestRender(unittest.TestCase):
         self.assertNotIn("1. Заголовок", text)
         self.assertIn("<b>Заголовок 0</b>", text)
 
+    def test_headline_carries_no_icon(self):
+        # заголовок выделяется только жирным: значок категории перед каждой
+        # новостью повторял вывеску раздела и мешал читать ленту
+        text = render.fit_blocks(self.blocks(1), 100)[0][0]
+        self.assertIn("\n<b>Заголовок 0</b>", text)
+        for icon in ("📌", "🚀", "📰"):
+            self.assertNotIn(icon, text)
+
+    def test_breaking_headline_carries_no_icon(self):
+        card, group, score, _cat = self.cards(1)[0]
+        text = render.breaking_card(card, group, score)
+        self.assertIn("⚡ <b>Срочно</b>", text)          # пометка срочного — на месте
+        self.assertIn("<b>Заголовок 0</b>", text)
+        self.assertNotIn("📌", text)
+
     def test_header_names_the_day_and_the_slot(self):
         text = render.fit_blocks(self.blocks(2, 1), 100)[0][0]
         head = text.split("\n")[0]

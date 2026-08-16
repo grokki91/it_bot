@@ -317,12 +317,41 @@ def due(conn):
     return ready
 
 
-def next_send_human(sub=None, now=None) -> str:
-    """«сегодня в 21:00 (Europe/Riga)» — когда ждать следующий выпуск."""
+def tz_of(sub=None) -> str:
+    """Пояс подписчика или общий пояс бота — для подписи под временем."""
+    return (sub["tz"] if sub is not None and sub["tz"] else config.tz_label())
+
+
+def next_send_at(sub=None, now=None) -> datetime:
+    """Момент следующего выпуска — в местном времени подписчика.
+
+    Момент, а не строка: из него получаются и «завтра в 09:00», и дата, и
+    «через сколько», причём без второго обхода расписания.
+    """
     now = now if now is not None else now_for(sub)
     minutes = now.hour * 60 + now.minute
     slots = slots_for(sub)
     ahead = [at for at in slots if at > minutes]
-    when, at = ("сегодня", ahead[0]) if ahead else ("завтра", slots[0])
-    label = (sub["tz"] if sub is not None and sub["tz"] else config.tz_label())
-    return "%s в %02d:%02d (%s)" % (when, at // 60, at % 60, label)
+    at = ahead[0] if ahead else slots[0]
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight + timedelta(days=0 if ahead else 1, minutes=at)
+
+
+def next_send_human(sub=None, now=None) -> str:
+    """«сегодня в 21:00 (Europe/Riga)» — когда ждать следующий выпуск."""
+    now = now if now is not None else now_for(sub)
+    at = next_send_at(sub, now)
+    when = "сегодня" if at.date() == now.date() else "завтра"
+    return "%s в %02d:%02d (%s)" % (when, at.hour, at.minute, tz_of(sub))
+
+
+def left_human(sub=None, now=None) -> str:
+    """«3 ч 40 мин» — сколько ждать следующего выпуска."""
+    now = now if now is not None else now_for(sub)
+    total = max(int((next_send_at(sub, now) - now).total_seconds()) // 60, 0)
+    hours, minutes = divmod(total, 60)
+    if hours and minutes:
+        return "%d ч %d мин" % (hours, minutes)
+    if hours:
+        return "%d ч" % hours
+    return "%d мин" % minutes if minutes else "меньше минуты"

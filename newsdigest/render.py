@@ -10,6 +10,9 @@
 
     * новости не нумеруются — сквозная нумерация через разделы сбивала
       с толку («7» под вывеской, где новость всего одна);
+    * заголовок новости не помечается значком: значок категории повторял то,
+      что и так написано в вывеске раздела, а жирного шрифта хватает, чтобы
+      увидеть, где начинается следующая новость;
     * шапка считает весь выпуск, а не то, что влезло в первое сообщение;
     * не поместившееся уходит следующим сообщением с пометкой «продолжение»,
       чтобы хвост ленты не выглядел новым выпуском.
@@ -25,8 +28,6 @@ from .profiles import title as topic_title
 from .rank import primary_of
 from .telegram import TG_LIMIT
 
-EMOJI = {"labs": "🚀", "research": "🔬", "opensource": "🛠", "media": "📰",
-         "community": "💬", "business": "💰", "policy": "⚖️", "other": "📌"}
 MONTHS = ("января февраля марта апреля мая июня июля августа сентября октября "
           "ноября декабря").split()
 
@@ -85,7 +86,7 @@ def issue_info(blocks, scanned, note="") -> dict:
             "date": today(), "slot": slot()}
 
 
-def card_block(card, group, score, category, trim):
+def card_block(card, group, score, trim):
     """Одна новость: заголовок, суть, зачем это знать и ссылка."""
     main = primary_of(group)
     title = card.get("headline") or main["title"]
@@ -93,7 +94,7 @@ def card_block(card, group, score, category, trim):
     also = " · " + esc(", ".join(others)) if others else ""
     link = '🔗 <a href="%s">%s</a>%s · ⭐ %.1f' % (
         esc(main["url"]), esc(main["source_id"]), also, score)
-    head = "%s <b>%s</b>" % (EMOJI.get(category, "📌"), esc(title))
+    head = "<b>%s</b>" % esc(title)
     if trim >= 2:
         return "%s\n%s" % (head, link)
     lines = [head]
@@ -159,8 +160,8 @@ def render_blocks(blocks, info, trim=0, head="full"):
         if topic and info["sections"] > 1:
             chunks.append("%s <b>%s</b>" % (topic_emoji(topic),
                                             esc(topic_title(topic))))
-        for card, group, score, category in cards:
-            chunks.append(card_block(card, group, score, category, trim))
+        for card, group, score, _category in cards:
+            chunks.append(card_block(card, group, score, trim))
     return (text + "\n" if text else "") + "\n\n".join(chunks)
 
 
@@ -263,13 +264,12 @@ def fit_message(cards, scanned):
     return fit_blocks([(None, cards)], scanned)
 
 
-def breaking_card(card, group, score, category):
+def breaking_card(card, group, score):
     """Отдельная карточка для срочного: одна новость, но с пометкой ⚡."""
     main = primary_of(group)
     others = sorted({i["source_id"] for i in group} - {main["source_id"]})[:3]
     lines = ["⚡ <b>Срочно</b>", "",
-             "%s <b>%s</b>" % (EMOJI.get(category, "📌"),
-                               esc(card.get("headline") or main["title"]))]
+             "<b>%s</b>" % esc(card.get("headline") or main["title"])]
     what = str(card.get("what") or main["summary"][:300]).strip()
     if what:
         lines.append(esc(what))
