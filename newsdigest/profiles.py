@@ -62,6 +62,7 @@ BUILTIN = {
             ("import-ai",         "https://importai.substack.com/feed",                       2, "community"),
             ("the-batch",         "https://www.deeplearning.ai/the-batch/feed/",              2, "community"),
             ("interconnects",     "https://www.interconnects.ai/feed",                        2, "community"),
+            ("ieee-spectrum-ai",  "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss", 1, "media"),
             # --- open-source: релизы через GitHub Atom (работает без токена) ---
             ("gh-vllm",           "https://github.com/vllm-project/vllm/releases.atom",       1, "opensource"),
             ("gh-llama-cpp",      "https://github.com/ggml-org/llama.cpp/releases.atom",      1, "opensource"),
@@ -181,6 +182,11 @@ BUILTIN = {
             ("grist",           "https://grist.org/feed/",                              2, "media"),
             ("phys-earth",      "https://phys.org/rss-feed/earth-news/",                2, "media"),
             ("sd-climate",      "https://www.sciencedaily.com/rss/earth_climate.xml",   2, "media"),
+            # --- первоисточники климатических данных и докладов ---
+            ("ipcc",            "https://www.ipcc.ch/feed/",                            1, "policy"),
+            ("wmo",             "https://wmo.int/news/rss.xml",                         1, "policy"),
+            ("copernicus",      "https://climate.copernicus.eu/rss.xml",                1, "research"),
+            ("noaa-news",       "https://www.noaa.gov/news-releases/feed",              1, "policy"),
         ],
     },
 
@@ -206,6 +212,8 @@ BUILTIN = {
             ("sd-science",   "https://www.sciencedaily.com/rss/top/science.xml",  2, "media"),
             ("newscientist", "https://www.newscientist.com/feed/home/",           2, "media"),
             ("nplus1",       "https://nplus1.ru/rss",                             2, "media"),
+            ("nature-news",  "https://www.nature.com/nature/articles?type=news&format=rss", 1, "research"),
+            ("ieee-spectrum","https://spectrum.ieee.org/customfeeds/feed/all-topics/rss", 1, "media"),
         ],
     },
 
@@ -231,6 +239,10 @@ BUILTIN = {
             ("who-news",      "https://www.who.int/rss-feeds/news-english.xml",             1, "policy"),
             ("fda-press",     "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", 1, "policy"),
             ("sd-medicine",   "https://www.sciencedaily.com/rss/health_medicine.xml",       2, "media"),
+            # --- регуляторы и доказательная медицина ---
+            ("ema",           "https://www.ema.europa.eu/en/rss.xml",                       1, "policy"),
+            ("nice",          "https://www.nice.org.uk/feeds/guidance.xml",                 1, "policy"),
+            ("cochrane",      "https://www.cochranelibrary.com/rss/cdsr",                   1, "research"),
         ],
     },
 
@@ -282,6 +294,11 @@ BUILTIN = {
             ("un-news",        "https://news.un.org/feed/subscribe/ru/news/all/rss.xml", 1, "policy"),
             ("tass",           "https://tass.ru/rss/v2.xml",                            2, "media"),
             ("rbc",            "https://rssexport.rbc.ru/rbcnews/news/30/full.rss",     2, "media"),
+            # --- мировые агентства. У Reuters и AFP публичного RSS нет: берём
+            # их материалы витриной Google News (ссылки ведут на оригинал).
+            ("reuters-world",  "https://news.google.com/rss/search?q=when:1d+site:reuters.com/world&hl=en-US&gl=US&ceid=US:en", 1, "media"),
+            ("ap-topnews",     "https://feeds.apnews.com/rss/apf-topnews",              1, "media"),
+            ("afp",            "https://news.google.com/rss/search?q=when:1d+site:afp.com&hl=en-US&gl=US&ceid=US:en", 1, "media"),
         ],
     },
 
@@ -306,6 +323,15 @@ BUILTIN = {
             ("guardian-business","https://www.theguardian.com/business/rss",              2, "media"),
             ("marketwatch",      "https://feeds.content.dowjones.io/public/rss/mw_topstories", 2, "media"),
             ("yahoo-finance",    "https://finance.yahoo.com/news/rssindex",               3, "media"),
+            # --- деловые издания и рынки ---
+            ("ft",               "https://www.ft.com/rss/home",                           1, "media"),
+            ("bloomberg-markets","https://feeds.bloomberg.com/markets/news.rss",          1, "media"),
+            ("reuters-markets",  "https://news.google.com/rss/search?q=when:1d+site:reuters.com/markets&hl=en-US&gl=US&ceid=US:en", 1, "media"),
+            # --- статистика и центробанки (первоисточники цифр) ---
+            ("eurostat",         "https://ec.europa.eu/eurostat/api/dissemination/rss/en/euro-indicators.rss", 1, "policy"),
+            ("ecb",              "https://www.ecb.europa.eu/rss/press.html",              1, "policy"),
+            ("nbp",              "https://nbp.pl/en/feed/",                               1, "policy"),
+            ("imf",              "https://www.imf.org/en/News/RSS?language=ENG",          1, "policy"),
         ],
     },
 
