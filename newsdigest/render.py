@@ -1,10 +1,18 @@
 # -*- coding: utf-8 -*-
 """Сборка текста выпуска и подгонка под лимит Telegram.
 
-Выпуск состоит из блоков: раздел и его новости. Один блок без названия —
-это обычный дайджест по одной теме (так выглядел выпуск до версии 3.2),
-один блок с названием — ответ команды /news, много блоков — плановый
-выпуск по всем разделам.
+Выпуск — это одна лента: шапка с датой и временем суток, а под ней разделы
+друг за другом. Один блок без названия — это обычный дайджест по одной теме
+(так выглядел выпуск до версии 3.2), один блок с названием — ответ команды
+/news, много блоков — плановый выпуск по всем разделам.
+
+Читатель видит выпуск как единое целое, поэтому:
+
+    * новости не нумеруются — сквозная нумерация через разделы сбивала
+      с толку («7» под вывеской, где новость всего одна);
+    * шапка считает весь выпуск, а не то, что влезло в первое сообщение;
+    * не поместившееся уходит следующим сообщением с пометкой «продолжение»,
+      чтобы хвост ленты не выглядел новым выпуском.
 """
 from __future__ import annotations
 
@@ -22,20 +30,70 @@ EMOJI = {"labs": "🚀", "research": "🔬", "opensource": "🛠", "media": "�
 MONTHS = ("января февраля марта апреля мая июня июля августа сентября октября "
           "ноября декабря").split()
 
+#: время суток выпуска: с какого часа и как это называется. Порядок обратный —
+#: берём первое подходящее сверху вниз.
+SLOTS = ((23, "🌙", "Ночной выпуск"), (17, "🌆", "Вечерний выпуск"),
+         (11, "☀️", "Дневной выпуск"), (5, "🌅", "Утренний выпуск"))
+
+#: пометка в шапке второго и последующих сообщений одного выпуска
+CONT = "продолжение"
+
 
 def esc(text) -> str:
     return html_mod.escape(str(text or ""), quote=False)
 
 
-def card_block(num, card, group, score, category, trim):
-    """Одна новость: номер, заголовок, суть, зачем это знать и ссылка."""
+def plural(count, one, few, many) -> str:
+    """«1 новость», «2 новости», «7 новостей»."""
+    tail = abs(int(count)) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def slot(now=None) -> tuple:
+    """(эмодзи, название) выпуска по местному времени сборки."""
+    hour = (now or local_now()).hour
+    for since, icon, name in SLOTS:
+        if hour >= since:
+            return icon, name
+    return SLOTS[0][1], SLOTS[0][2]      # до пяти утра — всё ещё ночь
+
+
+def today(now=None) -> str:
+    """«сегодня, 16 августа» — дата словами и явная отметка «сегодня»."""
+    day = now or local_now()
+    return "сегодня, %d %s" % (day.day, MONTHS[day.month - 1])
+
+
+def issue_info(blocks, scanned, note="") -> dict:
+    """Паспорт выпуска: считается один раз на весь выпуск.
+
+    Сообщений может быть несколько, но шапка обязана говорить про выпуск
+    целиком: иначе «7 новостей · разделов: 4» описывает первое сообщение,
+    а следом приходит ещё три раздела — и выглядит это как второй выпуск.
+    """
+    return {"count": sum(len(cards) for _topic, cards in blocks),
+            "sections": len(blocks),
+            "topic": blocks[0][0] if len(blocks) == 1 else "",
+            "scanned": scanned, "note": note,
+            "date": today(), "slot": slot()}
+
+
+def card_block(card, group, score, category, trim):
+    """Одна новость: заголовок, суть, зачем это знать и ссылка."""
     main = primary_of(group)
     title = card.get("headline") or main["title"]
     others = sorted({i["source_id"] for i in group} - {main["source_id"]})[:2]
     also = " · " + esc(", ".join(others)) if others else ""
     link = '🔗 <a href="%s">%s</a>%s · ⭐ %.1f' % (
         esc(main["url"]), esc(main["source_id"]), also, score)
-    head = "%s <b>%d. %s</b>" % (EMOJI.get(category, "📌"), num, esc(title))
+    head = "%s <b>%s</b>" % (EMOJI.get(category, "📌"), esc(title))
     if trim >= 2:
         return "%s\n%s" % (head, link)
     lines = [head]
@@ -49,44 +107,60 @@ def card_block(num, card, group, score, category, trim):
     return "\n".join(lines)
 
 
-def header(blocks, scanned, count, note="") -> list:
-    """Шапка выпуска. У выпуска из одного раздела в ней его название."""
-    day = local_now()
-    date = "%d %s" % (day.day, MONTHS[day.month - 1])
-    if len(blocks) == 1 and blocks[0][0]:
-        lines = ["%s <b>%s</b> · %s" % (topic_emoji(blocks[0][0]),
-                                        esc(topic_title(blocks[0][0])), date),
-                 "<i>%d из %d материалов за сутки</i>" % (count, scanned)]
-    elif len(blocks) == 1:
-        lines = ["📡 <b>Дайджест · %s</b>" % date,
-                 "<i>%d из %d материалов за сутки</i>" % (count, scanned)]
+def counts(info) -> str:
+    """«7 новостей · 4 раздела · из 2955 материалов» — вторая строка шапки."""
+    count, total = info["count"], info["sections"]
+    parts = ["%d %s" % (count, plural(count, "новость", "новости", "новостей"))]
+    if total > 1:
+        parts.append("%d %s" % (total, plural(total, "раздел", "раздела",
+                                              "разделов")))
+    parts.append("из %d материалов за сутки" % info["scanned"])
+    return " · ".join(parts)
+
+
+def header(info) -> list:
+    """Шапка выпуска: время суток, дата и что внутри.
+
+    У выпуска по одному разделу (ответ /news) в первой строке его название:
+    это не «утренний выпуск», а подборка по запросу.
+    """
+    if info["topic"]:
+        first = "%s <b>%s</b> · %s" % (topic_emoji(info["topic"]),
+                                       esc(topic_title(info["topic"])),
+                                       info["date"])
     else:
-        lines = ["📡 <b>Дайджест · %s</b>" % date,
-                 "<i>%d новостей из %d материалов · разделов: %d</i>"
-                 % (count, scanned, len(blocks))]
-    if note:
-        lines.append("<i>%s</i>" % esc(note))
+        icon, name = info["slot"]
+        first = "%s <b>%s</b> · %s" % (icon, esc(name), info["date"])
+    lines = [first, "<i>%s</i>" % counts(info)]
+    if info["note"]:
+        lines.append("<i>%s</i>" % esc(info["note"]))
     return lines + [""]
 
 
-def render_blocks(blocks, scanned, trim=0, head=True, note=""):
+def cont_header(info) -> list:
+    """Шапка продолжения: тот же выпуск, просто не влез в одно сообщение."""
+    icon = topic_emoji(info["topic"]) if info["topic"] else info["slot"][0]
+    name = topic_title(info["topic"]) if info["topic"] else info["slot"][1]
+    return ["%s <i>%s · %s · %s</i>" % (icon, esc(name), info["date"], CONT), ""]
+
+
+def render_blocks(blocks, info, trim=0, head="full"):
     """trim: 0 — полный вид, 1 — без «почему», 2 — только заголовки со ссылками.
 
-    Нумерация сквозная внутри сообщения: под сообщением своя клавиатура,
-    и «3 👍» должно указывать на третью новость именно этого сообщения.
+    head: 'full' — полная шапка, 'cont' — пометка продолжения, None — без шапки.
+    Названия разделов показываем, когда их в выпуске больше одного: в выпуске
+    по одному разделу его имя уже стоит в шапке.
     """
-    count = sum(len(cards) for _topic, cards in blocks)
-    parts = header(blocks, scanned, count, note) if head else []
+    parts = header(info) if head == "full" else (
+        cont_header(info) if head == "cont" else [])
     text = "\n".join(parts)
-    num = 0
     chunks = []
     for topic, cards in blocks:
-        if topic and len(blocks) > 1:
+        if topic and info["sections"] > 1:
             chunks.append("%s <b>%s</b>" % (topic_emoji(topic),
                                             esc(topic_title(topic))))
         for card, group, score, category in cards:
-            num += 1
-            chunks.append(card_block(num, card, group, score, category, trim))
+            chunks.append(card_block(card, group, score, category, trim))
     return (text + "\n" if text else "") + "\n\n".join(chunks)
 
 
@@ -102,7 +176,7 @@ def fit_blocks(blocks, scanned, head=True, note=""):
     """Возвращает список пар (текст, карточки этого сообщения).
 
     Карточки нужны вместе с текстом: под каждым сообщением своя клавиатура
-    реакций, и номера кнопок должны совпадать с номерами в тексте.
+    реакций, и подписи кнопок берутся из этих же карточек.
 
     Подборка по десятку разделов в одно сообщение не влезает никогда. Ужимать
     её до голых заголовков — значит выбросить то, ради чего дайджест и нужен,
@@ -112,18 +186,23 @@ def fit_blocks(blocks, scanned, head=True, note=""):
     blocks = [(topic, cards) for topic, cards in blocks if cards]
     if not blocks:
         return []
-    if len(blocks) == 1:
-        return fit_one(blocks, scanned, head, note)
+    info = issue_info(blocks, scanned, note)
+    return number_parts(pack(blocks, info, "full" if head else None))
 
-    text = render_blocks(blocks, scanned, 0, head, note)
+
+def pack(blocks, info, head="full"):
+    """Раскладывает разделы по сообщениям, сохраняя их порядок."""
+    if len(blocks) == 1:
+        return fit_one(blocks, info, head)
+
+    text = render_blocks(blocks, info, 0, head)
     if fits(text):
         return [(text, flatten(blocks))]
 
     packed, current = [], []
     for block in blocks:
-        first = not packed
-        probe = render_blocks(current + [block], scanned, 0,
-                              head and first, note if first else "")
+        probe = render_blocks(current + [block], info, 0,
+                              head if not packed else "cont")
         if current and not fits(probe):
             packed.append(current)
             current = [block]
@@ -133,15 +212,14 @@ def fit_blocks(blocks, scanned, head=True, note=""):
 
     messages = []
     for at, group in enumerate(packed):
-        messages.extend(fit_blocks(group, scanned, head and at == 0,
-                                   note if at == 0 else ""))
+        messages.extend(fit_one(group, info, head if at == 0 else "cont"))
     return messages
 
 
-def fit_one(blocks, scanned, head=True, note=""):
-    """Один раздел: ужимаем детализацию, а если и это не помогло — режем."""
+def fit_one(blocks, info, head="full"):
+    """Одно сообщение: ужимаем детализацию, а если и это не помогло — режем."""
     for trim in (0, 1, 2):
-        text = render_blocks(blocks, scanned, trim, head, note)
+        text = render_blocks(blocks, info, trim, head)
         if fits(text):
             if trim and CFG["one_message"]:
                 log.info("Сообщение длинное — сократил детализацию (уровень %d)", trim)
@@ -149,15 +227,36 @@ def fit_one(blocks, scanned, head=True, note=""):
 
     topic, cards = blocks[0]
     if len(cards) <= 1:
-        return [(render_blocks(blocks, scanned, 2, head, note)[:TG_LIMIT], cards)]
+        return [(render_blocks(blocks, info, 2, head)[:TG_LIMIT], cards)]
     half = max(len(cards) // 2, 1)
-    return (fit_one([(topic, cards[:half])], scanned, head, note)
-            + fit_one([(topic, cards[half:])], scanned, False))
+    return (fit_one([(topic, cards[:half])], info, head)
+            + fit_one([(topic, cards[half:])], info, "cont"))
+
+
+def number_parts(messages):
+    """Дописывает в шапку продолжения «2 из 3».
+
+    Сколько всего будет частей, известно только когда выпуск уже нарезан,
+    поэтому номер проставляется последним шагом — по готовым сообщениям.
+    """
+    total = len(messages)
+    if total < 2:
+        return messages
+    out = []
+    for at, (text, cards) in enumerate(messages, 1):
+        head, sep, rest = text.partition("\n")
+        if at > 1 and head.endswith(CONT + "</i>"):
+            numbered = "%s %d из %d</i>" % (head[:-len("</i>")], at, total)
+            if len(numbered) + len(sep) + len(rest) <= TG_LIMIT:
+                text = numbered + sep + rest
+        out.append((text, cards))
+    return out
 
 
 # ------------------------------------------- совместимость с выпуском одной темы
 def render(cards, scanned, trim=0):
-    return render_blocks([(None, cards)], scanned, trim)
+    blocks = [(None, cards)]
+    return render_blocks(blocks, issue_info(blocks, scanned), trim)
 
 
 def fit_message(cards, scanned):
@@ -189,8 +288,32 @@ MARK = "✓"
 BUTTONS = ((feedback.UP, "👍"), (feedback.DOWN, "👎"), ("save", "🔖"))
 
 
+def unmarked(text) -> str:
+    """Подпись кнопки без отметки о нажатии. Снимаем только хвостовую: в
+    подписи теперь стоит заголовок новости, и «✓» может встретиться в нём."""
+    text = str(text or "")
+    return text[:-len(MARK)] if text.endswith(MARK) else text
+
+
+#: сколько букв заголовка влезает в кнопку, не разъезжаясь на телефоне
+LABEL = 18
+
+
+def short(text, limit=LABEL) -> str:
+    """Начало заголовка для подписи кнопки: режем по слову, а не по букве."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    return cut.rstrip(" ,.:;—-·") + "…"
+
+
 def feedback_keyboard(cards):
-    """Ряд кнопок на каждую новость: «1 👍», «1 👎», «1 🔖».
+    """Ряд кнопок на каждую новость: «👍 Заголовок», «👎», «🔖».
+
+    Номеров в выпуске больше нет, поэтому ряд подписан началом заголовка —
+    иначе непонятно, какую именно новость оцениваешь. Одна новость (срочное)
+    подписи не требует: она в сообщении единственная.
 
     В callback_data влезает только 64 байта, поэтому кладём туда хэш ссылки —
     по нему потом находятся и заголовок, и источник.
@@ -198,11 +321,14 @@ def feedback_keyboard(cards):
     if not CFG["feedback_buttons"]:
         return None
     keyboard = []
-    for num, (_card, group, _score, _cat) in enumerate(cards, 1):
-        url_hash = primary_of(group)["url_hash"]
-        keyboard.append([{"text": "%d %s" % (num, icon),
-                          "callback_data": "fb:%s:%s" % (kind, url_hash)}
-                         for kind, icon in BUTTONS])
+    for card, group, _score, _cat in cards:
+        main = primary_of(group)
+        row = [{"text": icon,
+                "callback_data": "fb:%s:%s" % (kind, main["url_hash"])}
+               for kind, icon in BUTTONS]
+        if len(cards) > 1:
+            row[0]["text"] += " " + short(card.get("headline") or main["title"])
+        keyboard.append(row)
     return keyboard
 
 
@@ -254,7 +380,7 @@ def expand(keyboard, verdicts=None, saved=None):
         return keyboard             # разворачивать нечего — ничего не трогаем
     for row in news:
         for button in row:
-            bare = str(button.get("text") or "").replace(MARK, "")
+            bare = unmarked(button.get("text"))
             button["text"] = bare + MARK if is_pressed(
                 data_of(button), verdicts, saved) else bare
     return news + [[{"text": "▲ Свернуть", "callback_data": LESS}]]
@@ -291,7 +417,7 @@ def mark_pressed(keyboard, data, pressed=True):
         for button in row:
             other = button.get("callback_data", "")
             other_kind = other.split(":")[1] if other.count(":") >= 2 else ""
-            bare = button.get("text", "").replace(MARK, "")
+            bare = unmarked(button.get("text"))
             if other == data:
                 button["text"] = bare + MARK if pressed else bare
             elif kind in (feedback.UP, feedback.DOWN) and other_kind in (

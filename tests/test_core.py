@@ -165,6 +165,12 @@ class TestRender(unittest.TestCase):
                          "why": "потому что"}, group, 7.5, "labs"))
         return out
 
+    def blocks(self, *sizes, text="кратко"):
+        """Выпуск из нескольких разделов: [(раздел, карточки), ...]."""
+        names = ("ai", "medicine", "space", "science", "climate")
+        return [(names[i], self.cards(size, text))
+                for i, size in enumerate(sizes)]
+
     def test_escapes_html(self):
         group = [item("https://a.com/1", "<b>bold</b> & co", "src")]
         text = render.render([({"headline": "<b>bold</b> & co", "what": "", "why": ""},
@@ -192,14 +198,66 @@ class TestRender(unittest.TestCase):
         # ни одна карточка не потерялась и не задвоилась
         self.assertEqual(sum(len(chunk) for _t, chunk in messages), len(cards))
 
-    def test_keyboard_matches_numbering(self):
+    def test_news_are_not_numbered(self):
+        text = render.fit_blocks(self.blocks(2, 2), 100)[0][0]
+        self.assertNotIn("1. Заголовок", text)
+        self.assertIn("<b>Заголовок 0</b>", text)
+
+    def test_header_names_the_day_and_the_slot(self):
+        text = render.fit_blocks(self.blocks(2, 1), 100)[0][0]
+        head = text.split("\n")[0]
+        self.assertIn("сегодня,", head)
+        self.assertIn(render.slot()[1], head)
+
+    def test_header_counts_the_whole_issue(self):
+        text = render.fit_blocks(self.blocks(2, 2, 1), 2955)[0][0]
+        self.assertIn("5 новостей · 3 раздела · из 2955 материалов", text)
+
+    def test_sections_follow_each_other_in_one_message(self):
+        text = render.fit_blocks(self.blocks(2, 2), 100)[0][0]
+        self.assertIn("ИИ и технологии", text)
+        self.assertIn("Медицина", text)
+
+    def test_single_section_keeps_its_name_in_the_header(self):
+        messages = render.fit_blocks(self.blocks(3), 100)
+        head = messages[0][0].split("\n")[0]
+        self.assertIn("ИИ и технологии", head)           # раздел, а не «выпуск»
+        self.assertEqual(messages[0][0].count("ИИ и технологии"), 1)
+
+    def test_continuation_is_marked_and_numbered(self):
+        # длинный выпуск не влезает в одно сообщение — но и вторым выпуском
+        # выглядеть не должен: у хвоста своя шапка с пометкой
+        messages = render.fit_blocks(self.blocks(*([6] * 5),
+                                                 text="длинный текст " * 40), 100)
+        self.assertGreater(len(messages), 1)
+        for at, (text, _cards) in enumerate(messages[1:], 2):
+            head = text.split("\n")[0]
+            self.assertIn(render.CONT, head)
+            self.assertIn("%d из %d" % (at, len(messages)), head)
+        # и только у первого сообщения полная шапка со счётом новостей
+        self.assertEqual(sum("новостей ·" in text for text, _c in messages), 1)
+
+    def test_keyboard_row_is_signed_with_headline(self):
         cards = self.cards(3)
         keyboard = render.feedback_keyboard(cards)
         self.assertEqual(len(keyboard), 3)
-        self.assertEqual([b["text"] for b in keyboard[0]], ["1 👍", "1 👎", "1 🔖"])
+        self.assertEqual([b["text"] for b in keyboard[0]],
+                         ["👍 Заголовок 0", "👎", "🔖"])
         for row in keyboard:
             for button in row:
                 self.assertLessEqual(len(button["callback_data"].encode()), 64)
+
+    def test_single_news_button_needs_no_signature(self):
+        keyboard = render.feedback_keyboard(self.cards(1))
+        self.assertEqual([b["text"] for b in keyboard[0]], ["👍", "👎", "🔖"])
+
+    def test_long_headline_is_cut_by_word(self):
+        cards = self.cards(2)
+        cards[0][0]["headline"] = "Очень длинный заголовок новости про всё сразу"
+        keyboard = render.feedback_keyboard(cards)
+        label = keyboard[0][0]["text"]
+        self.assertTrue(label.endswith("…"), label)
+        self.assertLessEqual(len(label), 2 + render.LABEL + 1)
 
     def test_keyboard_can_be_switched_off(self):
         CFG["feedback_buttons"] = False
@@ -226,11 +284,11 @@ class TestRender(unittest.TestCase):
         url_hash = keyboard[1][0]["callback_data"].split(":")[2]
         rows = render.expand(keyboard, {url_hash: feedback.UP}, set())
         self.assertEqual(len(rows), 4)                      # 3 новости + «свернуть»
-        self.assertEqual(rows[1][0]["text"], "2 👍✓")        # оценка видна сразу
-        self.assertEqual(rows[1][1]["text"], "2 👎")
+        self.assertEqual(rows[1][0]["text"], "👍 Заголовок 1✓")  # оценка видна сразу
+        self.assertEqual(rows[1][1]["text"], "👎")
         self.assertEqual(rows[-1][0]["callback_data"], render.LESS)
         # исходную раскладку разворачивание не портит
-        self.assertEqual(keyboard[1][0]["text"], "2 👍")
+        self.assertEqual(keyboard[1][0]["text"], "👍 Заголовок 1")
 
     def test_delivery_follows_style(self):
         keyboard = render.feedback_keyboard(self.cards(4))
@@ -254,20 +312,22 @@ class TestRender(unittest.TestCase):
         save = keyboard[0][2]["callback_data"]
 
         render.mark_pressed(keyboard, up)
-        self.assertEqual(keyboard[0][0]["text"], "1 👍✓")
+        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0✓")
 
         render.mark_pressed(keyboard, save)
-        self.assertEqual(keyboard[0][2]["text"], "1 🔖✓")
-        self.assertEqual(keyboard[0][0]["text"], "1 👍✓")   # закладка не сбила оценку
+        self.assertEqual(keyboard[0][2]["text"], "🔖✓")
+        # закладка не сбила оценку
+        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0✓")
 
         render.mark_pressed(keyboard, down)
-        self.assertEqual(keyboard[0][0]["text"], "1 👍")     # 👎 снял 👍
-        self.assertEqual(keyboard[0][1]["text"], "1 👎✓")
-        self.assertEqual(keyboard[0][2]["text"], "1 🔖✓")    # а закладка осталась
+        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0")   # 👎 снял 👍
+        self.assertEqual(keyboard[0][1]["text"], "👎✓")
+        self.assertEqual(keyboard[0][2]["text"], "🔖✓")     # а закладка осталась
 
         render.mark_pressed(keyboard, save, pressed=False)
-        self.assertEqual(keyboard[0][2]["text"], "1 🔖")
-        self.assertEqual(keyboard[1][0]["text"], "2 👍")     # соседний ряд не тронут
+        self.assertEqual(keyboard[0][2]["text"], "🔖")
+        # соседний ряд не тронут
+        self.assertEqual(keyboard[1][0]["text"], "👍 Заголовок 1")
 
 
 class TestSending(unittest.TestCase):
