@@ -242,13 +242,19 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
 
     day = local_now().strftime("%Y-%m-%d")
     for topic, block in cards:
-        for _card, group, _score, category in block:
+        for card, group, score, category in block:
             main = primary_of(group)
+            # вместе с новостью сохраняем и то, что читатель увидел: раздел,
+            # написанный моделью заголовок, суть и оценку. По этой строке
+            # страница потом собирает ленту, не заглядывая в текст сообщения
             conn.execute(
                 "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,"
-                "digest_date,sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?,?)",
+                "digest_date,sent_at,source_id,category,section,headline,"
+                "summary,score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (chat_id, main["url_hash"], main["sig"], main["title"],
-                 main["url"], day, now_iso(), main["source_id"], category))
+                 main["url"], day, now_iso(), main["source_id"], category,
+                 topic or "", str(card.get("headline") or "")[:300],
+                 str(card.get("what") or "")[:500], float(score)))
             for item in group:
                 # 'sent' здесь значит «кому-то уже уходило» и бережёт материал
                 # от уборки; персональный дедуп живёт в таблице sent

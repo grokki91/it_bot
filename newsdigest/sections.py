@@ -26,6 +26,29 @@ def known() -> list:
     return [name for name in DEFAULT_SECTIONS if name in PROFILES] + rest
 
 
+def source_map() -> dict:
+    """Источник -> раздел, которому он принадлежит.
+
+    Один и тот же сайт встречается в нескольких разделах (arstechnica есть и
+    в «ИИ», и в «Железе»), поэтому берём первый по порядку `known()` — тот же
+    порядок, в котором разделы разбираются при сборке выпуска. Так подпись под
+    новостью совпадает с вывеской, под которой она пришла.
+
+    Нужно ленте на странице: у старых записей в истории раздел не сохранён, а
+    показать его надо.
+    """
+    out = {}
+    for topic in known():
+        for feed in PROFILES.get(topic, {}).get("feeds", ()) or ():
+            out.setdefault(feed[0], topic)
+    return out
+
+
+def by_source(source_id: str) -> str:
+    """Раздел источника. Пусто — источника нет ни в одном профиле."""
+    return source_map().get(str(source_id or ""), "")
+
+
 def _aliases() -> dict:
     """Имя (любое) -> идентификатор раздела. Пересборка каждый раз намеренна:
     PROFILES меняется на лету командами /feed и правкой profiles.json."""

@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
 
 -- История отправленного персональна: у каждого подписчика свой дедуп.
+-- Здесь же лежит и сама карточка — раздел, заголовок, суть и оценка модели.
+-- Раньше всё это жило только внутри текста сообщения, и ленту новостей на
+-- странице по такой истории было не построить: ни отфильтровать по разделу,
+-- ни найти вчерашнюю новость поиском.
 CREATE TABLE IF NOT EXISTS sent (
     chat_id     TEXT NOT NULL DEFAULT '',
     url_hash    TEXT NOT NULL,
@@ -34,6 +38,10 @@ CREATE TABLE IF NOT EXISTS sent (
     url         TEXT NOT NULL DEFAULT '',
     source_id   TEXT NOT NULL DEFAULT '',
     category    TEXT NOT NULL DEFAULT 'other',
+    section     TEXT NOT NULL DEFAULT '',
+    headline    TEXT NOT NULL DEFAULT '',
+    summary     TEXT NOT NULL DEFAULT '',
+    score       REAL NOT NULL DEFAULT 0,
     digest_date TEXT NOT NULL,
     sent_at     TEXT NOT NULL,
     PRIMARY KEY (chat_id, url_hash)
@@ -189,6 +197,25 @@ def upgrade(conn) -> None:
     add_sections(conn)
     add_outbox_message_id(conn)
     add_digest_slot(conn)
+    add_news_card(conn)
+
+
+def add_news_card(conn) -> None:
+    """Карточка новости прямо в истории (3.5, лента новостей на странице).
+
+    Идёт ПОСЛЕ split_sent_by_chat: та пересобирает `sent` по старой схеме,
+    и колонки надо досыпать в уже пересобранную таблицу.
+
+    Старые записи остаются без раздела и оценки — это нормально: раздел лента
+    достанет по источнику (`sections.by_source`), а звёздочку у таких новостей
+    просто не покажет. Переписывать историю задним числом нечем.
+    """
+    if not table_exists(conn, "sent"):
+        return                      # новая база: колонки придут из SCHEMA
+    ensure_column(conn, "sent", "section", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "sent", "headline", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "sent", "summary", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "sent", "score", "REAL NOT NULL DEFAULT 0")
 
 
 def add_digest_slot(conn) -> None:

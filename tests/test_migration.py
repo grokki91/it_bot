@@ -88,6 +88,22 @@ class TestUpgradeFrom20(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_history_gets_card_columns(self):
+        """Лента на странице читает раздел, суть и оценку прямо из истории.
+
+        У записей версии 2.0 их нет — колонки должны появиться пустыми, а не
+        уронить обновление: раздел такой новости лента достанет по источнику.
+        """
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT * FROM sent WHERE url_hash='h0'").fetchone()
+            self.assertEqual(row["section"], "")
+            self.assertEqual(row["headline"], "")
+            self.assertEqual(row["summary"], "")
+            self.assertEqual(row["score"], 0)
+        finally:
+            conn.close()
+
     def test_migration_is_idempotent(self):
         storage.db().close()
         conn = storage.db()

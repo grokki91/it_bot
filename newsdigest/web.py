@@ -23,12 +23,12 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import bot, config, feedback, render, sections, subscribers
+from . import bot, config, feedback, newsfeed, render, sections, subscribers
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile
 from .render import esc
-from .storage import db, item_facts, outbox_page, save_outbox
+from .storage import db, item_facts, meta_get, outbox_page, save_outbox
 from .telegram import tg_send
 from .webpage import PAGE
 
@@ -135,6 +135,7 @@ def state(worker) -> dict:
     try:
         subscribers.ensure_owner(conn)
         sub = subscribers.get(conn, chat_id())
+        collected = meta_get(conn, "last_collect", "")
     finally:
         conn.close()
     mine = sections.plan(sub)
@@ -143,6 +144,7 @@ def state(worker) -> dict:
         "each": sections.per_section(sub),
         "feeds": len({f[0] for topic in mine for f in profile(topic)["feeds"]}),
         "next": subscribers.next_send_human(sub),
+        "collected": clock(collected),
         "tz": tz_label(),
         "paused": bool(sub["paused"]) if sub is not None else False,
         "busy": worker.busy() if worker is not None else "",
@@ -192,6 +194,56 @@ def folded(rows) -> bool:
 def when(iso: str) -> str:
     at = parse_date(iso)
     return to_local(at).strftime("%d.%m %H:%M") if at else ""
+
+
+def clock(iso: str) -> str:
+    """Только часы и минуты — «Обновлено в 18:27» в шапке ленты."""
+    at = parse_date(iso)
+    return to_local(at).strftime("%H:%M") if at else ""
+
+
+def to_int(raw, default=0) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def news(query, worker=None) -> dict:
+    """Лента новостей: карточки, а вместе с первой страницей — панели вокруг.
+
+    Меню разделов, популярные источники и темы считаются только на первой
+    странице: при нажатии «Показать ещё» они не меняются, а лишние запросы к
+    базе на каждую подгрузку не нужны.
+    """
+    chat = chat_id()
+    view = str((query.get("view") or ["news"])[0])
+    if view not in newsfeed.VIEWS:
+        view = "news"
+    section = sections.resolve((query.get("section") or [""])[0])
+    search = str((query.get("q") or [""])[0])[:120]
+    offset = max(to_int((query.get("offset") or ["0"])[0], 0), 0)
+
+    conn = db()
+    try:
+        subscribers.ensure_owner(conn)
+        sub = subscribers.get(conn, chat)
+        rows, more = newsfeed.page(conn, chat, view, section, search, offset)
+        verdicts, saved = press_state(conn, chat)
+        payload = {"view": view, "section": section, "q": search,
+                   "offset": offset, "more": more,
+                   "items": newsfeed.cards(conn, rows, verdicts, saved)}
+        if not offset:
+            payload["side"] = {
+                "menu": newsfeed.menu(conn, chat, sections.plan(sub)),
+                "sources": newsfeed.sources(conn, chat),
+                "topics": newsfeed.topics(conn, chat),
+            }
+    finally:
+        conn.close()
+    if not offset:
+        payload["state"] = state(worker)
+    return payload
 
 
 def feed(after=None, worker=None, toast="") -> dict:
@@ -413,6 +465,9 @@ class Site(BaseHTTPRequestHandler):
                 return
             if path == "/api/feed":
                 self._json(feed(self._after(query), self.server.worker))
+                return
+            if path == "/api/news":
+                self._json(news(query, self.server.worker))
                 return
             self._json({"error": "нет такой страницы"}, 404)
         except Exception as exc:  # noqa: BLE001 — сервер не должен падать

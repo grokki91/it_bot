@@ -4,6 +4,16 @@
 Разметка, стили и скрипт лежат вместе нарочно — страница должна открываться
 на VPS без сборки, CDN и второго порта. Логика тут только рисующая: что
 показывать, решает `web.py`, а что отвечать — обработчики бота.
+
+Страница устроена как новостной сайт: слева разделы, в центре лента карточек,
+справа справка о выпуске, популярные источники и темы. Переписка с ботом
+никуда не делась — она переехала в «Уведомления», а команды в «Ещё».
+
+Картинок к новостям у нас нет и быть не может: в RSS они попадаются далеко не
+всегда, а грузить их со сторонних сайтов значит показать этим сайтам, кто и
+когда читает вашу ленту (и продырявить CSP, которая сейчас не пускает наружу
+вообще ничего). Поэтому обложка карточки рисуется на месте: значок раздела на
+его же цвете.
 """
 
 PAGE = """<!doctype html>
@@ -16,80 +26,250 @@ PAGE = """<!doctype html>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
 <style>
 :root {
-  --bg: #f4f5f7; --card: #ffffff; --ink: #16181d; --dim: #6b7280;
-  --line: #e3e5ea; --accent: #2f6fed; --accent-ink: #ffffff;
-  --me: #dfe9ff; --ok: #1f9254; --warn: #b45309;
+  --bg: #f1f3f7; --card: #ffffff; --ink: #14161b; --dim: #6b7280;
+  --line: #e5e7eb; --soft: #f3f5f9; --accent: #2f6fed; --accent-ink: #ffffff;
+  --tint: #e8effd; --me: #dfe9ff; --warn: #b45309; --star: #f5a524;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --tone-l: 40%; --tone-s: 68%;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a; --card: #1c1f25; --ink: #e8eaee; --dim: #9aa1ad;
-    --line: #2a2e36; --accent: #5b8dff; --accent-ink: #0c0e12;
-    --me: #24344f; --ok: #4ade80; --warn: #fbbf24;
+    --bg: #101216; --card: #1a1d23; --ink: #e8eaee; --dim: #98a0ac;
+    --line: #272b33; --soft: #22262e; --accent: #5b8dff; --accent-ink: #0c0e12;
+    --tint: #1c2740; --me: #24344f; --warn: #fbbf24; --star: #fbbf24;
+    --shadow: none;
+    --tone-l: 68%; --tone-s: 62%;
   }
 }
 * { box-sizing: border-box; }
-html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
         "Helvetica Neue", Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
-a { color: var(--accent); }
-button { font: inherit; cursor: pointer; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { font: inherit; cursor: pointer; color: inherit; }
+h1, h2, h3 { margin: 0; }
+.hide { display: none !important; }
 
 /* ------------------------------------------------------------------ вход */
 #login {
-  display: none; min-height: 100%; align-items: center; justify-content: center;
+  display: none; min-height: 100vh; align-items: center; justify-content: center;
   padding: 24px;
 }
 #login.on { display: flex; }
 #login form {
-  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 18px;
   padding: 28px 24px; width: 100%; max-width: 360px; text-align: center;
+  box-shadow: var(--shadow);
 }
-#login h1 { font-size: 20px; margin: 0 0 4px; }
+#login h1 { font-size: 20px; margin-bottom: 4px; }
 #login p { color: var(--dim); font-size: 14px; margin: 0 0 18px; }
 input[type=password], input[type=text] {
-  width: 100%; padding: 12px 14px; border-radius: 10px; font: inherit;
+  width: 100%; padding: 12px 14px; border-radius: 12px; font: inherit;
   border: 1px solid var(--line); background: var(--bg); color: var(--ink);
 }
 input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .primary {
   background: var(--accent); color: var(--accent-ink); border: 0;
-  border-radius: 10px; padding: 12px 16px; width: 100%; margin-top: 12px;
+  border-radius: 12px; padding: 12px 16px; width: 100%; margin-top: 12px;
   font-weight: 600;
 }
 .err { color: #d64545; font-size: 14px; min-height: 20px; margin-top: 10px; }
 
-/* -------------------------------------------------------------- каркас */
-#app { display: none; flex-direction: column; height: 100%; }
-#app.on { display: flex; }
+/* ---------------------------------------------------------------- шапка */
+#app { display: none; }
+#app.on { display: block; }
 header {
-  background: var(--card); border-bottom: 1px solid var(--line);
-  padding: 10px 16px calc(10px + env(safe-area-inset-top)); position: sticky; top: 0; z-index: 5;
+  position: sticky; top: 0; z-index: 20; background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 20px calc(10px + env(safe-area-inset-top));
 }
-.bar { display: flex; align-items: center; gap: 10px; max-width: 820px; margin: 0 auto; }
-.bar h1 { font-size: 17px; margin: 0; flex: 1; }
-.ghost {
-  background: transparent; border: 1px solid var(--line); color: var(--dim);
-  border-radius: 8px; padding: 6px 10px; font-size: 13px;
+.top {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  max-width: 1460px; margin: 0 auto;
 }
-#status { max-width: 820px; margin: 6px auto 0; color: var(--dim); font-size: 13px; }
-#status b { color: var(--ink); font-weight: 600; }
-#busy { color: var(--warn); }
+.brand {
+  display: flex; align-items: center; gap: 8px; font-size: 18px;
+  font-weight: 700; width: 216px; flex: none;
+}
+.brand span { font-size: 22px; }
+.search { flex: 1 1 240px; position: relative; min-width: 0; }
+.search input {
+  background: var(--soft); border-color: transparent; padding-left: 40px;
+  border-radius: 12px;
+}
+.search .lens {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  color: var(--dim); pointer-events: none;
+}
+.search .clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: none; border: 0; color: var(--dim); padding: 6px 8px;
+  border-radius: 8px;
+}
+.tools { display: flex; gap: 8px; margin-left: auto; }
+.icon {
+  position: relative; width: 42px; height: 42px; border-radius: 50%;
+  background: var(--card); border: 1px solid var(--line); font-size: 17px;
+  display: flex; align-items: center; justify-content: center;
+}
+.icon.on { border-color: var(--accent); color: var(--accent); }
+.icon .badge {
+  position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px;
+  padding: 0 5px; border-radius: 9px; background: #e5484d; color: #fff;
+  font-size: 11px; line-height: 18px; font-weight: 700;
+}
 
-main {
-  flex: 1; overflow-y: auto; padding: 16px;
+/* --------------------------------------------------------------- каркас */
+.shell {
+  display: grid; grid-template-columns: 216px minmax(0, 1fr) 320px; gap: 20px;
+  max-width: 1460px; margin: 0 auto; padding: 20px; align-items: start;
 }
-#feed { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+.side, .rail { position: sticky; top: 84px; }
+.side nav { display: flex; flex-direction: column; gap: 2px; }
+.side .gap { height: 22px; }
+.side .foot { color: var(--dim); font-size: 12px; padding: 18px 12px 0; }
+.item {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border-radius: 12px; border: 0; background: none; width: 100%;
+  text-align: left; font-size: 15px; font-weight: 500;
+}
+.item:hover { background: var(--card); }
+.item.on { background: var(--tint); color: var(--accent); font-weight: 600; }
+.item .ico { font-size: 17px; width: 22px; text-align: center; flex: none; }
+.item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; }
+.item .num { color: var(--dim); font-size: 12px; font-weight: 500; }
+.item.on .num { color: var(--accent); }
+
+/* ----------------------------------------------------------------- лента */
+.head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.head h1 { font-size: 27px; letter-spacing: -.02em; }
+.head .meta {
+  color: var(--dim); font-size: 13px; margin-left: auto; text-align: right;
+}
+.tune {
+  background: var(--accent); color: var(--accent-ink); border: 0;
+  border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 14px;
+  white-space: nowrap;
+}
+/* разделов больше, чем влезает в строку: остальные уезжают вправо, и край
+   растушёван — иначе не видно, что список продолжается */
+.chips {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 14px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 92%, transparent);
+  mask-image: linear-gradient(to right, #000 92%, transparent);
+}
+.chips::-webkit-scrollbar { display: none; }
+.chips button {
+  background: var(--card); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 999px; padding: 8px 16px; font-size: 14px; white-space: nowrap;
+}
+.chips button.on {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  font-weight: 600;
+}
+#list { display: flex; flex-direction: column; gap: 12px; }
+
+.news {
+  display: flex; gap: 16px; background: var(--card); border-radius: 16px;
+  border: 1px solid var(--line); box-shadow: var(--shadow); padding: 16px 18px;
+}
+.news .text { flex: 1; min-width: 0; }
+.news .line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--dim); margin-bottom: 8px;
+}
+.news .tag {
+  color: hsl(var(--h) var(--tone-s) var(--tone-l));
+  font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+}
+.news .star { color: var(--star); }
+.news h2 {
+  font-size: 19px; line-height: 1.32; letter-spacing: -.01em; font-weight: 650;
+}
+/* заголовок — ссылка, но выглядеть должен заголовком, а не ссылкой */
+.news h2 a { color: inherit; }
+.news h2 a:hover { color: var(--accent); text-decoration: none; }
+.news .sum {
+  margin: 8px 0 0; color: var(--dim); font-size: 14px; line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.news .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
+.news .src { margin-left: auto; font-size: 13px; display: flex; gap: 5px; }
+.act {
+  background: none; border: 0; padding: 5px 7px; border-radius: 9px;
+  font-size: 15px; line-height: 1; opacity: .62;
+}
+.act:hover { background: var(--soft); opacity: 1; }
+.act.on { opacity: 1; background: var(--tint); }
+.cover {
+  width: 168px; height: 108px; border-radius: 12px; flex: none;
+  display: flex; align-items: center; justify-content: center; font-size: 40px;
+  background: linear-gradient(140deg, hsl(var(--h) 62% 62%),
+                                      hsl(var(--h) 58% 38%));
+}
+.empty {
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 44px 24px; text-align: center; color: var(--dim);
+}
+.empty b { display: block; color: var(--ink); font-size: 17px; margin-bottom: 6px; }
+#more {
+  display: block; margin: 16px auto 0; background: var(--card);
+  border: 1px solid var(--line); color: var(--ink); border-radius: 12px;
+  padding: 11px 24px; font-size: 14px; font-weight: 600;
+}
+
+/* ------------------------------------------------------------ правая колонка */
+.rail { display: flex; flex-direction: column; gap: 12px; }
+.box {
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 16px; box-shadow: var(--shadow);
+}
+.box h3 { font-size: 15px; margin-bottom: 12px; }
+.box .who { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.box .facts { color: var(--dim); font-size: 13px; margin: 10px 0 14px; }
+.box .facts div { margin-top: 2px; }
+.pair { display: flex; gap: 8px; }
+.ghost {
+  flex: 1; background: var(--soft); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 11px; padding: 10px; font-size: 14px;
+  font-weight: 500;
+}
+.ghost.wide { width: 100%; margin-top: 12px; }
+.rows { display: flex; flex-direction: column; gap: 10px; }
+.rows button {
+  display: flex; align-items: center; gap: 10px; background: none; border: 0;
+  padding: 0; width: 100%; text-align: left; font-size: 14px;
+}
+.rows .dot {
+  width: 26px; height: 26px; border-radius: 8px; flex: none; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+  font-weight: 700; background: hsl(var(--h) 58% 48%);
+}
+.rows .nm { flex: 1; color: var(--accent); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+.rows .rate { color: var(--dim); font-size: 13px; white-space: nowrap; }
+.tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.tags button {
+  background: var(--soft); border: 1px solid var(--line); border-radius: 10px;
+  padding: 7px 12px; font-size: 13px; color: var(--accent);
+}
+.warn { color: var(--warn); }
+
+/* --------------------------------------------------- уведомления и команды */
+#msgs { display: flex; flex-direction: column; gap: 12px; }
 .msg {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-  padding: 12px 14px; overflow-wrap: anywhere;
+  padding: 12px 14px; overflow-wrap: anywhere; box-shadow: var(--shadow);
 }
 .msg.me {
   background: var(--me); border-color: transparent; align-self: flex-end;
-  max-width: 80%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 82%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
 }
 .msg .at { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
@@ -97,42 +277,89 @@ main {
 .msg .body pre { white-space: pre-wrap; margin: 6px 0; }
 .msg .body code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 90%;
-  background: rgba(127,127,127,.14); padding: 1px 5px; border-radius: 5px;
+  background: rgba(127, 127, 127, .14); padding: 1px 5px; border-radius: 5px;
 }
 .keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .key {
-  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+  background: var(--soft); border: 1px solid var(--line); color: var(--ink);
   border-radius: 999px; padding: 5px 12px; font-size: 14px;
 }
 .key.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .key.fold { color: var(--dim); }
 .folded { display: none; }
-.empty { color: var(--dim); text-align: center; padding: 40px 0; }
-
-footer {
-  background: var(--card); border-top: 1px solid var(--line);
-  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+#ask {
+  display: flex; gap: 8px; position: sticky; bottom: 0; padding: 12px 0;
+  background: var(--bg);
 }
-.wrap { max-width: 820px; margin: 0 auto; }
-#chips, #topics { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
-#chips button, #topics button {
-  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
-  border-radius: 999px; padding: 6px 12px; font-size: 14px; white-space: nowrap;
-}
-#topics button { border-color: var(--accent); color: var(--accent); }
-#ask { display: flex; gap: 8px; }
 #ask input { flex: 1; }
 #ask button {
   background: var(--accent); color: var(--accent-ink); border: 0;
-  border-radius: 10px; padding: 0 18px; font-weight: 600;
+  border-radius: 12px; padding: 0 20px; font-weight: 600;
 }
+.cmds { display: flex; flex-wrap: wrap; gap: 8px; }
+.cmds button {
+  background: var(--soft); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 999px; padding: 7px 14px; font-size: 14px;
+}
+.hint { color: var(--dim); font-size: 13px; margin: 10px 0 0; }
+
+/* ------------------------------------------------------- нижняя навигация */
+.tabs {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: var(--card); border-top: 1px solid var(--line);
+  padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+}
+.tabs button {
+  flex: 1; background: none; border: 0; padding: 6px 2px; font-size: 11px;
+  color: var(--dim); display: flex; flex-direction: column; align-items: center;
+  gap: 3px; position: relative;
+}
+.tabs button b { font-size: 19px; font-weight: 400; line-height: 1; }
+.tabs button.on { color: var(--accent); }
+.tabs .badge {
+  position: absolute; top: 2px; right: 50%; margin-right: -18px; min-width: 16px;
+  height: 16px; padding: 0 4px; border-radius: 8px; background: #e5484d;
+  color: #fff; font-size: 10px; line-height: 16px; font-weight: 700;
+}
+
 #toast {
-  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
-  background: var(--ink); color: var(--bg); padding: 10px 16px;
+  position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); padding: 11px 18px;
   border-radius: 999px; font-size: 14px; opacity: 0; transition: opacity .2s;
-  pointer-events: none; max-width: 90%; text-align: center; z-index: 9;
+  pointer-events: none; max-width: 90%; text-align: center; z-index: 30;
 }
 #toast.on { opacity: .95; }
+
+@media (max-width: 1180px) {
+  .shell { grid-template-columns: 200px minmax(0, 1fr); }
+  .rail { display: none; }
+  .brand { width: 180px; }
+}
+@media (max-width: 860px) {
+  header { padding: 8px 12px calc(8px + env(safe-area-inset-top)); }
+  .brand { width: auto; font-size: 16px; }
+  .search { order: 3; flex-basis: 100%; }
+  .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
+           gap: 0; }
+  .side { display: none; }
+  .tabs { display: flex; }
+  .head { flex-wrap: wrap; }
+  .head h1 { font-size: 23px; }
+  .head .meta { margin-left: 0; text-align: left; flex-basis: 100%; order: 3; }
+  .tune { margin-left: auto; }
+  .news { padding: 14px; gap: 12px; }
+  .news h2 { font-size: 17px; }
+  .news .line { font-size: 11px; gap: 6px; }
+  /* на телефоне карточка не должна занимать полэкрана: обложка мельче,
+     а суть сворачивается до двух строк */
+  .news .sum {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .cover { width: 92px; height: 92px; align-self: flex-start; font-size: 30px; }
+  /* строка ввода не должна прятаться под нижней навигацией */
+  #ask { bottom: calc(58px + env(safe-area-inset-bottom)); }
+}
 </style>
 </head>
 <body>
@@ -151,33 +378,95 @@ footer {
 
 <div id="app">
   <header>
-    <div class="bar">
-      <h1>📡 Дайджест</h1>
-      <button class="ghost" onclick="refresh(true)">Обновить</button>
-      <button class="ghost" onclick="logout()">Выйти</button>
+    <div class="top">
+      <div class="brand"><span>📡</span> Дайджест</div>
+      <form class="search" onsubmit="return search(event)">
+        <span class="lens">🔍</span>
+        <input type="text" id="q" autocomplete="off" spellcheck="false"
+               placeholder="Поиск по новостям, темам или источникам"
+               oninput="typed()">
+        <button type="button" class="clear hide" id="clear"
+                onclick="clearSearch()" title="Очистить">✕</button>
+      </form>
+      <div class="tools">
+        <button class="icon" id="bell" onclick="go('alerts')"
+                title="Уведомления">🔔</button>
+        <button class="icon" id="who" onclick="go('tools')"
+                title="Настройки">👤</button>
+      </div>
     </div>
-    <div id="status"></div>
   </header>
 
-  <main id="scroll"><div id="feed"></div></main>
+  <div class="shell">
+    <aside class="side">
+      <nav id="nav"></nav>
+      <div class="gap"></div>
+      <nav id="navAux"></nav>
+      <div class="foot">© Дайджест<br>Все права защищены</div>
+    </aside>
 
-  <footer>
-    <div class="wrap">
-      <div id="topics"></div>
-      <div id="chips"></div>
-      <form id="ask" onsubmit="return send(event)">
-        <input type="text" id="text" placeholder="Команда, например /digest"
-               autocomplete="off" autocapitalize="off" spellcheck="false">
-        <button type="submit">▶</button>
-      </form>
-    </div>
-  </footer>
+    <main>
+      <div class="head">
+        <h1 id="title">Главное</h1>
+        <div class="meta" id="meta"></div>
+        <button class="tune" onclick="go('tools')">⚙ Настроить ленту</button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div id="list"></div>
+      <button id="more" class="hide" onclick="loadNews(false)">Показать ещё ⌄</button>
+
+      <div id="stream" class="hide">
+        <div id="msgs"></div>
+        <form id="ask" onsubmit="return send(event)">
+          <input type="text" id="text" placeholder="Команда, например /digest"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button type="submit">▶</button>
+        </form>
+      </div>
+
+      <div id="panel" class="hide"></div>
+    </main>
+
+    <aside class="rail">
+      <div class="box" id="boxDigest"></div>
+      <div class="box" id="boxSources"></div>
+      <div class="box" id="boxTopics"></div>
+    </aside>
+  </div>
+
+  <nav class="tabs" id="tabs"></nav>
 </div>
 
 <div id="toast"></div>
 
 <script>
-var last = 0, timer = null, started = false;
+/* Состояние страницы целиком: что показываем, где остановились в ленте и
+   сколько сообщений пришло, пока читатель их не видел. */
+var S = {
+  view: 'news', section: '', q: '', offset: 0, more: false,
+  last: 0, unread: 0, started: false, timer: null, typing: null,
+  state: null, commands: [], menu: [], side: null
+};
+
+/* Пункты, которые не про разделы: избранное, уведомления и команды. */
+var AUX = [
+  { id: 'liked',  icon: '⭐', name: 'Избранное' },
+  { id: 'alerts', icon: '🔔', name: 'Уведомления' },
+  { id: 'saved',  icon: '🔖', name: 'Сохранённые' },
+  { id: 'tools',  icon: '⚙',  name: 'Настройки' }
+];
+
+var TABS = [
+  { id: 'news',   icon: '🏠', name: 'Главная' },
+  { id: 'saved',  icon: '🔖', name: 'Сохранённые' },
+  { id: 'liked',  icon: '⭐', name: 'Избранное' },
+  { id: 'alerts', icon: '🔔', name: 'Уведомления' },
+  { id: 'tools',  icon: '☰',  name: 'Ещё' }
+];
+
+var NAMES = { news: 'Главное', saved: 'Сохранённые', liked: 'Избранное',
+              alerts: 'Уведомления', tools: 'Настройки' };
+
 var $ = function (id) { return document.getElementById(id); };
 
 /* ------------------------------------------------------------------ сеть */
@@ -195,7 +484,7 @@ function call(path, body) {
 
 function showLogin() {
   stopTimer();
-  started = false;
+  S.started = false;
   $('app').className = '';
   $('login').className = 'on';
   var pass = $('pass');
@@ -221,55 +510,462 @@ function logout() {
   call('/api/logout', {}).then(showLogin).catch(showLogin);
 }
 
-/* --------------------------------------------------------------- рисуем */
+/* --------------------------------------------------------------- мелочи */
 function esc(text) {
-  return String(text).replace(/[&<>"]/g, function (ch) {
+  return String(text == null ? '' : text).replace(/[&<>"]/g, function (ch) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
   });
 }
 
-function drawStatus(state) {
-  var sections = state.sections || [];
-  var bits = ['Разделов: <b>' + sections.length + '</b> · источников ' + state.feeds,
-              'Выпуск ' + esc(state.next) + ', по ' + state.each + ' на раздел'];
-  if (state.paused) { bits.push('<b>⏸ на паузе</b>'); }
-  if (state.busy) { bits.push('<span id="busy">выполняется: ' + esc(state.busy) + '</span>'); }
-  if (!state.owner) { bits.push('<span id="busy">TELEGRAM_CHAT_ID не задан</span>'); }
-  $('status').innerHTML = bits.join(' · ');
+function el(tag, cls, text) {
+  var node = document.createElement(tag);
+  if (cls) { node.className = cls; }
+  if (text != null) { node.textContent = text; }
+  return node;
 }
 
-/* раздел одной кнопкой: то же, что /news <раздел> в чате */
-function drawTopics(sections) {
-  var box = $('topics');
-  if (box.childNodes.length === sections.length) { return; }
+function plural(count, one, few, many) {
+  var tail = Math.abs(count) % 100;
+  if (tail >= 11 && tail <= 14) { return many; }
+  tail = tail % 10;
+  if (tail === 1) { return one; }
+  if (tail >= 2 && tail <= 4) { return few; }
+  return many;
+}
+
+var toastTimer = null;
+function toast(text) {
+  var box = $('toast');
+  box.textContent = text;
+  box.className = 'on';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { box.className = ''; }, 2600);
+}
+
+function isNews(view) { return view === 'news' || view === 'saved' || view === 'liked'; }
+
+/* Цвет квадратика источника: от его имени, чтобы не прыгал между заходами. */
+function hueOf(name) {
+  var sum = 0;
+  for (var i = 0; i < name.length; i++) { sum += name.charCodeAt(i); }
+  return (sum * 37) % 360;
+}
+
+/* ------------------------------------------------------------ навигация */
+function go(view, section) {
+  S.view = view;
+  S.section = view === 'news' ? (section || '') : '';
+  if (view === 'alerts') { S.unread = 0; }
+  window.scrollTo(0, 0);
+  paint();
+  if (isNews(view)) { loadNews(true); }
+}
+
+/* Что видно при этом виде ленты: карточки, переписка или панель команд. */
+function paint() {
+  var news = isNews(S.view);
+  $('list').className = news ? '' : 'hide';
+  $('chips').className = 'chips' + (S.view === 'news' ? '' : ' hide');
+  $('more').className = news && S.more ? '' : 'hide';
+  $('stream').className = S.view === 'alerts' ? '' : 'hide';
+  $('panel').className = S.view === 'tools' ? '' : 'hide';
+  $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
+  $('bell').className = 'icon' + (S.view === 'alerts' ? ' on' : '');
+  $('who').className = 'icon' + (S.view === 'tools' ? ' on' : '');
+  drawMeta();
+  drawNav();
+  drawTabs();
+  if (S.view === 'tools') { drawPanel(); }
+}
+
+function sectionName(id) {
+  for (var i = 0; i < S.menu.length; i++) {
+    if (S.menu[i].id === id) { return S.menu[i].title; }
+  }
+  return id;
+}
+
+function drawMeta() {
+  var st = S.state, bits = [];
+  if (!st) { $('meta').textContent = ''; return; }
+  if (S.q) { bits.push('Поиск: «' + esc(S.q) + '»'); }
+  if (st.collected) { bits.push('🕘 Обновлено в ' + esc(st.collected)); }
+  bits.push(st.feeds + ' ' + plural(st.feeds, 'источник', 'источника', 'источников'));
+  if (st.paused) { bits.push('<b class="warn">⏸ рассылка на паузе</b>'); }
+  if (st.busy) { bits.push('<b class="warn">выполняется: ' + esc(st.busy) + '</b>'); }
+  $('meta').innerHTML = bits.join(' · ');
+}
+
+function drawNav() {
+  var nav = $('nav');
+  nav.innerHTML = '';
+  S.menu.forEach(function (entry) {
+    var on = S.view === 'news' && S.section === entry.id;
+    nav.appendChild(navItem(entry.emoji, entry.title, entry.count, on,
+                            function () { go('news', entry.id); }));
+  });
+  var aux = $('navAux');
+  aux.innerHTML = '';
+  AUX.forEach(function (entry) {
+    aux.appendChild(navItem(entry.icon, entry.name,
+                            entry.id === 'alerts' ? S.unread : 0,
+                            S.view === entry.id,
+                            function () { go(entry.id); }));
+  });
+}
+
+function navItem(icon, name, count, on, act) {
+  var button = el('button', 'item' + (on ? ' on' : ''));
+  button.type = 'button';
+  button.appendChild(el('span', 'ico', icon));
+  button.appendChild(el('span', 'name', name));
+  if (count) { button.appendChild(el('span', 'num', count)); }
+  button.onclick = act;
+  return button;
+}
+
+function drawTabs() {
+  var box = $('tabs');
   box.innerHTML = '';
-  sections.forEach(function (section) {
-    var button = document.createElement('button');
+  TABS.forEach(function (tab) {
+    var on = S.view === tab.id && (tab.id !== 'news' || !S.section);
+    var button = el('button', on ? 'on' : '');
     button.type = 'button';
-    button.textContent = section.label;
-    button.title = 'Топ новостей раздела';
-    button.onclick = function () { run('/news ' + section.id); };
+    button.appendChild(el('b', null, tab.icon));
+    button.appendChild(el('span', null, tab.name));
+    if (tab.id === 'alerts' && S.unread) {
+      button.appendChild(el('span', 'badge', S.unread));
+    }
+    button.onclick = function () { go(tab.id); };
+    box.appendChild(button);
+  });
+  var bell = $('bell');
+  bell.innerHTML = '🔔';
+  if (S.unread) { bell.appendChild(el('span', 'badge', S.unread)); }
+}
+
+function drawChips() {
+  var box = $('chips');
+  box.innerHTML = '';
+  S.menu.forEach(function (entry) {
+    var button = el('button', S.section === entry.id ? 'on' : '',
+                    entry.id ? entry.title : 'Все');
+    button.type = 'button';
+    button.onclick = function () { go('news', entry.id); };
     box.appendChild(button);
   });
 }
 
-function drawChips(commands) {
-  var box = $('chips');
-  if (box.childNodes.length === commands.length) { return; }
+/* ----------------------------------------------------------------- лента */
+function loadNews(reset) {
+  if (reset) { S.offset = 0; }
+  var path = '/api/news?view=' + encodeURIComponent(isNews(S.view) ? S.view : 'news')
+           + '&section=' + encodeURIComponent(S.section)
+           + '&q=' + encodeURIComponent(S.q)
+           + '&offset=' + S.offset;
+  return call(path).then(function (data) {
+    if (data.state) { S.state = data.state; }
+    if (data.side) {
+      S.side = data.side;
+      S.menu = data.side.menu || [];
+      drawChips();
+      drawNav();
+      drawRail();
+    }
+    S.more = !!data.more;
+    S.offset = data.offset + (data.items || []).length;
+    drawList(data.items || [], !data.offset);
+    drawMeta();
+    $('more').className = S.more && isNews(S.view) ? '' : 'hide';
+  }).catch(function (reason) {
+    if (reason !== 'auth') { toast('' + reason); }
+  });
+}
+
+function drawList(items, reset) {
+  var box = $('list');
+  if (reset) { box.innerHTML = ''; }
+  items.forEach(function (item) { box.appendChild(drawCard(item)); });
+  if (!box.childNodes.length) { box.appendChild(drawEmpty()); }
+}
+
+function drawEmpty() {
+  var box = el('div', 'empty');
+  if (S.q) {
+    box.appendChild(el('b', null, 'Ничего не нашлось'));
+    box.appendChild(el('div', null,
+      'По запросу «' + S.q + '» в вашей ленте пусто. Ищется только то, что ' +
+      'вам уже приходило.'));
+    return box;
+  }
+  if (S.view === 'saved') {
+    box.appendChild(el('b', null, 'Закладок пока нет'));
+    box.appendChild(el('div', null, 'Нажмите 🔖 под новостью — она окажется здесь.'));
+    return box;
+  }
+  if (S.view === 'liked') {
+    box.appendChild(el('b', null, 'Ничего не отмечено'));
+    box.appendChild(el('div', null,
+      'Нажмите 👍 под новостью: так бот поймёт, что вам интересно.'));
+    return box;
+  }
+  box.appendChild(el('b', null, 'Здесь пока пусто'));
+  box.appendChild(el('div', null, 'Выпуск ещё не приходил. Соберём прямо сейчас?'));
+  var button = el('button', 'ghost wide', 'Собрать выпуск');
+  button.type = 'button';
+  button.onclick = function () { run('/digest'); };
+  box.appendChild(button);
+  return box;
+}
+
+function drawCard(item) {
+  var card = el('article', 'news');
+  card.id = 'n' + item.hash;
+  card.style.setProperty('--h', String(item.tone));
+
+  var text = el('div', 'text');
+  var line = el('div', 'line');
+  line.appendChild(el('span', 'tag', item.emoji + ' ' + item.label));
+  if (item.at) {
+    line.appendChild(el('span', null, '·'));
+    line.appendChild(el('time', null, item.at));
+  }
+  if (item.score) {
+    line.appendChild(el('span', 'star', '⭐ ' + item.score.toFixed(1)));
+  }
+  text.appendChild(line);
+
+  var head = el('h2');
+  if (item.url) {
+    var link = el('a', null, item.title);
+    link.href = item.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    head.appendChild(link);
+  } else {
+    head.textContent = item.title;
+  }
+  text.appendChild(head);
+  if (item.summary) { text.appendChild(el('p', 'sum', item.summary)); }
+
+  var foot = el('div', 'foot');
+  foot.appendChild(actButton('🔖', 'save', item.saved, item));
+  foot.appendChild(actButton('👍', 'up', item.verdict === 'up', item));
+  foot.appendChild(actButton('👎', 'down', item.verdict === 'down', item));
+  var src = el('span', 'src');
+  if (item.url) {
+    var out = el('a', null, item.source);
+    out.href = item.url;
+    out.target = '_blank';
+    out.rel = 'noopener noreferrer';
+    src.appendChild(out);
+    src.appendChild(el('span', null, '↗'));
+  } else {
+    src.appendChild(el('span', null, item.source));
+  }
+  foot.appendChild(src);
+  text.appendChild(foot);
+
+  card.appendChild(text);
+  card.appendChild(el('div', 'cover', item.emoji));
+  return card;
+}
+
+function actButton(icon, kind, on, item) {
+  var button = el('button', 'act' + (on ? ' on' : ''), icon);
+  button.type = 'button';
+  button.setAttribute('data-act', kind + ':' + item.hash);
+  button.onclick = function () { react('fb:' + kind + ':' + item.hash); };
+  return button;
+}
+
+/* ------------------------------------------------------- правая колонка */
+function drawRail() {
+  drawDigestBox();
+  drawSourcesBox();
+  drawTopicsBox();
+}
+
+function drawDigestBox() {
+  var box = $('boxDigest'), st = S.state;
   box.innerHTML = '';
-  commands.forEach(function (cmd) {
-    var button = document.createElement('button');
+  if (!st) { return; }
+  var who = el('div', 'who');
+  who.appendChild(el('span', null, '📡'));
+  who.appendChild(el('span', null, 'Дайджест'));
+  box.appendChild(who);
+
+  var facts = el('div', 'facts');
+  facts.appendChild(el('div', null,
+    st.feeds + ' ' + plural(st.feeds, 'источник', 'источника', 'источников') +
+    ' · ' + st.sections.length + ' ' +
+    plural(st.sections.length, 'раздел', 'раздела', 'разделов')));
+  facts.appendChild(el('div', null, 'Выпуск ' + st.next));
+  facts.appendChild(el('div', null, 'По ' + st.each + ' ' +
+    plural(st.each, 'новости', 'новости', 'новостей') + ' на раздел'));
+  if (st.paused) { facts.appendChild(el('div', 'warn', '⏸ рассылка на паузе')); }
+  if (!st.owner) {
+    facts.appendChild(el('div', 'warn', 'TELEGRAM_CHAT_ID не задан'));
+  }
+  box.appendChild(facts);
+
+  var pair = el('div', 'pair');
+  var upd = el('button', 'ghost', '↻ Обновить');
+  upd.type = 'button';
+  upd.onclick = function () { loadNews(true); refresh(true); };
+  var out = el('button', 'ghost', '⏻ Выйти');
+  out.type = 'button';
+  out.onclick = logout;
+  pair.appendChild(upd);
+  pair.appendChild(out);
+  box.appendChild(pair);
+}
+
+function drawSourcesBox() {
+  var box = $('boxSources');
+  var list = (S.side && S.side.sources) || [];
+  box.className = 'box' + (list.length ? '' : ' hide');
+  box.innerHTML = '';
+  if (!list.length) { return; }
+  box.appendChild(el('h3', null, 'Популярные источники'));
+  var rows = el('div', 'rows');
+  list.forEach(function (source) {
+    var button = el('button');
     button.type = 'button';
-    button.textContent = '/' + cmd.name;
+    button.title = source.count + ' ' +
+      plural(source.count, 'новость', 'новости', 'новостей') + ' в вашей ленте';
+    var dot = el('span', 'dot', source.name.slice(0, 1).toUpperCase());
+    dot.style.setProperty('--h', String(hueOf(source.name)));
+    button.appendChild(dot);
+    button.appendChild(el('span', 'nm', source.name));
+    button.appendChild(el('span', 'rate', source.rating
+      ? '⭐ ' + source.rating.toFixed(1) : source.count));
+    button.onclick = function () { find(source.id); };
+    rows.appendChild(button);
+  });
+  box.appendChild(rows);
+}
+
+function drawTopicsBox() {
+  var box = $('boxTopics');
+  var list = (S.side && S.side.topics) || [];
+  box.className = 'box' + (list.length ? '' : ' hide');
+  box.innerHTML = '';
+  if (!list.length) { return; }
+  box.appendChild(el('h3', null, 'Популярные темы'));
+  var tags = el('div', 'tags');
+  list.forEach(function (topic) {
+    var button = el('button', null, topic.word);
+    button.type = 'button';
+    button.title = topic.count + ' ' +
+      plural(topic.count, 'новость', 'новости', 'новостей');
+    button.onclick = function () { find(topic.word); };
+    tags.appendChild(button);
+  });
+  box.appendChild(tags);
+}
+
+/* ---------------------------------------------------------------- поиск */
+function find(text) {
+  S.q = text;
+  $('q').value = text;
+  $('clear').className = 'clear';
+  go('news', '');
+}
+
+function search(event) {
+  event.preventDefault();
+  S.q = $('q').value.trim();
+  go('news', S.section);
+  return false;
+}
+
+/* Печатают быстрее, чем отвечает база, — ждём паузы в наборе. */
+function typed() {
+  $('clear').className = $('q').value ? 'clear' : 'clear hide';
+  clearTimeout(S.typing);
+  S.typing = setTimeout(function () {
+    var value = $('q').value.trim();
+    if (value === S.q) { return; }
+    S.q = value;
+    if (!isNews(S.view)) { S.view = 'news'; paint(); }
+    loadNews(true);
+  }, 350);
+}
+
+function clearSearch() {
+  $('q').value = '';
+  $('clear').className = 'clear hide';
+  S.q = '';
+  loadNews(true);
+}
+
+/* ------------------------------------------------------- панель настроек */
+function drawPanel() {
+  var box = $('panel'), st = S.state;
+  box.innerHTML = '';
+
+  var digest = el('div', 'box');
+  digest.appendChild(el('h3', null, 'Выпуск'));
+  if (st) {
+    var facts = el('div', 'facts');
+    facts.appendChild(el('div', null, 'Следующий: ' + st.next));
+    facts.appendChild(el('div', null, 'Разделов: ' + st.sections.length +
+      ', по ' + st.each + ' на каждый, источников ' + st.feeds));
+    facts.appendChild(el('div', null, 'Часовой пояс: ' + st.tz +
+      ' · чат ' + st.chat));
+    digest.appendChild(facts);
+  }
+  var pair = el('div', 'pair');
+  ['Собрать выпуск|/digest', 'Ещё новости|/more', 'Состояние|/status']
+    .forEach(function (spec) {
+      var parts = spec.split('|');
+      var button = el('button', 'ghost', parts[0]);
+      button.type = 'button';
+      button.onclick = function () { run(parts[1]); };
+      pair.appendChild(button);
+    });
+  digest.appendChild(pair);
+  box.appendChild(digest);
+
+  var topics = el('div', 'box');
+  topics.style.marginTop = '12px';
+  topics.appendChild(el('h3', null, 'Топ раздела прямо сейчас'));
+  var tags = el('div', 'tags');
+  ((st && st.sections) || []).forEach(function (section) {
+    var button = el('button', null, section.label);
+    button.type = 'button';
+    button.onclick = function () { run('/news ' + section.id); };
+    tags.appendChild(button);
+  });
+  topics.appendChild(tags);
+  box.appendChild(topics);
+
+  var cmds = el('div', 'box');
+  cmds.style.marginTop = '12px';
+  cmds.appendChild(el('h3', null, 'Команды'));
+  var row = el('div', 'cmds');
+  S.commands.forEach(function (cmd) {
+    var button = el('button', null, '/' + cmd.name);
+    button.type = 'button';
     button.title = cmd.help;
     button.onclick = function () { run('/' + cmd.name); };
-    box.appendChild(button);
+    row.appendChild(button);
   });
+  cmds.appendChild(row);
+  cmds.appendChild(el('p', 'hint',
+    'Ответ придёт в «Уведомления». Там же есть строка ввода: ' +
+    'аргументы вроде /set time 08:30 набираются в ней.'));
+  var out = el('button', 'ghost wide', '⏻ Выйти');
+  out.type = 'button';
+  out.onclick = logout;
+  cmds.appendChild(out);
+  box.appendChild(cmds);
 }
 
+/* ------------------------------------------------------------ переписка */
 function drawMessage(message) {
-  var box = document.createElement('div');
-  box.className = 'msg' + (message.kind === 'me' ? ' me' : '');
+  var box = el('div', 'msg' + (message.kind === 'me' ? ' me' : ''));
   box.id = 'm' + message.id;
   var head = message.kind === 'me' ? '' :
       '<div class="at">' + esc(message.at) + '</div>';
@@ -278,8 +974,7 @@ function drawMessage(message) {
   var rows = message.buttons || [];
   var wrap = document.createElement('div');
   rows.forEach(function (row) {
-    var keys = document.createElement('div');
-    keys.className = 'keys';
+    var keys = el('div', 'keys');
     row.forEach(function (button) { keys.appendChild(drawKey(button)); });
     wrap.appendChild(keys);
   });
@@ -294,86 +989,92 @@ function drawMessage(message) {
 }
 
 function drawFold(wrap, count) {
-  var keys = document.createElement('div');
-  keys.className = 'keys';
-  var el = document.createElement('button');
-  el.type = 'button';
-  el.className = 'key fold';
-  el.textContent = '👍 👎 🔖 Оценить новости (' + count + ')';
-  el.onclick = function () {
+  var keys = el('div', 'keys');
+  var button = el('button', 'key fold',
+                  '👍 👎 🔖 Оценить новости (' + count + ')');
+  button.type = 'button';
+  button.onclick = function () {
     var open = wrap.className !== 'folded';
     wrap.className = open ? 'folded' : '';
-    el.textContent = open ? '👍 👎 🔖 Оценить новости (' + count + ')'
-                          : '▲ Свернуть';
+    button.textContent = open ? '👍 👎 🔖 Оценить новости (' + count + ')'
+                              : '▲ Свернуть';
   };
-  keys.appendChild(el);
+  keys.appendChild(button);
   return keys;
 }
 
 function drawKey(button) {
-  var el = document.createElement('button');
-  el.type = 'button';
-  el.className = 'key' + (button.pressed ? ' on' : '');
-  el.textContent = button.text;
-  el.setAttribute('data-press', button.data);
-  el.onclick = function () { react(button.data); };
-  return el;
+  var node = el('button', 'key' + (button.pressed ? ' on' : ''), button.text);
+  node.type = 'button';
+  node.setAttribute('data-press', button.data);
+  node.onclick = function () { react(button.data); };
+  return node;
 }
 
-function apply(data) {
-  var scroll = $('scroll');
-  var atBottom = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 80;
-  if (data.state) { drawStatus(data.state); drawTopics(data.state.sections || []); }
-  if (data.commands) { drawChips(data.commands); }
-  var feed = $('feed');
-  (data.messages || []).forEach(function (message) {
+/* --------------------------------------------------------------- действия */
+function applyFeed(data) {
+  if (data.state) { S.state = data.state; }
+  if (data.commands) { S.commands = data.commands; }
+  var msgs = $('msgs');
+  var fresh = data.messages || [];
+  fresh.forEach(function (message) {
     var old = $('m' + message.id);
-    if (old) { old.replaceWith(drawMessage(message)); } else { feed.appendChild(drawMessage(message)); }
+    if (old) { old.replaceWith(drawMessage(message)); }
+    else { msgs.appendChild(drawMessage(message)); }
   });
-  if (!feed.childNodes.length) {
-    feed.innerHTML = '<div class="empty">Пока пусто. Нажмите /digest — ' +
-                     'выпуск придёт сюда и в Telegram.</div>';
-  }
-  if (typeof data.last === 'number' && data.last > last) { last = data.last; }
+  if (typeof data.last === 'number' && data.last > S.last) { S.last = data.last; }
   if (data.press) { repaint(data.press); }
   if (data.toast) { toast(data.toast); }
-  if (atBottom || (data.messages || []).length) { scroll.scrollTop = scroll.scrollHeight; }
+  if (fresh.length && S.view !== 'alerts') { S.unread += fresh.length; }
+  if (fresh.length && S.view === 'alerts') {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  drawMeta();
+  drawTabs();
+  drawNav();
+  drawDigestBox();
+  if (S.view === 'tools') { drawPanel(); }
 }
 
+/* Отметку о нажатии ставим и в карточке ленты, и в копии сообщения:
+   одна и та же новость видна в обоих местах. */
 function repaint(press) {
   if (!press.hash) { return; }
   var keys = document.querySelectorAll('[data-press]');
-  Array.prototype.forEach.call(keys, function (el) {
-    var parts = el.getAttribute('data-press').split(':');
+  Array.prototype.forEach.call(keys, function (node) {
+    var parts = node.getAttribute('data-press').split(':');
     if (parts[0] !== 'fb' || parts[2] !== press.hash) { return; }
-    el.className = 'key' + (press.pressed && press.pressed[parts[1]] ? ' on' : '');
+    node.className = 'key' + (press.pressed && press.pressed[parts[1]] ? ' on' : '');
   });
-}
-
-var toastTimer = null;
-function toast(text) {
-  var box = $('toast');
-  box.textContent = text;
-  box.className = 'on';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(function () { box.className = ''; }, 2600);
-}
-
-/* -------------------------------------------------------------- действия */
-function refresh(manual) {
-  return call('/api/feed?after=' + last).then(apply).catch(function (reason) {
-    if (manual && reason !== 'auth') { toast('Не отвечает: ' + reason); }
+  var acts = document.querySelectorAll('[data-act]');
+  Array.prototype.forEach.call(acts, function (node) {
+    var parts = node.getAttribute('data-act').split(':');
+    if (parts[1] !== press.hash) { return; }
+    node.className = 'act' + (press.pressed && press.pressed[parts[0]] ? ' on' : '');
   });
-}
-
-function run(text) {
-  return call('/api/command?after=' + last, { text: text }).then(apply)
-    .catch(function (reason) { if (reason !== 'auth') { toast('' + reason); } });
+  /* из закладок и избранного карточка уходит сразу: читатель только что
+     снял отметку, ради которой она тут и была */
+  var card = $('n' + press.hash);
+  var gone = (S.view === 'saved' && press.pressed && !press.pressed.save)
+          || (S.view === 'liked' && press.pressed && !press.pressed.up);
+  if (card && gone) {
+    card.remove();
+    if (!$('list').childNodes.length) { $('list').appendChild(drawEmpty()); }
+  }
 }
 
 function react(data) {
-  return call('/api/react?after=' + last, { data: data }).then(apply)
+  return call('/api/react?after=' + S.last, { data: data }).then(applyFeed)
     .catch(function (reason) { if (reason !== 'auth') { toast('' + reason); } });
+}
+
+function run(text) {
+  return call('/api/command?after=' + S.last, { text: text }).then(function (data) {
+    applyFeed(data);
+    go('alerts');
+  }).catch(function (reason) {
+    if (reason !== 'auth') { toast('' + reason); }
+  });
 }
 
 function send(event) {
@@ -386,34 +1087,50 @@ function send(event) {
   return false;
 }
 
+function refresh(manual) {
+  var before = S.last;
+  return call('/api/feed?after=' + S.last).then(function (data) {
+    applyFeed(data);
+    /* пришёл выпуск — значит в ленте появились новости, перечитываем её */
+    if (S.last > before && isNews(S.view)) { loadNews(true); }
+    if (manual) { toast('Обновлено'); }
+  }).catch(function (reason) {
+    if (manual && reason !== 'auth') { toast('Не отвечает: ' + reason); }
+  });
+}
+
 /* ------------------------------------------------------ опрос и запуск */
-function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+function stopTimer() { if (S.timer) { clearInterval(S.timer); S.timer = null; } }
 
 function startTimer() {
   stopTimer();
-  timer = setInterval(function () {
+  S.timer = setInterval(function () {
     if (!document.hidden) { refresh(false); }
-  }, 5000);
+  }, 8000);
 }
 
 function start() {
-  if (started) { return; }
-  started = true;
-  last = 0;
-  $('feed').innerHTML = '';
+  if (S.started) { return; }
+  S.started = true;
+  S.last = 0;
+  $('msgs').innerHTML = '';
   refresh(false);
+  loadNews(true);
+  paint();
   startTimer();
 }
 
 document.addEventListener('visibilitychange', function () {
-  if (!document.hidden && started) { refresh(false); }
+  if (!document.hidden && S.started) { refresh(false); }
 });
 
 call('/api/feed').then(function (data) {
   $('login').className = '';
   $('app').className = 'on';
-  started = true;
-  apply(data);
+  S.started = true;
+  applyFeed(data);
+  loadNews(true);
+  paint();
   startTimer();
 }).catch(function () { /* 401 уже показал форму входа */ });
 </script>

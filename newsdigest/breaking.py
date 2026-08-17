@@ -334,11 +334,17 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
             silent=False)
     stats["sent"] = 1
 
+    # раздел у срочного свой не считается: кандидаты берутся сразу по всем
+    # разделам читателя, поэтому вывеску определяем по источнику
     conn.execute(
         "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,digest_date,"
-        "sent_at,source_id,category) VALUES (?,?,?,?,?,?,?,?,?)",
+        "sent_at,source_id,category,section,headline,summary,score) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (chat_id, main["url_hash"], main["sig"], main["title"], main["url"],
-         local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"], category))
+         local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"], category,
+         sections.by_source(main["source_id"]),
+         str(card.get("headline") or "")[:300],
+         str(card.get("what") or "")[:500], float(best_score)))
     for row in best:
         conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                      (row["url_hash"],))

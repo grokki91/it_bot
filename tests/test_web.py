@@ -12,12 +12,13 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, profiles, storage  # noqa: E402
+from newsdigest import bot, config, feedback, profiles, sections, storage  # noqa: E402
 from newsdigest import subscribers, web  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.profiles import profile  # noqa: E402
@@ -44,7 +45,8 @@ class WebCase(unittest.TestCase):
 
         conn = storage.db()
         try:
-            for table in ("outbox", "feedback", "saved", "subscribers", "leftover"):
+            for table in ("outbox", "feedback", "saved", "subscribers",
+                          "leftover", "sent"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.ensure_owner(conn)
@@ -97,6 +99,23 @@ class WebCase(unittest.TestCase):
         try:
             return [dict(r) for r in conn.execute(
                 "SELECT * FROM outbox WHERE chat_id=? ORDER BY id", (OWNER,))]
+        finally:
+            conn.close()
+
+    def delivered(self, url_hash, title, source_id, section="", score=0.0,
+                  summary="", url="", minute=0, chat=OWNER):
+        """Новость, которая читателю уже уходила, — из неё и состоит лента."""
+        conn = storage.db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO sent(chat_id,url_hash,sig,title,url,"
+                "source_id,category,section,headline,summary,score,digest_date,"
+                "sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (chat, url_hash, "", title,
+                 url or "https://example.com/%s" % url_hash, source_id, "media",
+                 section, title, summary, score, "2026-08-17",
+                 "2026-08-17T09:%02d:00+00:00" % minute))
+            conn.commit()
         finally:
             conn.close()
 
@@ -393,6 +412,198 @@ class TestDigestOnThePage(WebCase):
         # и кнопки под выпуском живые
         keys = [b for m in body["messages"] for row in m["buttons"] for b in row]
         self.assertTrue(any(b["data"].startswith("fb:up:") for b in keys))
+
+
+class TestNews(WebCase):
+    """Лента новостей: то, ради чего страница перестала быть чатом."""
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.delivered("h1", "В Иране заявили о проходе через пролив", "ria",
+                       "incidents", 8.4, "Тегеран ответил на заявление США.",
+                       "https://ria.ru/one", minute=1)
+        self.delivered("h2", "Переговоры по Украине: главы МИД встретятся",
+                       "interfax", "politics", 7.8,
+                       "Экстренная встреча 18 августа.",
+                       "https://www.interfax.ru/two", minute=2)
+        self.delivered("h3", "Иран и нефть: цены пошли вверх", "rbc", "economy",
+                       7.1, "", "https://rbc.ru/three", minute=3)
+        # запись без раздела: так выглядит история, собранная до обновления
+        self.delivered("h4", "Apple представила новые MacBook", "theverge",
+                       "", 0.0, "", "https://www.theverge.com/four", minute=4)
+
+    def news(self, params=""):
+        return self.ask("/api/news" + params)[1]
+
+    def test_news_needs_password(self):
+        code, body = self.ask("/api/news")
+        self.assertEqual(code, 401)
+        self.assertIn("пароль", body["error"])
+
+    def test_cards_carry_section_source_and_score(self):
+        self.login()
+        items = self.news()["items"]
+        self.assertEqual(len(items), 4)
+        first = items[0]                       # свежая новость идёт первой
+        self.assertEqual(first["hash"], "h4")
+        card = [i for i in items if i["hash"] == "h1"][0]
+        self.assertEqual(card["section"], "incidents")
+        self.assertEqual(card["label"], profiles.title("incidents"))
+        self.assertEqual(card["source"], "ria.ru")     # домен, а не source_id
+        self.assertEqual(card["score"], 8.4)
+        self.assertIn("Тегеран", card["summary"])
+        self.assertTrue(card["tone"])
+
+    def test_old_row_gets_its_section_from_the_source(self):
+        """У истории до обновления раздела нет — берём его по источнику."""
+        self.login()
+        card = [i for i in self.news()["items"] if i["hash"] == "h4"][0]
+        self.assertEqual(card["section"], sections.by_source("theverge"))
+        self.assertTrue(card["section"])
+
+    def test_section_filter(self):
+        self.login()
+        items = self.news("?section=incidents")["items"]
+        self.assertEqual([i["hash"] for i in items], ["h1"])
+
+    def test_section_filter_reaches_rows_without_a_section(self):
+        self.login()
+        topic = sections.by_source("theverge")
+        items = self.news("?section=" + topic)["items"]
+        self.assertIn("h4", [i["hash"] for i in items])
+
+    def test_unknown_section_shows_everything(self):
+        self.login()
+        self.assertEqual(len(self.news("?section=no-such-thing")["items"]), 4)
+
+    def test_search_ignores_case_in_russian(self):
+        """LOWER() в SQLite кириллицу не знает — поиск обязан знать."""
+        self.login()
+        found = self.news("?q=" + urllib.parse.quote("иран"))["items"]
+        self.assertEqual(sorted(i["hash"] for i in found), ["h1", "h3"])
+
+    def test_search_looks_into_summary_and_source(self):
+        self.login()
+        self.assertEqual([i["hash"] for i in
+                          self.news("?q=" + urllib.parse.quote("Тегеран"))["items"]],
+                         ["h1"])
+        self.assertEqual([i["hash"] for i in self.news("?q=interfax")["items"]],
+                         ["h2"])
+
+    def test_search_finds_other_forms_of_the_word(self):
+        """«Иране» и «Иран» — одна новость: искать по падежам читатель не обязан."""
+        self.login()
+        found = self.news("?q=" + urllib.parse.quote("Иране"))["items"]
+        self.assertEqual(sorted(i["hash"] for i in found), ["h1", "h3"])
+        # и наоборот: плашка «Иран» из популярных тем находит «в Иране»
+        found = self.news("?q=" + urllib.parse.quote("Ирана"))["items"]
+        self.assertEqual(sorted(i["hash"] for i in found), ["h1", "h3"])
+
+    def test_search_words_narrow_the_answer(self):
+        self.login()
+        found = self.news("?q=" + urllib.parse.quote("иран нефть"))["items"]
+        self.assertEqual([i["hash"] for i in found], ["h3"])
+
+    def test_nothing_found_is_not_an_error(self):
+        self.login()
+        body = self.news("?q=" + urllib.parse.quote("криптовалюты"))
+        self.assertEqual(body["items"], [])
+        self.assertFalse(body["more"])
+
+    def test_show_more_pages_through_the_history(self):
+        for n in range(25):
+            self.delivered("p%d" % n, "Новость номер %d" % n, "ria", "incidents",
+                           6.0, minute=10 + n)
+        self.login()
+        first = self.news()
+        self.assertEqual(len(first["items"]), 20)
+        self.assertTrue(first["more"])
+        second = self.news("?offset=20")
+        self.assertEqual(len(second["items"]), 9)       # 25 плюс четыре из setUp
+        self.assertFalse(second["more"])
+        # страницы не пересекаются
+        self.assertFalse(set(i["hash"] for i in first["items"]) &
+                         set(i["hash"] for i in second["items"]))
+
+    def test_panels_come_with_the_first_page_only(self):
+        self.login()
+        self.assertIn("side", self.news())
+        self.assertNotIn("side", self.news("?offset=20"))
+
+    def test_menu_counts_sections(self):
+        self.login()
+        menu = self.news()["side"]["menu"]
+        home = menu[0]
+        self.assertEqual(home["id"], "")
+        self.assertEqual(home["count"], 4)
+        found = [m for m in menu if m["id"] == "incidents"]
+        self.assertEqual(found[0]["count"], 1)
+
+    def test_popular_sources_carry_the_rating(self):
+        self.delivered("h5", "Ещё одна новость РИА", "ria", "incidents", 9.0,
+                       url="https://ria.ru/five", minute=5)
+        self.login()
+        sources = self.news()["side"]["sources"]
+        top = sources[0]
+        self.assertEqual(top["name"], "ria.ru")
+        self.assertEqual(top["count"], 2)
+        self.assertEqual(top["rating"], 8.7)            # среднее 8.4 и 9.0
+
+    def test_popular_topics_are_words_from_headlines(self):
+        self.login()
+        words = [t["word"] for t in self.news()["side"]["topics"]]
+        self.assertIn("Иран", words)                    # встречается дважды
+        self.assertNotIn("новые", words)                # служебное слово
+
+    def test_saved_view_shows_bookmarks(self):
+        self.login()
+        self.ask("/api/react", {"data": "fb:save:h2"})
+        items = self.news("?view=saved")["items"]
+        self.assertEqual([i["hash"] for i in items], ["h2"])
+        self.assertTrue(items[0]["saved"])
+        # раздел и суть подтянулись из истории, а не потерялись
+        self.assertEqual(items[0]["section"], "politics")
+        self.assertIn("Экстренная", items[0]["summary"])
+
+    def test_bookmark_removed_leaves_the_saved_view(self):
+        self.login()
+        self.ask("/api/react", {"data": "fb:save:h2"})
+        self.ask("/api/react", {"data": "fb:save:h2"})
+        self.assertEqual(self.news("?view=saved")["items"], [])
+
+    def test_liked_view_shows_only_thumbs_up(self):
+        self.login()
+        self.ask("/api/react", {"data": "fb:up:h1"})
+        self.ask("/api/react", {"data": "fb:down:h3"})
+        items = self.news("?view=liked")["items"]
+        self.assertEqual([i["hash"] for i in items], ["h1"])
+        self.assertEqual(items[0]["verdict"], "up")
+
+    def test_pressed_state_shows_on_the_cards(self):
+        self.login()
+        self.ask("/api/react", {"data": "fb:save:h1"})
+        card = [i for i in self.news()["items"] if i["hash"] == "h1"][0]
+        self.assertTrue(card["saved"])
+        self.assertEqual(card["verdict"], "")
+
+    def test_other_readers_history_is_not_shown(self):
+        self.delivered("z1", "Чужая новость", "ria", "incidents", 7.0,
+                       minute=9, chat="999")
+        self.login()
+        self.assertNotIn("z1", [i["hash"] for i in self.news()["items"]])
+
+    def test_unknown_view_falls_back_to_the_feed(self):
+        self.login()
+        body = self.news("?view=whatever")
+        self.assertEqual(body["view"], "news")
+        self.assertEqual(len(body["items"]), 4)
+
+    def test_state_says_when_the_sources_were_read(self):
+        conn = storage.db()
+        storage.meta_set(conn, "last_collect", "2026-08-17T15:27:00+00:00")
+        conn.close()
+        self.login()
+        self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
 
 
 class TestSanitizer(unittest.TestCase):
