@@ -150,7 +150,7 @@ class TestApply(SettingsCase):
 
 
 class TestSetCommand(SettingsCase):
-    """Тот же путь, но через команду со страницы."""
+    """Тот же путь, но через обработчик команды."""
 
     def setUp(self):
         super().setUp()

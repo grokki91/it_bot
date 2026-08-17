@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Лента новостей для страницы: что уже пришло читателю и что вокруг неё.
 
-Страница в браузере показывала переписку с ботом — те же сообщения, что
-уходят в Telegram. Прочитать выпуск так можно, а вот вернуться к вчерашней
-новости, посмотреть один раздел или найти что-то поиском — нет: всё лежит
+Страница в браузере когда-то показывала переписку с ботом — те же сообщения,
+что уходят в Telegram. Прочитать выпуск так можно, а вот вернуться к вчерашней
+новости, посмотреть один раздел или найти что-то поиском — нет: всё лежало
 внутри текста сообщения.
 
 Здесь лента собирается из истории `sent`: одна отправленная новость — одна
@@ -16,6 +16,10 @@
     news    всё, что приходило (с фильтром по разделу и поиском)
     saved   закладки 🔖
     liked   отмеченное 👍
+
+Отсюда же берутся и «Уведомления»: та же история, но крупным планом — когда
+была рассылка, сколько в ней было новостей и пять самых важных ссылок (см.
+`mailings`).
 
 Карточка ленты — это заголовок И текст новости: по одному заголовку понять,
 о чём новость, нельзя, а открывать ради этого источник читатель не должен.
@@ -37,6 +41,7 @@ from .config import CFG, local_now, to_local
 from .feedparse import parse_date
 from .profiles import emoji as topic_emoji
 from .profiles import title as topic_title
+from .render import MONTHS
 from .textutil import STOPWORDS
 
 #: сколько карточек отдаём за один запрос страницы
@@ -393,6 +398,99 @@ def remember(conn, chat_id, cards) -> None:
         [(str(card["title"])[:300], str(card["summary"])[:500],
           str(chat_id), card["hash"]) for card in cards])
     conn.commit()
+
+
+# ------------------------------------------------------------------ рассылки
+#: разрыв между соседними записями истории, после которого это уже другая
+#: рассылка. Выпуск оседает в истории одним махом — все его новости в пределах
+#: секунд, — а следующий приходит через часы. Получаса хватает, чтобы не
+#: склеить два выпуска и не разорвать один
+MAILING_GAP = 30 * 60
+
+#: сколько рассылок показываем в «Уведомлениях»
+MAILINGS = 10
+
+#: сколько ссылок берём из рассылки — самые важные по оценке модели
+MAILING_LINKS = 5
+
+#: строк истории, по которым собираются рассылки. На десяток выпусков этого
+#: с запасом хватает, а перебирать всю историю ради заголовков незачем
+MAILING_ROWS = 500
+
+
+def outward(url: str) -> str:
+    """Ссылка наружу. Адрес пришёл из чужого фида — пускаем только http(s)."""
+    url = str(url or "").strip()
+    return url if url.lower().startswith(("http://", "https://")) else ""
+
+
+def spoken_date(local, now) -> str:
+    """«сегодня, 17 августа» — дата рассылки словами."""
+    day = "%d %s" % (local.day, MONTHS[local.month - 1])
+    days = (now.date() - local.date()).days
+    if days == 0:
+        return "сегодня, " + day
+    if days == 1:
+        return "вчера, " + day
+    return day if local.year == now.year else "%s %d" % (day, local.year)
+
+
+def link_of(row, smap) -> dict:
+    """Строка истории -> ссылка для «Уведомлений»: заголовок, источник, оценка.
+
+    Заголовок берём тот же, что в ленте, и заново к модели за ним не ходим:
+    английские записи доводит до русского сама лента (см. `russify`), а
+    уведомления показывают уже осевший в истории текст.
+    """
+    topic = row["section"] or smap.get(row["source_id"], "")
+    url = outward(column(row, "url"))
+    return {"title": str(column(row, "headline") or column(row, "title")),
+            "url": url,
+            "source": domain(url) or column(row, "source_id") or "источник",
+            "score": round(float(column(row, "score", 0) or 0), 1),
+            "emoji": topic_emoji(topic) if topic else "📰"}
+
+
+def mailing(group, smap, now) -> dict:
+    """Одна рассылка: когда пришла, сколько в ней было и что в ней главное."""
+    rows = group["rows"]
+    topics = {row["section"] or smap.get(row["source_id"], "") for row in rows}
+    best = sorted(rows, key=lambda row: -float(column(row, "score", 0) or 0))
+    local = to_local(group["at"])
+    return {"id": str(rows[0]["sent_at"]),
+            "when": spoken_date(local, now),
+            "time": local.strftime("%H:%M"),
+            "count": len(rows),
+            "sections": len([topic for topic in topics if topic]),
+            "links": [link_of(row, smap) for row in best[:MAILING_LINKS]]}
+
+
+def mailings(conn, chat_id, limit=MAILINGS) -> list:
+    """Уведомления: краткая сводка последних рассылок, свежая сверху.
+
+    Отдельной таблицы выпусков нет, и заводить её незачем: новости одной
+    рассылки лежат в истории подряд и в пределах секунд. Рассылка — это
+    соседние записи без разрыва длиннее MAILING_GAP; так же отделяется и
+    срочная новость, пришедшая вне расписания.
+    """
+    rows = list(conn.execute(
+        "SELECT url_hash, title, headline, url, source_id, section, score, "
+        "sent_at FROM sent WHERE chat_id = ? ORDER BY sent_at DESC LIMIT ?",
+        (str(chat_id), MAILING_ROWS)))
+    groups = []
+    for row in rows:
+        at = parse_date(row["sent_at"])
+        if at is None:
+            continue
+        if groups and (groups[-1]["edge"] - at).total_seconds() <= MAILING_GAP:
+            groups[-1]["edge"] = at      # хвост группы: от него меряем разрыв
+            groups[-1]["rows"].append(row)
+            continue
+        if len(groups) >= limit:
+            break
+        groups.append({"at": at, "edge": at, "rows": [row]})
+    smap, now = sections.source_map(), local_now()
+    return [mailing(group, smap, now) for group in groups]
 
 
 # --------------------------------------------------------------- панели вокруг

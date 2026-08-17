@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Тесты диалогового слоя: разбор команд, доступ, расписание, фоновая очередь.
 
-Команд в Telegram нет — их выполняет страница, поэтому здесь они зовутся
-напрямую через HANDLERS, тем же путём, что и в web.run_command. Сеть не
-трогается: tg_send подменяется на список отправленных сообщений.
+Команд в Telegram нет, и страница их больше не выполняет, поэтому здесь
+обработчики зовутся напрямую через HANDLERS. Сеть не трогается: tg_send
+подменяется на список отправленных сообщений.
 """
 import logging
 import os
@@ -70,7 +70,7 @@ class BotCase(unittest.TestCase):
             conn.close()
 
     def command(self, text, chat_id=None, worker=None):
-        """Команда со страницы: тот же обработчик, что зовёт web.run_command."""
+        """Обработчик команды напрямую — без транспорта и разбора апдейта."""
         name, args = bot.parse_command(text)
         cmd = bot.HANDLERS.get(name)
         self.assertIsNotNone(cmd, "нет такой команды: %s" % text)
@@ -222,7 +222,7 @@ class TestTelegramIsSendOnly(BotCase):
 
 
 class TestCommands(BotCase):
-    """Команды выполняются со страницы — обработчики те же."""
+    """Обработчики команд: интерфейса у них нет, а разбор и доступ живут."""
 
     def test_help_lists_commands(self):
         text = self.command("/help")

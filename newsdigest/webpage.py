@@ -3,11 +3,15 @@
 
 Разметка, стили и скрипт лежат вместе нарочно — страница должна открываться
 на VPS без сборки, CDN и второго порта. Логика тут только рисующая: что
-показывать, решает `web.py`, а что отвечать — обработчики бота.
+показывать, решает `web.py`.
 
 Страница устроена как новостной сайт: слева разделы, в центре лента карточек,
-справа справка о выпуске, популярные источники и темы. Переписка с ботом
-никуда не делась — она переехала в «Уведомления», а команды в «Ещё».
+справа справка о выпуске, популярные источники и темы. «Уведомления» — это
+список рассылок: когда пришла, сколько было новостей и пять главных ссылок.
+«Настройки» — подписчики и значения настроек, только для чтения.
+
+Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
+командуют на самом VPS, а страница — читалка.
 
 Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
 речь, а ходить за этим на сайт источника читатель не нанимался. Текст занимает
@@ -33,7 +37,7 @@ PAGE = """<!doctype html>
 :root {
   --bg: #f1f3f7; --card: #ffffff; --ink: #14161b; --dim: #6b7280;
   --line: #e5e7eb; --soft: #f3f5f9; --accent: #2f6fed; --accent-ink: #ffffff;
-  --tint: #e8effd; --me: #dfe9ff; --warn: #b45309; --star: #f5a524;
+  --tint: #e8effd; --warn: #b45309; --star: #f5a524;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06);
   --tone-l: 40%; --tone-s: 68%;
 }
@@ -41,7 +45,7 @@ PAGE = """<!doctype html>
   :root {
     --bg: #101216; --card: #1a1d23; --ink: #e8eaee; --dim: #98a0ac;
     --line: #272b33; --soft: #22262e; --accent: #5b8dff; --accent-ink: #0c0e12;
-    --tint: #1c2740; --me: #24344f; --warn: #fbbf24; --star: #fbbf24;
+    --tint: #1c2740; --warn: #fbbf24; --star: #fbbf24;
     --shadow: none;
     --tone-l: 68%; --tone-s: 62%;
   }
@@ -272,47 +276,47 @@ header {
 }
 .warn { color: var(--warn); }
 
-/* --------------------------------------------------- уведомления и команды */
-#msgs { display: flex; flex-direction: column; gap: 12px; }
-.msg {
-  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-  padding: 12px 14px; overflow-wrap: anywhere; box-shadow: var(--shadow);
+/* ------------------------------------------------------------ уведомления */
+/* Одна рассылка — одна карточка: когда пришла, сколько в ней было и пять
+   самых важных ссылок. Ни переписки, ни команд здесь нет и не должно быть */
+#alerts { display: flex; flex-direction: column; gap: 12px; }
+.mail {
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 16px 18px; box-shadow: var(--shadow);
 }
-.msg.me {
-  background: var(--me); border-color: transparent; align-self: flex-end;
-  max-width: 82%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 14px;
+.mail h2 {
+  font-size: 17px; display: flex; align-items: baseline; gap: 8px;
+  flex-wrap: wrap;
 }
-.msg .at { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
-.msg .body { white-space: pre-wrap; }
-.msg .body pre { white-space: pre-wrap; margin: 6px 0; }
-.msg .body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 90%;
-  background: rgba(127, 127, 127, .14); padding: 1px 5px; border-radius: 5px;
+.mail h2 .at { color: var(--dim); font-size: 14px; font-weight: 400; }
+.mail .facts { color: var(--dim); font-size: 13px; margin-top: 4px; }
+.mail ul {
+  list-style: none; margin: 12px 0 0; padding: 0; display: flex;
+  flex-direction: column; gap: 10px;
 }
-.keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.key {
-  background: var(--soft); border: 1px solid var(--line); color: var(--ink);
-  border-radius: 999px; padding: 5px 12px; font-size: 14px;
+.mail li { display: flex; gap: 8px; font-size: 14.5px; line-height: 1.4; }
+.mail li .ico { flex: none; }
+.mail .from { color: var(--dim); font-size: 13px; white-space: nowrap; }
+.mail .star { color: var(--star); white-space: nowrap; }
+
+/* --------------------------------------------------------------- настройки */
+#panel { display: flex; flex-direction: column; gap: 12px; }
+.opts { display: flex; flex-direction: column; gap: 12px; }
+.opt { font-size: 14px; line-height: 1.45; }
+.opt .nm {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  background: rgba(127, 127, 127, .14); padding: 1px 6px; border-radius: 5px;
 }
-.key.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.key.fold { color: var(--dim); }
-.folded { display: none; }
-#ask {
-  display: flex; gap: 8px; position: sticky; bottom: 0; padding: 12px 0;
-  background: var(--bg);
+.opt .val { font-weight: 700; margin-left: 6px; }
+.opt .about { color: var(--dim); font-size: 13px; display: block; }
+.folk { display: flex; flex-direction: column; gap: 12px; }
+.folk .man { font-size: 14px; display: flex; align-items: baseline; gap: 8px;
+             flex-wrap: wrap; }
+.folk .id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  color: var(--dim);
 }
-#ask input { flex: 1; }
-#ask button {
-  background: var(--accent); color: var(--accent-ink); border: 0;
-  border-radius: 12px; padding: 0 20px; font-weight: 600;
-}
-.cmds { display: flex; flex-wrap: wrap; gap: 8px; }
-.cmds button {
-  background: var(--soft); border: 1px solid var(--line); color: var(--ink);
-  border-radius: 999px; padding: 7px 14px; font-size: 14px;
-}
-.hint { color: var(--dim); font-size: 13px; margin: 10px 0 0; }
+.folk .about { color: var(--dim); font-size: 13px; }
 
 /* ------------------------------------------------------- нижняя навигация */
 .tabs {
@@ -366,8 +370,6 @@ header {
   /* на телефоне карточка не должна занимать полэкрана: обложка мельче,
      а текст новости всё так же сворачивается до трёх строк */
   .cover { width: 84px; height: 84px; align-self: flex-start; font-size: 28px; }
-  /* строка ввода не должна прятаться под нижней навигацией */
-  #ask { bottom: calc(58px + env(safe-area-inset-bottom)); }
 }
 @media (max-width: 560px) {
   /* на узком экране обложка отъедала у текста треть строки, и три строки сути
@@ -428,21 +430,13 @@ header {
       <div class="head">
         <h1 id="title">Главное</h1>
         <div class="meta" id="meta"></div>
-        <button class="tune" onclick="go('tools')">⚙ Настроить ленту</button>
+        <button class="tune" onclick="go('tools')">⚙ Настройки</button>
       </div>
       <div class="chips" id="chips"></div>
       <div id="list"></div>
       <button id="more" class="hide" onclick="loadNews(false)">Показать ещё ⌄</button>
 
-      <div id="stream" class="hide">
-        <div id="msgs"></div>
-        <form id="ask" onsubmit="return send(event)">
-          <input type="text" id="text" placeholder="Команда, например /digest"
-                 autocomplete="off" autocapitalize="off" spellcheck="false">
-          <button type="submit">▶</button>
-        </form>
-      </div>
-
+      <div id="alerts" class="hide"></div>
       <div id="panel" class="hide"></div>
     </main>
 
@@ -460,14 +454,14 @@ header {
 
 <script>
 /* Состояние страницы целиком: что показываем, где остановились в ленте и
-   сколько сообщений пришло, пока читатель их не видел. */
+   какую рассылку читатель видел последней. */
 var S = {
   view: 'news', section: '', q: '', offset: 0, more: false,
-  last: 0, unread: 0, started: false, timer: null, typing: null,
-  state: null, commands: [], menu: [], side: null
+  seen: '', unread: 0, hello: true, started: false, timer: null, typing: null,
+  state: null, alerts: [], tools: null, menu: [], side: null
 };
 
-/* Пункты, которые не про разделы: избранное, уведомления и команды. */
+/* Пункты, которые не про разделы: избранное, уведомления и настройки. */
 var AUX = [
   { id: 'liked',  icon: '⭐', name: 'Избранное' },
   { id: 'alerts', icon: '🔔', name: 'Уведомления' },
@@ -480,7 +474,7 @@ var TABS = [
   { id: 'saved',  icon: '🔖', name: 'Сохранённые' },
   { id: 'liked',  icon: '⭐', name: 'Избранное' },
   { id: 'alerts', icon: '🔔', name: 'Уведомления' },
-  { id: 'tools',  icon: '☰',  name: 'Ещё' }
+  { id: 'tools',  icon: '⚙',  name: 'Настройки' }
 ];
 
 var NAMES = { news: 'Главное', saved: 'Сохранённые', liked: 'Избранное',
@@ -574,19 +568,20 @@ function hueOf(name) {
 function go(view, section) {
   S.view = view;
   S.section = view === 'news' ? (section || '') : '';
-  if (view === 'alerts') { S.unread = 0; }
+  if (view === 'alerts') { seen(); }
   window.scrollTo(0, 0);
   paint();
   if (isNews(view)) { loadNews(true); }
+  if (view === 'tools') { loadTools(); }
 }
 
-/* Что видно при этом виде ленты: карточки, переписка или панель команд. */
+/* Что видно при этом виде: карточки ленты, уведомления или настройки. */
 function paint() {
   var news = isNews(S.view);
   $('list').className = news ? '' : 'hide';
   $('chips').className = 'chips' + (S.view === 'news' ? '' : ' hide');
   $('more').className = news && S.more ? '' : 'hide';
-  $('stream').className = S.view === 'alerts' ? '' : 'hide';
+  $('alerts').className = S.view === 'alerts' ? '' : 'hide';
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
   $('bell').className = 'icon' + (S.view === 'alerts' ? ' on' : '');
@@ -594,6 +589,7 @@ function paint() {
   drawMeta();
   drawNav();
   drawTabs();
+  if (S.view === 'alerts') { drawAlerts(); }
   if (S.view === 'tools') { drawPanel(); }
 }
 
@@ -730,11 +726,9 @@ function drawEmpty() {
     return box;
   }
   box.appendChild(el('b', null, 'Здесь пока пусто'));
-  box.appendChild(el('div', null, 'Выпуск ещё не приходил. Соберём прямо сейчас?'));
-  var button = el('button', 'ghost wide', 'Собрать выпуск');
-  button.type = 'button';
-  button.onclick = function () { run('/digest'); };
-  box.appendChild(button);
+  box.appendChild(el('div', null, S.state && S.state.next
+    ? 'Выпуск ещё не приходил. Ближайший — ' + S.state.next + '.'
+    : 'Выпуск ещё не приходил.'));
   return box;
 }
 
@@ -948,152 +942,153 @@ function clearSearch() {
   loadNews(true);
 }
 
-/* ------------------------------------------------------- панель настроек */
-function drawPanel() {
-  var box = $('panel'), st = S.state;
+/* ------------------------------------------------------------ уведомления */
+/* Одна рассылка — одна карточка: когда пришла, сколько в ней было новостей
+   и пять самых важных ссылок. Всё остальное читатель смотрит в ленте. */
+function drawAlerts() {
+  var box = $('alerts');
   box.innerHTML = '';
-
-  var digest = el('div', 'box');
-  digest.appendChild(el('h3', null, 'Выпуск'));
-  if (st) {
-    var facts = el('div', 'facts');
-    facts.appendChild(el('div', null, 'Следующий: ' + st.next));
-    facts.appendChild(el('div', null, 'Разделов: ' + st.sections.length +
-      ', по ' + st.each + ' на каждый, источников ' + st.feeds));
-    facts.appendChild(el('div', null, 'Часовой пояс: ' + st.tz +
-      ' · чат ' + st.chat));
-    digest.appendChild(facts);
+  if (!S.alerts.length) {
+    var empty = el('div', 'empty');
+    empty.appendChild(el('b', null, 'Рассылок пока не было'));
+    empty.appendChild(el('div', null, S.state && S.state.next
+      ? 'Ближайший выпуск — ' + S.state.next + '.'
+      : 'Здесь появится каждый ушедший выпуск.'));
+    box.appendChild(empty);
+    return;
   }
-  var pair = el('div', 'pair');
-  ['Собрать выпуск|/digest', 'Ещё новости|/more', 'Состояние|/status']
-    .forEach(function (spec) {
-      var parts = spec.split('|');
-      var button = el('button', 'ghost', parts[0]);
-      button.type = 'button';
-      button.onclick = function () { run(parts[1]); };
-      pair.appendChild(button);
-    });
-  digest.appendChild(pair);
-  box.appendChild(digest);
-
-  var topics = el('div', 'box');
-  topics.style.marginTop = '12px';
-  topics.appendChild(el('h3', null, 'Топ раздела прямо сейчас'));
-  var tags = el('div', 'tags');
-  ((st && st.sections) || []).forEach(function (section) {
-    var button = el('button', null, section.label);
-    button.type = 'button';
-    button.onclick = function () { run('/news ' + section.id); };
-    tags.appendChild(button);
-  });
-  topics.appendChild(tags);
-  box.appendChild(topics);
-
-  var cmds = el('div', 'box');
-  cmds.style.marginTop = '12px';
-  cmds.appendChild(el('h3', null, 'Команды'));
-  var row = el('div', 'cmds');
-  S.commands.forEach(function (cmd) {
-    var button = el('button', null, '/' + cmd.name);
-    button.type = 'button';
-    button.title = cmd.help;
-    button.onclick = function () { run('/' + cmd.name); };
-    row.appendChild(button);
-  });
-  cmds.appendChild(row);
-  cmds.appendChild(el('p', 'hint',
-    'Ответ придёт в «Уведомления». Там же есть строка ввода: ' +
-    'аргументы вроде /set time 08:30 набираются в ней.'));
-  var out = el('button', 'ghost wide', '⏻ Выйти');
-  out.type = 'button';
-  out.onclick = logout;
-  cmds.appendChild(out);
-  box.appendChild(cmds);
+  S.alerts.forEach(function (mail) { box.appendChild(drawMail(mail)); });
 }
 
-/* ------------------------------------------------------------ переписка */
-function drawMessage(message) {
-  var box = el('div', 'msg' + (message.kind === 'me' ? ' me' : ''));
-  box.id = 'm' + message.id;
-  var head = message.kind === 'me' ? '' :
-      '<div class="at">' + esc(message.at) + '</div>';
-  box.innerHTML = head + '<div class="body">' + message.html + '</div>';
-  /* ряд кнопок = одна новость, как в Telegram */
-  var rows = message.buttons || [];
-  var wrap = document.createElement('div');
-  rows.forEach(function (row) {
-    var keys = el('div', 'keys');
-    row.forEach(function (button) { keys.appendChild(drawKey(button)); });
-    wrap.appendChild(keys);
-  });
-  /* десяток рядов реакций перетягивает на себя весь выпуск — прячем их
-     под одну кнопку, ровно как в Telegram */
-  if (message.fold) {
-    wrap.className = 'folded';
-    box.appendChild(drawFold(wrap, rows.length));
+function drawMail(mail) {
+  var box = el('div', 'mail');
+  var head = el('h2');
+  head.appendChild(el('span', null, '📬 Выпуск'));
+  head.appendChild(el('span', 'at', mail.when + ', ' + mail.time));
+  box.appendChild(head);
+
+  var facts = mail.count + ' ' +
+      plural(mail.count, 'новость', 'новости', 'новостей');
+  if (mail.sections) {
+    facts += ' · ' + mail.sections + ' ' +
+             plural(mail.sections, 'раздел', 'раздела', 'разделов');
   }
-  if (rows.length) { box.appendChild(wrap); }
+  box.appendChild(el('div', 'facts', facts));
+
+  if (mail.links.length) {
+    var list = el('ul');
+    mail.links.forEach(function (link) { list.appendChild(drawLink(link)); });
+    box.appendChild(list);
+  }
   return box;
 }
 
-function drawFold(wrap, count) {
-  var keys = el('div', 'keys');
-  var button = el('button', 'key fold',
-                  '👍 👎 🔖 Оценить новости (' + count + ')');
-  button.type = 'button';
-  button.onclick = function () {
-    var open = wrap.className !== 'folded';
-    wrap.className = open ? 'folded' : '';
-    button.textContent = open ? '👍 👎 🔖 Оценить новости (' + count + ')'
-                              : '▲ Свернуть';
-  };
-  keys.appendChild(button);
-  return keys;
+function drawLink(link) {
+  var row = el('li');
+  row.appendChild(el('span', 'ico', link.emoji));
+  var text = el('span');
+  if (link.url) {
+    var out = el('a', null, link.title);
+    out.href = link.url;
+    out.target = '_blank';
+    out.rel = 'noopener noreferrer';
+    text.appendChild(out);
+  } else {
+    text.appendChild(el('span', null, link.title));
+  }
+  text.appendChild(el('span', 'from', ' — ' + link.source));
+  if (link.score) {
+    text.appendChild(el('span', 'star', ' ⭐ ' + link.score.toFixed(1)));
+  }
+  row.appendChild(text);
+  return row;
 }
 
-function drawKey(button) {
-  var node = el('button', 'key' + (button.pressed ? ' on' : ''), button.text);
-  node.type = 'button';
-  node.setAttribute('data-press', button.data);
-  node.onclick = function () { react(button.data); };
-  return node;
+/* ------------------------------------------------------- панель настроек */
+/* Только чтение: подписчики и настройки приложения. Меняются они на самом
+   VPS, в ~/.newsdigest/env, — страница про них просто рассказывает. */
+function drawPanel() {
+  var box = $('panel'), data = S.tools;
+  box.innerHTML = '';
+  if (!data) {
+    box.appendChild(el('div', 'empty', 'Читаю настройки…'));
+    return;
+  }
+
+  var folk = el('div', 'box');
+  folk.appendChild(el('h3', null, 'Подписчики (' + data.readers.length + ')'));
+  var list = el('div', 'folk');
+  data.readers.forEach(function (man) { list.appendChild(drawReader(man)); });
+  folk.appendChild(list);
+  box.appendChild(folk);
+
+  var opts = el('div', 'box');
+  opts.appendChild(el('h3', null, 'Настройки приложения'));
+  opts.appendChild(el('div', 'facts', 'Часовой пояс: ' + data.tz));
+  var rows = el('div', 'opts');
+  data.settings.forEach(function (opt) { rows.appendChild(drawOption(opt)); });
+  opts.appendChild(rows);
+  var out = el('button', 'ghost wide', '⏻ Выйти');
+  out.type = 'button';
+  out.onclick = logout;
+  opts.appendChild(out);
+  box.appendChild(opts);
+}
+
+var ROLES = { owner: '👑', member: '•', pending: '⏳' };
+
+function drawReader(man) {
+  var box = el('div');
+  var line = el('div', 'man');
+  line.appendChild(el('span', null, ROLES[man.role] || '•'));
+  line.appendChild(el('span', null, man.title));
+  line.appendChild(el('span', 'id', man.chat));
+  if (man.role === 'pending') { line.appendChild(el('span', 'about', 'ждёт')); }
+  if (man.paused) { line.appendChild(el('span', 'warn', '⏸ пауза')); }
+  box.appendChild(line);
+  box.appendChild(el('div', 'about', man.own));
+  return box;
+}
+
+function drawOption(opt) {
+  var box = el('div', 'opt');
+  box.appendChild(el('span', 'nm', opt.name));
+  box.appendChild(el('span', 'val', opt.value + (opt.own ? ' ✏️' : '')));
+  box.appendChild(el('span', 'about', opt.about));
+  return box;
 }
 
 /* --------------------------------------------------------------- действия */
-function applyFeed(data) {
+function applyAlerts(data) {
   if (data.state) { S.state = data.state; }
-  if (data.commands) { S.commands = data.commands; }
-  var msgs = $('msgs');
-  var fresh = data.messages || [];
-  fresh.forEach(function (message) {
-    var old = $('m' + message.id);
-    if (old) { old.replaceWith(drawMessage(message)); }
-    else { msgs.appendChild(drawMessage(message)); }
-  });
-  if (typeof data.last === 'number' && data.last > S.last) { S.last = data.last; }
-  if (data.press) { repaint(data.press); }
-  if (data.toast) { toast(data.toast); }
-  if (fresh.length && S.view !== 'alerts') { S.unread += fresh.length; }
-  if (fresh.length && S.view === 'alerts') {
-    window.scrollTo(0, document.body.scrollHeight);
+  S.alerts = data.alerts || [];
+  /* непрочитанное — это рассылки, пришедшие после последней увиденной.
+     При заходе считать нечего: всё, что уже лежит, читатель видел раньше */
+  S.unread = 0;
+  if (S.hello) {
+    S.hello = false;
+    seen();
+  } else {
+    for (var i = 0; i < S.alerts.length && S.alerts[i].id !== S.seen; i++) {
+      S.unread++;
+    }
   }
+  if (S.view === 'alerts') { seen(); drawAlerts(); }
   drawMeta();
   drawTabs();
   drawNav();
   drawDigestBox();
-  if (S.view === 'tools') { drawPanel(); }
 }
 
-/* Отметку о нажатии ставим и в карточке ленты, и в копии сообщения:
-   одна и та же новость видна в обоих местах. */
+/* «Всё это я видел»: следующая рассылка снова зажжёт значок на колокольчике. */
+function seen() {
+  S.seen = S.alerts.length ? S.alerts[0].id : S.seen;
+  S.unread = 0;
+}
+
+/* Отметку о нажатии ставим в карточке ленты — там, где кнопки и живут. */
 function repaint(press) {
   if (!press.hash) { return; }
-  var keys = document.querySelectorAll('[data-press]');
-  Array.prototype.forEach.call(keys, function (node) {
-    var parts = node.getAttribute('data-press').split(':');
-    if (parts[0] !== 'fb' || parts[2] !== press.hash) { return; }
-    node.className = 'key' + (press.pressed && press.pressed[parts[1]] ? ' on' : '');
-  });
   var acts = document.querySelectorAll('[data-act]');
   Array.prototype.forEach.call(acts, function (node) {
     var parts = node.getAttribute('data-act').split(':');
@@ -1112,35 +1107,31 @@ function repaint(press) {
 }
 
 function react(data) {
-  return call('/api/react?after=' + S.last, { data: data }).then(applyFeed)
-    .catch(function (reason) { if (reason !== 'auth') { toast('' + reason); } });
+  return call('/api/react', { data: data }).then(function (result) {
+    repaint(result);
+    if (result.toast) { toast(result.toast); }
+  }).catch(function (reason) { if (reason !== 'auth') { toast('' + reason); } });
 }
 
-function run(text) {
-  return call('/api/command?after=' + S.last, { text: text }).then(function (data) {
-    applyFeed(data);
-    go('alerts');
+function loadTools() {
+  return call('/api/tools').then(function (data) {
+    S.tools = data;
+    if (data.state) { S.state = data.state; }
+    if (S.view === 'tools') { drawPanel(); }
+    drawMeta();
+    drawDigestBox();
   }).catch(function (reason) {
     if (reason !== 'auth') { toast('' + reason); }
   });
 }
 
-function send(event) {
-  event.preventDefault();
-  var input = $('text');
-  var text = input.value.trim();
-  if (!text) { return false; }
-  input.value = '';
-  run(text);
-  return false;
-}
-
 function refresh(manual) {
-  var before = S.last;
-  return call('/api/feed?after=' + S.last).then(function (data) {
-    applyFeed(data);
+  var before = S.alerts.length ? S.alerts[0].id : '';
+  return call('/api/alerts').then(function (data) {
+    applyAlerts(data);
     /* пришёл выпуск — значит в ленте появились новости, перечитываем её */
-    if (S.last > before && isNews(S.view)) { loadNews(true); }
+    var now = S.alerts.length ? S.alerts[0].id : '';
+    if (now !== before && isNews(S.view)) { loadNews(true); }
     if (manual) { toast('Обновлено'); }
   }).catch(function (reason) {
     if (manual && reason !== 'auth') { toast('Не отвечает: ' + reason); }
@@ -1160,8 +1151,7 @@ function startTimer() {
 function start() {
   if (S.started) { return; }
   S.started = true;
-  S.last = 0;
-  $('msgs').innerHTML = '';
+  S.hello = true;
   refresh(false);
   loadNews(true);
   paint();
@@ -1175,11 +1165,11 @@ document.addEventListener('visibilitychange', function () {
 /* повернули телефон, растянули окно — в три строки помещается уже другое */
 window.addEventListener('resize', markClamped);
 
-call('/api/feed').then(function (data) {
+call('/api/alerts').then(function (data) {
   $('login').className = '';
   $('app').className = 'on';
   S.started = true;
-  applyFeed(data);
+  applyAlerts(data);
   loadNews(true);
   paint();
   startTimer();

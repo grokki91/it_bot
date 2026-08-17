@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Тесты страницы: доступ по паролю, лента, команды, кнопки, санитайзер.
+"""Тесты страницы: доступ по паролю, лента, уведомления, настройки, кнопки.
 
-Сеть не трогается: сервер поднимается на 127.0.0.1 со случайным портом,
-Telegram подменён заглушкой.
+Страница только показывает: команд, строки ввода и истории их запусков на
+ней нет — это проверяется отдельно. Сеть не трогается: сервер поднимается
+на 127.0.0.1 со случайным портом.
 """
 import json
 import logging
@@ -18,13 +19,10 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, newsfeed, profiles  # noqa: E402
+from newsdigest import config, feedback, newsfeed, profiles  # noqa: E402
 from newsdigest import sections, storage, subscribers, translate, web  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
-from newsdigest.profiles import profile  # noqa: E402
-
-from test_core import item  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
 logging.getLogger("nd").propagate = False
@@ -39,10 +37,6 @@ class WebCase(unittest.TestCase):
         self.saved_owner = config.TG_CHAT
         CFG["web_token"] = TOKEN
         config.TG_CHAT = OWNER
-        self.sent = []
-        self._real_send = web.tg_send
-        web.tg_send = lambda chat, text, keyboard=None, silent=None: \
-            self.sent.append((str(chat), text))
 
         conn = storage.db()
         try:
@@ -68,7 +62,6 @@ class WebCase(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
-        web.tg_send = self._real_send
         CFG["web_token"] = self.saved_token
         config.TG_CHAT = self.saved_owner
         web._FAILS.clear()
@@ -99,20 +92,14 @@ class WebCase(unittest.TestCase):
     def login(self, token=TOKEN):
         return self.ask("/api/login", {"token": token})
 
-    def outbox(self):
-        conn = storage.db()
-        try:
-            return [dict(r) for r in conn.execute(
-                "SELECT * FROM outbox WHERE chat_id=? ORDER BY id", (OWNER,))]
-        finally:
-            conn.close()
-
     def delivered(self, url_hash, title, source_id, section="", score=0.0,
-                  summary="", url="", minute=0, chat=OWNER, headline=None):
+                  summary="", url="", minute=0, chat=OWNER, headline=None,
+                  hour=9):
         """Новость, которая читателю уже уходила, — из неё и состоит лента.
 
         headline='' — запись, сделанная до появления карточки в истории:
-        заголовок у неё только из фида, а сути нет вовсе.
+        заголовок у неё только из фида, а сути нет вовсе. Час отправки нужен
+        «Уведомлениям»: по разрыву во времени они и делят историю на рассылки.
         """
         conn = storage.db()
         try:
@@ -123,7 +110,8 @@ class WebCase(unittest.TestCase):
                 (chat, url_hash, "", title,
                  url or "https://example.com/%s" % url_hash, source_id, "media",
                  section, title if headline is None else headline, summary,
-                 score, "2026-08-17", "2026-08-17T09:%02d:00+00:00" % minute))
+                 score, "2026-08-17",
+                 "2026-08-17T%02d:%02d:00+00:00" % (hour, minute)))
             conn.commit()
         finally:
             conn.close()
@@ -160,14 +148,14 @@ class TestAuth(WebCase):
         self.assertIn("Дайджест", body)
 
     def test_api_requires_password(self):
-        code, body = self.ask("/api/feed")
+        code, body = self.ask("/api/alerts")
         self.assertEqual(code, 401)
         self.assertIn("пароль", body["error"])
 
-    def test_login_opens_the_feed(self):
+    def test_login_opens_the_page(self):
         self.assertEqual(self.login()[0], 200)
         self.assertTrue(self.cookie)
-        code, body = self.ask("/api/feed")
+        code, body = self.ask("/api/alerts")
         self.assertEqual(code, 200)
         self.assertIn("state", body)
 
@@ -175,11 +163,11 @@ class TestAuth(WebCase):
         code, body = self.login("не тот")
         self.assertEqual(code, 403)
         self.assertFalse(self.cookie)
-        self.assertEqual(self.ask("/api/feed")[0], 401)
+        self.assertEqual(self.ask("/api/alerts")[0], 401)
 
     def test_bearer_token_works_for_scripts(self):
         CFG["web_token"] = "ascii-token-42"     # в заголовок кириллица не влезет
-        code, _body = self.ask("/api/feed",
+        code, _body = self.ask("/api/alerts",
                                headers={"Authorization": "Bearer ascii-token-42"})
         self.assertEqual(code, 200)
 
@@ -191,143 +179,196 @@ class TestAuth(WebCase):
         self.login()
         self.ask("/api/logout", {})
         self.cookie = web.COOKIE + "="            # браузер стёр значение
-        self.assertEqual(self.ask("/api/feed")[0], 401)
+        self.assertEqual(self.ask("/api/alerts")[0], 401)
 
 
-class TestFeed(WebCase):
-    def test_bot_messages_appear(self):
-        conn = storage.db()
-        storage.save_outbox(conn, OWNER, "Привет <b>мир</b>")
-        conn.close()
-        self.login()
-        _code, body = self.ask("/api/feed")
-        self.assertEqual(len(body["messages"]), 1)
-        self.assertEqual(body["messages"][0]["html"], "Привет <b>мир</b>")
-        self.assertEqual(body["last"], body["messages"][0]["id"])
+class TestAlerts(WebCase):
+    """Уведомления: коротко о каждой рассылке и ссылки на главное из неё."""
 
-    def test_only_new_messages_after_id(self):
-        conn = storage.db()
-        first = storage.save_outbox(conn, OWNER, "раз")
-        storage.save_outbox(conn, OWNER, "два")
-        conn.close()
-        self.login()
-        _code, body = self.ask("/api/feed?after=%d" % first)
-        self.assertEqual([m["html"] for m in body["messages"]], ["два"])
+    def alerts(self):
+        return self.ask("/api/alerts")[1]
 
-    def test_other_chats_are_not_shown(self):
-        conn = storage.db()
-        storage.save_outbox(conn, "999", "чужое")
-        conn.close()
-        self.login()
-        _code, body = self.ask("/api/feed")
-        self.assertEqual(body["messages"], [])
+    def digest(self, hour, hashes, section="politics"):
+        """Одна рассылка: новости, ушедшие подряд, минута в минуту."""
+        for n, url_hash in enumerate(hashes):
+            self.delivered(url_hash, "Новость %s" % url_hash, "ria", section,
+                           7.0 + n / 10.0, url="https://ria.ru/%s" % url_hash,
+                           hour=hour, minute=n)
 
     def test_state_reports_sections_and_schedule(self):
         self.login()
-        _code, body = self.ask("/api/feed")
+        body = self.alerts()
         ids = [s["id"] for s in body["state"]["sections"]]
         self.assertIn(CFG["topic"], ids)
         self.assertGreaterEqual(body["state"]["each"], 1)
         self.assertIn("в ", body["state"]["next"])
         self.assertTrue(body["state"]["owner"])
-        self.assertTrue(any(c["name"] == "digest" for c in body["commands"]))
 
-    def test_telegram_messages_are_mirrored(self):
-        """Всё, что уходит в чат, попадает на страницу — это и есть замена."""
-        from newsdigest import telegram
-        telegram.mirror(OWNER, "📡 <b>Дайджест</b>", [[{"text": "1 👍",
-                                                        "callback_data": "fb:up:h1"}]])
+    def test_mailing_says_how_many_news_and_when(self):
+        self.digest(9, ["a1", "a2", "a3"])
         self.login()
-        _code, body = self.ask("/api/feed")
-        message = body["messages"][0]
-        self.assertIn("Дайджест", message["html"])
-        self.assertEqual(message["buttons"][0][0]["text"], "1 👍")
-        self.assertFalse(message["buttons"][0][0]["pressed"])
-        self.assertFalse(message["fold"])        # одна новость — прятать нечего
+        mail = self.alerts()["alerts"]
+        self.assertEqual(len(mail), 1)
+        self.assertEqual(mail[0]["count"], 3)
+        self.assertEqual(mail[0]["sections"], 1)
+        self.assertRegex(mail[0]["time"], r"^\d{2}:\d{2}$")
+        self.assertIn("августа", mail[0]["when"])
 
-    def test_many_reaction_rows_are_folded_on_the_page(self):
-        """Кнопки приезжают все, но страница прячет их под одну — как в чате."""
-        from newsdigest import telegram
-        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n},
-                     {"text": "%d 👎" % n, "callback_data": "fb:down:h%d" % n}]
-                    for n in (1, 2, 3)]
-        telegram.mirror(OWNER, "📡 <b>Дайджест</b>", keyboard)
+    def test_only_five_links_and_the_most_important_first(self):
+        self.digest(9, ["b%d" % n for n in range(8)])
         self.login()
-        _code, body = self.ask("/api/feed")
-        message = body["messages"][-1]
-        self.assertTrue(message["fold"])
-        self.assertEqual(len(message["buttons"]), 3)
+        links = self.alerts()["alerts"][0]["links"]
+        self.assertEqual(len(links), newsfeed.MAILING_LINKS)
+        scores = [link["score"] for link in links]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertEqual(links[0]["url"], "https://ria.ru/b7")
+        self.assertEqual(links[0]["source"], "ria.ru")
 
-    def test_rows_style_shows_everything_at_once(self):
-        from newsdigest import telegram
-        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n}]
-                    for n in (1, 2)]
-        telegram.mirror(OWNER, "выпуск", keyboard)
-        CFG["feedback_style"] = "rows"
+    def test_two_digests_of_the_day_are_two_notifications(self):
+        self.digest(9, ["m1", "m2"])
+        self.digest(21, ["e1", "e2", "e3"])
+        self.login()
+        mail = self.alerts()["alerts"]
+        self.assertEqual([m["count"] for m in mail], [3, 2])   # свежая сверху
+
+    def test_news_of_one_digest_do_not_split(self):
+        """Выпуск ложится в историю не мгновенно — минуты внутри него не в счёт."""
+        self.digest(9, ["s%d" % n for n in range(6)])
+        self.login()
+        self.assertEqual(len(self.alerts()["alerts"]), 1)
+
+    def test_last_marks_the_freshest_mailing(self):
+        self.digest(9, ["l1"])
+        self.login()
+        body = self.alerts()
+        self.assertEqual(body["last"], body["alerts"][0]["id"])
+
+    def test_nothing_sent_yet_is_not_an_error(self):
+        self.login()
+        body = self.alerts()
+        self.assertEqual(body["alerts"], [])
+        self.assertEqual(body["last"], "")
+
+    def test_other_chats_are_not_shown(self):
+        self.delivered("z1", "Чужая новость", "ria", "politics", 7.0, chat="999")
+        self.login()
+        self.assertEqual(self.alerts()["alerts"], [])
+
+    def test_link_of_a_foreign_scheme_is_dropped(self):
+        """Ссылка приходит из чужого фида — javascript: наружу не пускаем."""
+        self.delivered("j1", "Новость", "ria", "politics", 7.0,
+                       url="javascript:alert(1)")
+        self.login()
+        link = self.alerts()["alerts"][0]["links"][0]
+        self.assertEqual(link["url"], "")
+        self.assertEqual(link["source"], "ria")
+
+    def test_bot_messages_are_not_shown_anymore(self):
+        """Переписка с ботом на странице больше не живёт — только рассылки."""
+        conn = storage.db()
+        storage.save_outbox(conn, OWNER, "Привет <b>мир</b>")
+        conn.close()
+        self.login()
+        body = self.alerts()
+        self.assertNotIn("messages", body)
+        self.assertEqual(body["alerts"], [])
+
+
+class TestNoCommands(WebCase):
+    """Управление живёт на VPS: страница команд не показывает и не выполняет."""
+
+    def test_command_endpoint_is_gone(self):
+        self.login()
+        code, _body = self.ask("/api/command", {"text": "/digest"})
+        self.assertEqual(code, 404)
+
+    def test_page_has_no_input_line(self):
+        _code, page = self.ask("/")
+        self.assertNotIn('id="ask"', page)
+        self.assertNotIn("/api/command", page)
+
+    def test_page_does_not_mention_commands(self):
+        _code, page = self.ask("/")
+        for command in ("/digest", "/more", "/status", "/set ", "/news "):
+            self.assertNotIn(command, page)
+
+    def test_settings_text_names_no_commands(self):
+        """Описания настроек тоже читает человек — команд в них быть не должно."""
+        self.login()
+        for opt in self.ask("/api/tools")[1]["settings"]:
+            self.assertNotRegex(opt["about"], r"/[a-z]",
+                                "команда в описании настройки %s" % opt["name"])
+
+    def test_page_has_no_collect_button(self):
+        _code, page = self.ask("/")
+        self.assertNotIn("Собрать выпуск", page)
+        self.assertNotIn("Собрать новости", page)
+
+
+class TestTools(WebCase):
+    """Настройки: подписчики и значения настроек, всё только для чтения."""
+
+    def tools(self):
+        return self.ask("/api/tools")[1]
+
+    def test_needs_password(self):
+        code, body = self.ask("/api/tools")
+        self.assertEqual(code, 401)
+        self.assertIn("пароль", body["error"])
+
+    def test_settings_are_listed_with_values(self):
+        self.login()
+        opts = {opt["name"]: opt for opt in self.tools()["settings"]}
+        self.assertIn("breaking", opts)
+        self.assertIn(opts["breaking"]["value"], ("вкл", "выкл"))
+        self.assertTrue(opts["breaking"]["about"])
+        self.assertEqual(opts["time"]["value"], CFG["send_at"])
+
+    def test_personal_value_is_marked(self):
+        conn = storage.db()
         try:
-            self.login()
-            _code, body = self.ask("/api/feed")
+            subscribers.set_field(conn, OWNER, "send_at", "07:15")
         finally:
-            CFG["feedback_style"] = "compact"
-        self.assertFalse(body["messages"][-1]["fold"])
-
-
-class TestCommands(WebCase):
-    def test_help_answers_on_the_page(self):
+            conn.close()
         self.login()
-        _code, body = self.ask("/api/command", {"text": "/help"})
-        kinds = [m["kind"] for m in body["messages"]]
-        self.assertEqual(kinds, ["me", "bot"])
-        self.assertIn("/digest", body["messages"][1]["html"])
-        self.assertEqual(self.sent, [])          # в Telegram не дублируем
+        opts = {opt["name"]: opt for opt in self.tools()["settings"]}
+        self.assertEqual(opts["time"]["value"], "07:15")
+        self.assertTrue(opts["time"]["own"])
 
-    def test_slash_is_optional(self):
-        self.login()
-        _code, body = self.ask("/api/command", {"text": "status"})
-        self.assertIn("Выпуски:", body["messages"][1]["html"])
-
-    def test_unknown_command(self):
-        self.login()
-        _code, body = self.ask("/api/command", {"text": "/нетакой"})
-        self.assertIn("Не знаю команду", body["messages"][1]["html"])
-
-    def test_heavy_command_needs_daemon(self):
-        self.login()
-        _code, body = self.ask("/api/command", {"text": "/digest"})
-        self.assertIn("Фоновые задачи недоступны", body["messages"][1]["html"])
-
-    def test_settings_change_survives(self):
-        self.login()
-        saved = CFG["min_score"]
+    def test_subscribers_are_listed(self):
+        conn = storage.db()
         try:
-            _code, body = self.ask("/api/command", {"text": "/set score 7.5"})
-            self.assertIn("7.5", body["messages"][1]["html"])
-            self.assertEqual(CFG["min_score"], 7.5)
+            subscribers.add(conn, "777", role="member", title="Ваня")
+            subscribers.add(conn, "999", role="pending")
         finally:
-            CFG["min_score"] = saved
-
-    def test_owner_command_blocked_without_chat_id(self):
-        config.TG_CHAT = ""
+            conn.close()
         self.login()
-        _code, body = self.ask("/api/command", {"text": "/feed list"})
-        self.assertIn("только для владельца", body["messages"][1]["html"])
+        people = {man["chat"]: man for man in self.tools()["readers"]}
+        self.assertEqual(people[OWNER]["role"], "owner")
+        self.assertEqual(people["777"]["title"], "Ваня")
+        self.assertEqual(people["999"]["role"], "pending")
+        self.assertFalse(people["777"]["paused"])
+        self.assertIn("умолчанию", people["777"]["own"])
 
-    def test_command_failure_is_reported_not_crashed(self):
-        def boom(ctx):
-            raise RuntimeError("сломалось")
-
-        real = bot.HANDLERS["status"].fn
-        bot.HANDLERS["status"].fn = boom
+    def test_personal_settings_of_a_reader_are_shown(self):
+        conn = storage.db()
         try:
-            self.login()
-            code, body = self.ask("/api/command", {"text": "/status"})
+            subscribers.add(conn, "777", role="member", title="Ваня")
+            subscribers.set_field(conn, "777", "send_at", "08:30")
         finally:
-            bot.HANDLERS["status"].fn = real
-        self.assertEqual(code, 200)
-        self.assertIn("сломалось", body["messages"][1]["html"])
+            conn.close()
+        self.login()
+        people = {man["chat"]: man for man in self.tools()["readers"]}
+        self.assertIn("08:30", people["777"]["own"])
+
+    def test_timezone_comes_along(self):
+        self.login()
+        self.assertTrue(self.tools()["tz"])
 
 
 class TestButtons(WebCase):
+    """Кнопки 👍/👎/🔖 под карточками — единственное, что страница меняет."""
+
     def press(self, data):
         return self.ask("/api/react", {"data": data})
 
@@ -335,7 +376,7 @@ class TestButtons(WebCase):
         self.login()
         _code, body = self.press("fb:up:hash1")
         self.assertIn("👍", body["toast"])
-        self.assertTrue(body["press"]["pressed"]["up"])
+        self.assertTrue(body["pressed"]["up"])
         conn = storage.db()
         try:
             row = conn.execute("SELECT verdict FROM feedback WHERE chat_id=? AND "
@@ -348,38 +389,19 @@ class TestButtons(WebCase):
         self.login()
         self.press("fb:up:hash2")
         _code, body = self.press("fb:down:hash2")
-        self.assertFalse(body["press"]["pressed"]["up"])
-        self.assertTrue(body["press"]["pressed"]["down"])
+        self.assertFalse(body["pressed"]["up"])
+        self.assertTrue(body["pressed"]["down"])
 
     def test_bookmark_toggles(self):
         self.login()
         _code, body = self.press("fb:save:hash3")
-        self.assertTrue(body["press"]["pressed"]["save"])
+        self.assertTrue(body["pressed"]["save"])
         _code, body = self.press("fb:save:hash3")
-        self.assertFalse(body["press"]["pressed"]["save"])
+        self.assertFalse(body["pressed"]["save"])
 
-    def test_pressed_state_comes_back_with_the_feed(self):
-        conn = storage.db()
-        storage.save_outbox(conn, OWNER, "новость",
-                            [[{"text": "1 👍", "callback_data": "fb:up:hash4"},
-                              {"text": "1 🔖", "callback_data": "fb:save:hash4"}]])
-        conn.close()
-        self.login()
-        self.press("fb:up:hash4")
-        _code, body = self.ask("/api/feed")
-        row = body["messages"][0]["buttons"][0]
-        self.assertTrue(row[0]["pressed"])
-        self.assertFalse(row[1]["pressed"])
-
-    def test_signup_button_approves(self):
-        conn = storage.db()
-        subscribers.add(conn, "777", role="pending")
-        conn.close()
-        self.login()
-        _code, body = self.press("sub:ok:777")
-        self.assertIn("Пустил", body["toast"])
-        self.assertTrue(bot.is_allowed("777"))
-        self.assertEqual(self.sent[0][0], "777")
+    def test_press_needs_password(self):
+        code, _body = self.press("fb:up:hash5")
+        self.assertEqual(code, 401)
 
     def test_garbage_press_is_ignored(self):
         self.login()
@@ -387,64 +409,19 @@ class TestButtons(WebCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["toast"], "")
 
-
-class TestDigestOnThePage(WebCase):
-    """Главное обещание: выпуск, заказанный со страницы, приходит на страницу."""
-
-    def setUp(self):
-        WebCase.setUp(self)
-        from newsdigest import pipeline, telegram
-
-        self.server.worker = bot.Worker().start()
-        self._real = (bot.collect, pipeline.rank_clusters, pipeline.summarize,
-                      telegram.tg_call)
-        bot.collect = lambda: None             # сеть в тестах не трогаем
-        pipeline.rank_clusters = lambda clusters, persona: (
-            [{"id": i, "score": 9.0, "category": "labs"}
-             for i in range(len(clusters))], {"in": 1, "out": 1})
-        pipeline.summarize = lambda picked, persona, language: (
-            {i: {"headline": "Карточка %d" % i, "what": "суть", "why": "важно"}
-             for i in range(len(picked))}, {"in": 1, "out": 1})
-        telegram.tg_call = lambda method, payload, **kw: {"message_id": 1}
-
+    def test_signup_press_does_nothing(self):
+        """Заявки одобряет владелец в чате: страница чужие подписки не трогает."""
+        conn = storage.db()
+        subscribers.add(conn, "777", role="pending")
+        conn.close()
+        self.login()
+        _code, body = self.press("sub:ok:777")
+        self.assertEqual(body["toast"], "")
         conn = storage.db()
         try:
-            conn.execute("DELETE FROM items")
-            conn.execute("DELETE FROM sent")
-            sources = [f[0] for f in profile("ai")["feeds"]]
-            for i, title in enumerate(("Postgres ускорил вакуум",
-                                       "Nvidia показала ускоритель",
-                                       "Rust добавил асинхронные трейты")):
-                row = item("https://e.com/%d" % i, title, sources[i])
-                conn.execute(
-                    "INSERT OR REPLACE INTO items(url_hash,url,source_id,tier,"
-                    "category,title,summary,published_at,fetched_at,sig,social) "
-                    "VALUES (:url_hash,:url,:source_id,:tier,:category,:title,"
-                    ":summary,:published_at,:fetched_at,:sig,:social)",
-                    dict(row, fetched_at=now_iso()))
-            conn.commit()
+            self.assertEqual(subscribers.get(conn, "777")["role"], "pending")
         finally:
             conn.close()
-
-    def tearDown(self):
-        from newsdigest import pipeline, telegram
-        (bot.collect, pipeline.rank_clusters, pipeline.summarize,
-         telegram.tg_call) = self._real
-        WebCase.tearDown(self)
-
-    def test_digest_from_the_page_lands_on_the_page(self):
-        self.login()
-        _code, body = self.ask("/api/command", {"text": "/digest"})
-        self.assertIn("Собираю", body["messages"][-1]["html"])
-
-        self.server.worker.queue.join()
-        _code, body = self.ask("/api/feed?after=%d" % body["last"])
-        html = "\n".join(m["html"] for m in body["messages"])
-        self.assertIn(profiles.title("ai"), html)     # заголовок раздела
-        self.assertIn("Карточка 0", html)
-        # и кнопки под выпуском живые
-        keys = [b for m in body["messages"] for row in m["buttons"] for b in row]
-        self.assertTrue(any(b["data"].startswith("fb:up:") for b in keys))
 
 
 class TestNews(WebCase):
@@ -839,39 +816,22 @@ class TestNewsLanguage(WebCase):
         self.assertEqual(card["title"], self.RUSSIAN % 0)
 
 
-class TestSanitizer(unittest.TestCase):
-    def test_keeps_telegram_tags(self):
-        self.assertEqual(web.safe_html("<b>жирно</b> и <i>курсив</i>"),
-                         "<b>жирно</b> и <i>курсив</i>")
+class TestOutwardLinks(unittest.TestCase):
+    """Адреса приходят из чужих фидов — на страницу пускаем только http(s)."""
 
-    def test_links_open_safely(self):
-        out = web.safe_html('<a href="https://e.com/x">ссылка</a>')
-        self.assertIn('href="https://e.com/x"', out)
-        self.assertIn('rel="noopener noreferrer"', out)
+    def test_http_links_pass(self):
+        self.assertEqual(newsfeed.outward("https://e.com/x"), "https://e.com/x")
+        self.assertEqual(newsfeed.outward("HTTP://e.com/x"), "HTTP://e.com/x")
 
-    def test_javascript_href_dropped(self):
-        out = web.safe_html('<a href="javascript:alert(1)">клик</a>')
-        self.assertNotIn("javascript", out)
+    def test_javascript_is_dropped(self):
+        self.assertEqual(newsfeed.outward("javascript:alert(1)"), "")
 
-    def test_script_becomes_text(self):
-        out = web.safe_html("<script>alert(1)</script>")
-        self.assertNotIn("<script>", out)
-        self.assertIn("&lt;script&gt;", out)
+    def test_data_url_is_dropped(self):
+        self.assertEqual(newsfeed.outward("data:text/html,<script>"), "")
 
-    def test_image_onerror_is_not_a_tag(self):
-        out = web.safe_html('<img src=x onerror="alert(1)">')
-        self.assertNotIn("<img", out)
-
-    def test_quote_in_url_cannot_break_out_of_href(self):
-        # ссылка приходит из чужого фида — кавычка в ней не должна дать
-        # дописать свой атрибут
-        out = web.safe_html("""<a href='https://e.com/"onmouseover="alert(1)'>x</a>""")
-        self.assertNotIn('onmouseover="alert', out)
-        self.assertIn("&quot;", out)
-
-    def test_link_attributes_are_dropped(self):
-        out = web.safe_html('<a href="https://e.com" onclick="alert(1)">x</a>')
-        self.assertNotIn("onclick", out)
+    def test_empty_stays_empty(self):
+        self.assertEqual(newsfeed.outward(""), "")
+        self.assertEqual(newsfeed.outward(None), "")
 
 
 if __name__ == "__main__":

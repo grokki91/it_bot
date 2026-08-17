@@ -1,35 +1,35 @@
 # -*- coding: utf-8 -*-
-"""Веб-страница: то же, что бот в Telegram, только в браузере.
+"""Веб-страница: новостной сайт поверх той же истории, что уходит в Telegram.
 
-Смысл простой — читать выпуск и гонять команды, не открывая Telegram.
-Страница не повторяет логику бота: она зовёт те же обработчики из `bot.py`
-и показывает копии сообщений, которые транспорт кладёт в таблицу `outbox`.
-Что видно в чате, то видно и здесь — включая кнопки 👍/👎/🔖 и заявки на
-подписку.
+Страница только показывает. Управление живёт на самом VPS — там и запускают
+`digest.py run`, `collect`, `status` и правят env, — поэтому ни команд, ни
+строки ввода, ни истории их запусков здесь нет и быть не должно: с чужого
+браузера чужими руками ничего не собирается и не тратится.
+
+Что есть: лента новостей (`newsfeed`), уведомления о рассылках, настройки
+приложения с подписчиками — всё для чтения — и кнопки 👍/👎/🔖 под карточками:
+это не команда, а вкусы читателя, и они те же, что в чате.
 
 Сервер — из стандартной библиотеки, поднимается нитью внутри демона.
-Страница закрыта паролем: она слушает IP VPS, а за ней и баланс модели,
-и ваша переписка. Пароль (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
+Страница закрыта паролем: она слушает IP VPS, а за ней вся ваша лента.
+Пароль (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
-import re
 import secrets
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import bot, config, feedback, newsfeed, render, sections, subscribers
+from . import bot, config, feedback, newsfeed, sections, settings, subscribers
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile
-from .render import esc
-from .storage import db, item_facts, meta_get, outbox_page, save_outbox
-from .telegram import tg_send
+from .storage import db, item_facts, meta_get
 from .webpage import PAGE
 
 #: имя cookie с признаком «пароль уже вводили»
@@ -39,8 +39,9 @@ COOKIE_MAX_AGE = 30 * 24 * 3600
 #: тело запроса больше этого не читаем — страница шлёт крохи
 MAX_BODY = 64 * 1024
 
-#: стили и скрипт у страницы свои, снаружи не грузится ничего. Второй рубеж
-#: после санитайзера: даже если в текст просочится чужой тег, ходить ему некуда
+#: стили и скрипт у страницы свои, снаружи не грузится ничего. Текст новостей
+#: приходит из чужих фидов, и страница вставляет его как текст, а не как
+#: разметку, — CSP тут второй рубеж: даже просочившемуся тегу некуда ходить
 CSP = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
        "script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; "
        "base-uri 'none'")
@@ -80,50 +81,6 @@ def cookie_value(secret: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
-# ------------------------------------------------------------------ безопасный HTML
-#: теги, которые допускает Telegram, — их же понимает и страница
-ALLOWED = {"b", "strong", "i", "em", "u", "s", "code", "pre", "br"}
-
-_TAG = re.compile(r"<(/?)\s*([a-zA-Z]+)([^>]*)>")
-_HREF = re.compile(r"""href\s*=\s*(['"])(.*?)\1""", re.S)
-
-
-def safe_html(text: str) -> str:
-    """Телеграмная разметка → HTML, которому можно доверять.
-
-    Текст внутри сообщений уже экранирован (`render.esc`), поэтому чистим
-    только сами теги: незнакомый тег превращается в текст, у ссылки
-    остаётся один href, и только http(s).
-    """
-    out, pos = [], 0
-    for match in _TAG.finditer(text or ""):
-        out.append(text[pos:match.start()])
-        pos = match.end()
-        closing, name, attrs = match.group(1), match.group(2).lower(), match.group(3)
-        if name in ALLOWED:
-            out.append("<%s%s>" % (closing, name))
-        elif name == "a":
-            out.append("</a>" if closing else _link(attrs))
-        else:
-            out.append(esc(match.group(0)))
-    out.append(text[pos:] if text else "")
-    return "".join(out)
-
-
-def _link(attrs: str) -> str:
-    """Из атрибутов ссылки оставляем только href, и только http(s).
-
-    Кавычки экранируем сами: `render.esc` их не трогает (в тексте они не
-    мешают), а вот внутри href кавычка вырвалась бы из атрибута.
-    """
-    href = _HREF.search(attrs or "")
-    url = href.group(2) if href else ""
-    if not url.lower().startswith(("http://", "https://")):
-        return "<a>"
-    return ('<a href="%s" target="_blank" rel="noopener noreferrer">'
-            % esc(url).replace('"', "&quot;").replace("'", "&#39;"))
-
-
 # --------------------------------------------------------------------- данные
 def chat_id() -> str:
     """От чьего имени работает страница. Обычно — владелец бота."""
@@ -153,47 +110,27 @@ def state(worker) -> dict:
     }
 
 
-def commands() -> list:
-    """Команды для панели быстрых кнопок — тот же список, что в /help."""
-    owner = bot.is_owner(chat_id())
-    out = []
-    for name, cmd in sorted(bot.HANDLERS.items()):
-        if cmd.hidden or not cmd.help or (cmd.owner and not owner):
-            continue
-        out.append({"name": name, "help": cmd.help, "heavy": cmd.heavy})
-    return out
-
-
 press_state = feedback.press_state
-is_pressed = render.is_pressed
 
 
-def buttons(raw, verdicts, saved) -> list:
-    try:
-        keyboard = json.loads(raw) if raw else []
-    except ValueError:
-        return []
-    rows = []
-    for line in render.rows_of(keyboard):
-        row = [{"text": str(b.get("text") or "").replace("✓", ""),
-                "data": str(b.get("callback_data") or ""),
-                "pressed": is_pressed(b.get("callback_data"), verdicts, saved)}
-               for b in (line or []) if isinstance(b, dict)]
-        if row:
-            rows.append(row)
-    return rows
+def readers(conn) -> list:
+    """Подписчики: кто получает выпуск и чем его настройки отличаются от общих."""
+    rows = subscribers.all_rows(conn, roles=("owner", "member", "pending"))
+    return [{"chat": row["chat_id"], "title": row["title"] or "без имени",
+             "role": row["role"], "paused": bool(row["paused"]),
+             "own": subscribers.describe(row)} for row in rows]
 
 
-def folded(rows) -> bool:
-    """Прятать ли реакции под одну кнопку — как и в Telegram, по настройке."""
-    return (len(rows) > 1
-            and str(CFG["feedback_style"]).lower() == "compact"
-            and all(str(b["data"]).startswith("fb:") for row in rows for b in row))
+def tuning(sub) -> list:
+    """Настройки приложения с текущими значениями — для показа, не для правки.
 
-
-def when(iso: str) -> str:
-    at = parse_date(iso)
-    return to_local(at).strftime("%d.%m %H:%M") if at else ""
+    Меняются они на VPS: `ND_*` в ~/.newsdigest/env. Страница про них просто
+    рассказывает — чтобы посмотреть, чем сейчас живёт бот, не заходя на сервер.
+    """
+    personal = settings.personal_view(sub)
+    return [{"name": name, "value": str(personal.get(name, value)),
+             "about": about, "own": name in personal}
+            for name, value, about in settings.overview()]
 
 
 def clock(iso: str) -> str:
@@ -246,78 +183,46 @@ def news(query, worker=None) -> dict:
     return payload
 
 
-def feed(after=None, worker=None, toast="") -> dict:
-    """Лента сообщений: хвост при первом заходе, дальше — только новое."""
+def alerts(worker=None) -> dict:
+    """Уведомления: сводка последних рассылок плюс состояние бота.
+
+    Этим же запросом страница проверяет пароль при заходе и раз в несколько
+    секунд узнаёт, не пришёл ли новый выпуск.
+    """
     chat = chat_id()
     conn = db()
     try:
-        rows = outbox_page(conn, chat, after)
-        verdicts, saved = press_state(conn, chat)
+        subscribers.ensure_owner(conn)
+        mail = newsfeed.mailings(conn, chat)
     finally:
         conn.close()
-    messages = []
-    for r in rows:
-        keys = buttons(r["keyboard"], verdicts, saved)
-        messages.append({"id": r["id"], "kind": r["kind"], "at": when(r["at"]),
-                         "html": safe_html(r["text"]), "buttons": keys,
-                         "fold": folded(keys)})
-    last = messages[-1]["id"] if messages else (int(after or 0))
-    return {"messages": messages, "last": last, "toast": toast,
-            "state": state(worker), "commands": commands()}
+    return {"alerts": mail, "last": mail[0]["id"] if mail else "",
+            "state": state(worker)}
+
+
+def tools(worker=None) -> dict:
+    """Раздел «Настройки»: подписчики и настройки приложения, всё для чтения."""
+    chat = chat_id()
+    conn = db()
+    try:
+        subscribers.ensure_owner(conn)
+        sub = subscribers.get(conn, chat)
+        people = readers(conn)
+    finally:
+        conn.close()
+    return {"readers": people, "settings": tuning(sub), "tz": tz_label(),
+            "state": state(worker)}
 
 
 # ------------------------------------------------------------------- действия
-def note(chat, text, keyboard=None, kind="bot") -> None:
-    """Сообщение только для страницы: в Telegram его дублировать незачем."""
-    conn = db()
-    try:
-        save_outbox(conn, chat, text, keyboard, kind)
-    finally:
-        conn.close()
-
-
-def run_command(text, worker) -> None:
-    """Выполняет команду от имени владельца — тем же кодом, что и в чате."""
-    chat = chat_id()
-    raw = (text or "").strip()
-    if not raw:
-        return
-    if not raw.startswith("/"):
-        raw = "/" + raw                 # с телефона слэш набирать неудобно
-    note(chat, esc(raw), kind="me")
-
-    name, args = bot.parse_command(raw)
-    cmd = bot.HANDLERS.get(name) if name else None
-    if cmd is None:
-        note(chat, "Не знаю команду /%s. Список: /help" % esc(name or ""))
-        return
-    if cmd.owner and not bot.is_owner(chat):
-        note(chat, "Команда /%s только для владельца. Задайте TELEGRAM_CHAT_ID "
-                   "(<code>digest.py chatid</code>) — страница работает от его "
-                   "имени." % esc(name))
-        return
-    if cmd.heavy and worker is None:
-        note(chat, "Фоновые задачи недоступны: страница поднята без демона.")
-        return
-
-    conn = db()
-    try:
-        reply = cmd.fn(bot.Ctx(chat, args, conn, worker, user="web"))
-    except Exception as exc:  # noqa: BLE001 — кривая команда не роняет сервер
-        log.exception("Команда %s со страницы упала: %s", raw, exc)
-        reply = "⚠️ Не получилось: %s" % esc(str(exc)[:300])
-    finally:
-        conn.close()
-    if reply:
-        note(chat, reply)
-
-
 def press(data: str) -> dict:
-    """Нажатие кнопки под сообщением. Возвращает подсказку и новое состояние."""
+    """Нажатие 👍/👎/🔖 под карточкой. Возвращает подсказку и новое состояние.
+
+    Единственное, что страница вправе изменить: это вкусы читателя, а не
+    управление ботом.
+    """
     chat = chat_id()
     data = str(data or "")
-    if data.startswith("sub:") and data.count(":") >= 2:
-        return {"toast": signup(data, chat)}
     if not data.startswith("fb:") or data.count(":") < 2:
         return {"toast": ""}
 
@@ -329,9 +234,8 @@ def press(data: str) -> dict:
             feedback.record(conn, chat, url_hash, kind, facts)
             toast = bot.TOAST[kind]
         elif kind == "save":
-            toast = ("🔖 В закладках, /saved"
-                     if feedback.save_bookmark(conn, chat, url_hash, facts)
-                     else "Убрал из закладок")
+            toast = ("🔖 В закладках" if feedback.save_bookmark(
+                conn, chat, url_hash, facts) else "Убрал из закладок")
         else:
             return {"toast": ""}
         verdicts, saved = press_state(conn, chat)
@@ -341,30 +245,6 @@ def press(data: str) -> dict:
             "pressed": {"up": verdicts.get(url_hash) == feedback.UP,
                         "down": verdicts.get(url_hash) == feedback.DOWN,
                         "save": url_hash in saved}}
-
-
-def signup(data, chat) -> str:
-    """Кнопки «Пустить»/«Нет» под заявкой нового чата — они же и на странице."""
-    if not bot.is_owner(chat):
-        return "Только владелец решает, кого пускать."
-    _, verdict, applicant = data.split(":", 2)
-    conn = db()
-    try:
-        if verdict == "ok":
-            subscribers.add(conn, applicant, role="member")
-            tg_send(applicant, "✅ Владелец одобрил подписку. Выпуски будут "
-                               "приходить сами: %s."
-                    % subscribers.schedule_human())
-            return "Пустил %s" % applicant
-        subscribers.remove(conn, applicant)
-        return "Отказал %s" % applicant
-    except ValueError as exc:
-        return str(exc)
-    except RuntimeError as exc:                 # Telegram не ответил — не беда
-        log.warning("Одобрение %s: %s", applicant, exc)
-        return "Подписал, но уведомить не вышло: %s" % exc
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------- HTTP
@@ -422,13 +302,6 @@ class Site(BaseHTTPRequestHandler):
             return same(auth[7:].strip(), token())
         return False
 
-    def _after(self, query):
-        raw = (query.get("after") or [""])[0]
-        try:
-            return int(raw)
-        except ValueError:
-            return None
-
     # ---------------------------------------------------------------- вход
     def _login(self, data):
         ip = self.client_address[0]
@@ -463,11 +336,14 @@ class Site(BaseHTTPRequestHandler):
             if not self._authed():
                 self._json({"error": "нужен пароль"}, 401)
                 return
-            if path == "/api/feed":
-                self._json(feed(self._after(query), self.server.worker))
+            if path == "/api/alerts":
+                self._json(alerts(self.server.worker))
                 return
             if path == "/api/news":
                 self._json(news(query, self.server.worker))
+                return
+            if path == "/api/tools":
+                self._json(tools(self.server.worker))
                 return
             self._json({"error": "нет такой страницы"}, 404)
         except Exception as exc:  # noqa: BLE001 — сервер не должен падать
@@ -476,7 +352,7 @@ class Site(BaseHTTPRequestHandler):
 
     def do_POST(self):                           # noqa: N802
         try:
-            path, query = self._split()
+            path, _query = self._split()
             data = self._body()
             if path == "/api/login":
                 self._login(data)
@@ -489,24 +365,8 @@ class Site(BaseHTTPRequestHandler):
                     "Set-Cookie",
                     "%s=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax" % COOKIE)])
                 return
-
-            after = self._after(query)
-            if after is None:
-                try:
-                    after = int(data.get("after"))
-                except (TypeError, ValueError):
-                    after = None
-            worker = self.server.worker
-
-            if path == "/api/command":
-                run_command(data.get("text", ""), worker)
-                self._json(feed(after, worker))
-                return
             if path == "/api/react":
-                result = press(data.get("data", ""))
-                payload = feed(after, worker, toast=result.get("toast", ""))
-                payload["press"] = result
-                self._json(payload)
+                self._json(press(data.get("data", "")))
                 return
             self._json({"error": "нет такой страницы"}, 404)
         except Exception as exc:  # noqa: BLE001

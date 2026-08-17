@@ -122,8 +122,8 @@ def daemon():
                      name="nd-scheduler", daemon=True).start()
 
     if CFG["web"]:
-        # страница живёт в том же процессе: ей нужен тот же worker, иначе
-        # /digest со страницы не увидит, что выпуск уже собирается
+        # страница живёт в том же процессе: тот же worker нужен ей, чтобы
+        # показывать, чем бот занят прямо сейчас
         from . import web as webui
         webui.start_background(worker)
 

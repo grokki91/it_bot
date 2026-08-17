@@ -371,7 +371,7 @@ class TestSectionCommands(unittest.TestCase):
         os.environ.update(self.saved_env)
 
     def message(self, text, chat_id=None, worker=None):
-        """Команда со страницы: в Telegram их больше не выполняют."""
+        """Обработчик команды напрямую: интерфейса у команд больше нет."""
         name, args = bot.parse_command(text)
         cmd = bot.HANDLERS[name]
         conn = storage.db()

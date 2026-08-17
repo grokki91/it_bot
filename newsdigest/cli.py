@@ -91,7 +91,7 @@ def cmd_setup(_args):
 
     print("4/7 Выпуск идёт по разделам: %s."
           % ", ".join(topic_title(t) for t in sections.defaults()))
-    print("    Менять их потом — командой /sections на странице в браузере.")
+    print("    Менять их потом — ND_SECTIONS в ~/.newsdigest/env.")
     topic = ask("    Раздел по умолчанию (для /news и срочных)", CFG["topic"])
     if sections.resolve(topic):
         topic = sections.resolve(topic)
@@ -157,7 +157,7 @@ def cmd_doctor(_args):
     print("Каталог      :", HOME)
     print("Разделы      : %d (%s) | источников: %d"
           % (len(plan), ", ".join(topic_title(t) for t in plan), len(feeds)))
-    print("По умолчанию :", CFG["topic"], "— раздел для /news и срочных")
+    print("По умолчанию :", CFG["topic"], "— раздел для срочных новостей")
     print("Часовой пояс :", tz_label(), "| сейчас у вас", local_now().strftime("%H:%M"),
           "| на сервере", datetime.now(timezone.utc).strftime("%H:%M UTC"))
     print("Расписание   : отправка в %s (%d раз(а) в сутки), сбор раз в %d ч"
@@ -470,11 +470,9 @@ def cmd_topics(_args):
               % (mark, name, topic_title(name), len(prof["feeds"]),
                  " (из них своих %d)" % custom if custom else "",
                  len(prof["keywords"])))
-    print("\nВыбрать разделы: /sections add|rm|all|reset на странице в браузере "
-          "или ND_SECTIONS=<через,запятую>.")
+    print("\nВыбрать разделы: ND_SECTIONS=<через,запятую> в %s." % ENV_FILE)
     print("Топ одного раздела: %s run --section спорт --count 10" % PROG)
-    print("Править источники: /feed add|rm на странице или %s руками."
-          % PROFILES_FILE)
+    print("Править источники: %s руками." % PROFILES_FILE)
     return 0
 
 
