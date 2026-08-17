@@ -390,7 +390,8 @@ class TestStorage(unittest.TestCase):
                              "по умолчанию")
             self.assertTrue(storage.ensure_column(conn, "items", "probe", "TEXT"))
             self.assertFalse(storage.ensure_column(conn, "items", "probe", "TEXT"))
-            storage.log_run(conn, "test", "ok", {"a": 1})
+            conn.execute("DELETE FROM runs")     # прогоны могли остаться от
+            storage.log_run(conn, "test", "ok", {"a": 1})   # соседнего теста
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) c FROM runs").fetchone()["c"], 1)
         finally:

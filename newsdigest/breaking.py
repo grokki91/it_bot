@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, subscribers
+from . import config, sections, subscribers, translate
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .llm import LLMError, llm_cost, rank_clusters, summarize
-from .pipeline import for_topic, fresh_rows
+from .pipeline import card_of, for_topic, fresh_rows
 from .rank import SentIndex, cluster, prescore, primary_of
 from .render import breaking_card, feedback_keyboard
 from .storage import db, log_run, meta_get, meta_set
@@ -287,7 +287,7 @@ def best_of(pool, rated):
     return best, best_score, category
 
 
-def card_for(group, score, category, persona, cache):
+def card_for(conn, group, score, category, persona, cache):
     """Карточка срочного и её цена. Одну и ту же новость двум читателям группы
     пишем один раз: портрет у них общий, а язык обычно тоже. Не написалась —
     запасной заголовок тоже общий: модель лежит сразу для всех, и ходить к ней
@@ -303,8 +303,11 @@ def card_for(group, score, category, persona, cache):
         log.warning("Карточка для срочного не написалась (%s) — беру заголовок", exc)
         card, cost = None, 0.0
     main = primary_of(group)
-    card = card or {"headline": main["title"], "what": main["summary"][:300],
-                    "why": ""}
+    card = card_of(card, main)
+    # запасной заголовок пришёл прямо из фида, да и модель на английском
+    # источнике иногда оставляет его как есть — доводим до языка выпуска
+    cost += translate.localize(conn, [card])
+    translate.remember_headlines(conn, [(main["title"], card.get("headline"))])
     cache[key] = card
     return card, cost
 
@@ -321,7 +324,7 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
         log_run(conn, "breaking", "below-threshold", stats)
         return 0
 
-    card, spent = card_for(best, best_score, category, persona, cards)
+    card, spent = card_for(conn, best, best_score, category, persona, cards)
     stats["cost"] += spent
     main = primary_of(best)
 

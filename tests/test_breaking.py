@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import breaking, storage, subscribers  # noqa: E402
+from newsdigest import breaking, storage, subscribers, translate  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
@@ -235,6 +235,49 @@ class TestCheck(BreakingCase):
         conn.commit()
         conn.close()
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
+
+
+class TestLanguage(BreakingCase):
+    """Срочное будит человека ночью — тем более оно должно быть понятным."""
+
+    ENGLISH = "Major Lab Releases A New Frontier Model"
+
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        self._real_tr = translate.translate_texts
+        translate.translate_texts = self.fake_translate
+        conn = storage.db()
+        conn.execute("DELETE FROM translations")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        translate.translate_texts = self._real_tr
+        super().tearDown()
+
+    def fake_translate(self, texts, language):
+        self.asked.extend(texts)
+        return ({i: "Русский перевод строки %d" % i for i in range(len(texts))},
+                {"in": 5, "out": 5})
+
+    def test_fallback_card_is_translated(self):
+        """Карточка не написалась — заголовок из фида идёт через перевод."""
+        def broken(picked, persona, language):
+            raise LLMError("модель недоступна")
+
+        breaking.summarize = broken
+        self.fill(["openai", "theverge", "techcrunch"], title=self.ENGLISH,
+                  tiers={"openai": 1})
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertIn("Русский перевод", self.sent[0][1])
+        self.assertNotIn(self.ENGLISH, self.sent[0][1])
+
+    def test_russian_card_is_not_touched(self):
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertEqual(self.asked, [])
+        self.assertIn("Срочный заголовок", self.sent[0][1])
 
 
 class TestGrouped(BreakingCase):

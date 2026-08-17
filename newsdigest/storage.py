@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import config
+from . import config, translate
 from .config import DB_FILE, HOME, log, now_iso
 
 SCHEMA = """
@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS saved (
     source_id TEXT NOT NULL DEFAULT '',
     at        TEXT NOT NULL,
     PRIMARY KEY (chat_id, url_hash)
+);
+
+-- Кэш переводов: строка на языке источника -> она же на языке выпуска. Одна и
+-- та же новость уходит нескольким подписчикам, всплывает в /more и в закладках,
+-- а назавтра приходит из второго источника с тем же заголовком — платить за её
+-- перевод больше одного раза незачем.
+CREATE TABLE IF NOT EXISTS translations (
+    lang     TEXT NOT NULL DEFAULT '',
+    src_hash TEXT NOT NULL,
+    src      TEXT NOT NULL DEFAULT '',
+    text     TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    PRIMARY KEY (lang, src_hash)
 );
 
 -- Копии сообщений бота: их показывает веб-страница. Всё, что уходит в
@@ -272,13 +285,20 @@ def split_sent_by_chat(conn) -> None:
 
 
 def item_facts(conn, url_hash):
-    """Заголовок, ссылка, источник и категория по хэшу — где бы они ни лежали."""
+    """Заголовок, ссылка, источник и категория по хэшу — где бы они ни лежали.
+
+    Заголовок отдаём на языке выпуска: в базе лежит строка из фида, а читатель,
+    нажимая 🔖 или 👍, видел русскую карточку — она и должна попасть в закладки
+    и в историю реакций.
+    """
     for table in ("items", "sent"):
         row = conn.execute(
             "SELECT title, url, source_id, category FROM %s WHERE url_hash=?" % table,
             (url_hash,)).fetchone()
         if row:
-            return dict(row)
+            facts = dict(row)
+            facts["title"] = translate.known(conn, facts["title"])
+            return facts
     return {"title": "", "url": "", "source_id": "", "category": "other"}
 
 

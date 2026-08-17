@@ -162,6 +162,9 @@ def collect(topics=None) -> dict:
                 - timedelta(days=CFG["keep_sent_days"])).isoformat()
     conn.execute("DELETE FROM items WHERE fetched_at < ? AND state != 'sent'", (cutoff_i,))
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
+    # перевод новости живёт ровно столько, сколько сама новость: заголовок
+    # двухмесячной давности второй раз уже не понадобится
+    conn.execute("DELETE FROM translations WHERE at < ?", (cutoff_s,))
     conn.commit()
 
     # частичный сбор (один раздел по команде /news) не считается обходом всего

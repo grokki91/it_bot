@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, storage, subscribers  # noqa: E402
+from newsdigest import bot, config, storage, subscribers, translate  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
@@ -272,6 +272,22 @@ class TestCommands(BotCase):
         self.assertIn("Новость 1", text)
         self.assertNotIn("Новость 2", text)
         self.assertIn("Новость 2", self.command("/more 2"))   # следующие
+
+    def test_more_shows_the_russian_title(self):
+        """Запас, собранный до перевода, тоже показываем по-русски — из кэша."""
+        english = "Chrome Enables Cache Partitioning For All Users"
+        russian = "Chrome включил партиционирование кэша"
+        conn = storage.db()
+        try:
+            storage.save_leftover(conn, self.OWNER, [
+                {"url_hash": "h9", "title": english, "url": "https://e.com/9",
+                 "source_id": "src", "category": "media", "score": 9.0}])
+            translate.remember(conn, [(english, russian)])
+        finally:
+            conn.close()
+        text = self.command("/more")
+        self.assertIn(russian, text)
+        self.assertNotIn(english, text)
 
     def test_status_reports_schedule(self):
         text = self.command("/status")

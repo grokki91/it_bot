@@ -11,7 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import feedback, pipeline, storage, subscribers  # noqa: E402
+from newsdigest import (feedback, pipeline, storage,  # noqa: E402
+                        subscribers, translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 from newsdigest.profiles import PROFILES  # noqa: E402
@@ -84,13 +85,14 @@ class PipelineCase(unittest.TestCase):
         """Материал попадает в выпуск, только если его источник есть в теме."""
         return [f[0] for f in PROFILES[topic]["feeds"]]
 
-    def fill(self, count, topic="ai"):
+    def fill(self, count, topic="ai", titles=None):
         sources = self.source_ids(topic)
+        titles = titles or self.TITLES
         conn = storage.db()
         try:
             for i in range(count):
                 row = item("https://e.com/%s/%d" % (topic, i),
-                           self.TITLES[i % len(self.TITLES)],
+                           titles[i % len(titles)],
                            sources[i % len(sources)])
                 conn.execute(
                     "INSERT OR REPLACE INTO items(url_hash,url,source_id,tier,category,"
@@ -202,6 +204,117 @@ class TestBuildAndSend(PipelineCase):
             self.assertIsNone(self.sent[0][2])
         finally:
             CFG["feedback_buttons"] = True
+
+
+class TestLanguage(PipelineCase):
+    """Выпуск на русском, откуда бы новость ни пришла.
+
+    Источники международные, и это правильно, но в русский выпуск английский
+    заголовок попадать не должен — ни из фида, ни от модели.
+    """
+
+    #: заголовки нарочно английские: ровно то, что приходит от phoronix,
+    #: reuters и arxiv
+    ENGLISH = [
+        "Boot Option Submitted Ahead Of Linux Kernel Release",
+        "Rust Adds Async Traits To The Standard Library",
+        "Chrome Enables Cache Partitioning For All Users",
+        "OpenSSH Vulnerability Found In Agent Forwarding",
+        "SQLite Learns To Read Parquet Files Natively",
+    ]
+    TRANSLATED = "Русский перевод строки номер %d"
+
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        self._real_tr = translate.translate_texts
+        translate.translate_texts = self.fake_translate
+        conn = storage.db()
+        conn.execute("DELETE FROM translations")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        translate.translate_texts = self._real_tr
+        super().tearDown()
+
+    def fake_translate(self, texts, language):
+        self.asked.extend(texts)
+        return ({i: self.TRANSLATED % i for i in range(len(texts))},
+                {"in": 10, "out": 5})
+
+    def test_english_cards_are_translated_before_sending(self):
+        """Модель оставила заголовок как в источнике — правим перед отправкой."""
+        self.fill(3, titles=self.ENGLISH)
+        pipeline.summarize = lambda picked, persona, language: (
+            {i: {"headline": self.ENGLISH[i], "what": "Details are scarce for now",
+                 "why": ""} for i in range(len(picked))}, {"in": 10, "out": 5})
+        pipeline.build_and_send(chat_id=CHAT)
+        text = self.sent[0][1]
+        self.assertIn("Русский перевод", text)
+        for title in self.ENGLISH[:3]:
+            self.assertNotIn(title, text)
+
+    def test_fallback_titles_are_translated_too(self):
+        """Саммари не написалось — в выпуск идёт заголовок фида, тоже русский."""
+        def broken(picked, persona, language):
+            raise LLMError("модель недоступна")
+
+        self.fill(3, titles=self.ENGLISH)
+        pipeline.summarize = broken
+        pipeline.build_and_send(chat_id=CHAT)
+        text = self.sent[0][1]
+        self.assertIn("Русский перевод", text)
+        self.assertNotIn(self.ENGLISH[0], text)
+
+    def test_leftover_is_translated_for_more(self):
+        """Хвост для /more переводится при сборке: команда не ждёт модель."""
+        self.fill(len(self.ENGLISH), titles=self.ENGLISH)
+        limit = CFG["max_items"]
+        CFG["max_items"] = 2                # остальное уйдёт в запас для /more
+        try:
+            pipeline.build_and_send(chat_id=CHAT)
+        finally:
+            CFG["max_items"] = limit
+        conn = storage.db()
+        try:
+            rows = storage.take_leftover(conn, CHAT, 10)
+        finally:
+            conn.close()
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn(row["title"], self.ENGLISH)
+
+    def test_half_written_card_is_filled_and_translated(self):
+        """Модель дала заголовок, но не суть: остальное берём из источника."""
+        self.fill(2, titles=self.ENGLISH)
+        pipeline.summarize = lambda picked, persona, language: (
+            {i: {"headline": "Русский заголовок %d" % i}
+             for i in range(len(picked))}, {"in": 10, "out": 5})
+        pipeline.build_and_send(chat_id=CHAT)
+        text = self.sent[0][1]
+        self.assertIn("Русский заголовок 0", text)
+        self.assertIn("Русский перевод", text)      # суть — из фида, но по-русски
+        for title in self.ENGLISH[:2]:
+            self.assertNotIn(title, text)
+
+    def test_russian_issue_never_asks_for_translation(self):
+        self.fill(4)
+        pipeline.build_and_send(chat_id=CHAT)
+        self.assertEqual(self.asked, [])
+
+    def test_headline_of_the_card_is_kept_for_bookmarks(self):
+        """Нажав 🔖, читатель кладёт в закладки то, что видел в выпуске."""
+        self.fill(2, titles=self.ENGLISH)
+        pipeline.build_and_send(chat_id=CHAT)
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT url_hash FROM sent WHERE chat_id=? LIMIT 1",
+                               (CHAT,)).fetchone()
+            title = storage.item_facts(conn, row["url_hash"])["title"]
+        finally:
+            conn.close()
+        self.assertNotIn(title, self.ENGLISH)
 
 
 class TestPerSubscriber(PipelineCase):

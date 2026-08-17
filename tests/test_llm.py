@@ -94,5 +94,23 @@ class TestLlmJson(unittest.TestCase):
             llm.llm_json("s", "u", "model")
 
 
+class TestTranslateTexts(TestLlmJson):
+    """Перевод: ответ раскладывается обратно по номерам строк."""
+
+    def test_answer_maps_to_positions(self):
+        self._answer('{"items": [{"id": 1, "text": "вторая"}, '
+                     '{"id": 0, "text": "первая"}]}')
+        got, usage = llm.translate_texts(["first", "second"], "русский")
+        self.assertEqual(got, {0: "первая", 1: "вторая"})
+        self.assertEqual(usage["out"], 5)
+
+    def test_unknown_and_empty_rows_are_dropped(self):
+        """Модель придумала лишний id или отдала пустую строку — пропускаем."""
+        self._answer('{"items": [{"id": 0, "text": "первая"}, '
+                     '{"id": 5, "text": "лишняя"}, {"id": 1, "text": "  "}]}')
+        got, _usage = llm.translate_texts(["first", "second"], "русский")
+        self.assertEqual(got, {0: "первая"})
+
+
 if __name__ == "__main__":
     unittest.main()

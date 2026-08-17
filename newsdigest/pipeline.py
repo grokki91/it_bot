@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, subscribers
+from . import config, sections, subscribers, translate
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
@@ -208,8 +208,11 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
         else:
             stats["empty"].append(topic)
 
-    save_leftover(conn, chat_id, sorted(
-        spare, key=lambda r: -r["score"])[:30])
+    # хвост переводим здесь, а не в момент /more: команда должна отвечать
+    # сразу, а сборка выпуска и так идёт в фоне
+    spare = sorted(spare, key=lambda r: -r["score"])[:30]
+    stats["cost"] += translate.localize_titles(conn, spare)
+    save_leftover(conn, chat_id, spare)
     if not blocks:
         log.warning("Ничего не прошло порог важности %.1f — тихий день",
                     CFG["min_score"])
@@ -217,7 +220,7 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
         conn.close()
         return stats
 
-    cards = write_cards(blocks, plan, stats)
+    cards = write_cards(conn, blocks, plan, stats)
     stats["selected"] = sum(len(block) for _topic, block in cards)
     stats["sections"] = len(cards)
 
@@ -291,7 +294,7 @@ def rank_all(shortlists, hint, stats) -> dict:
     return out
 
 
-def write_cards(blocks, plan, stats):
+def write_cards(conn, blocks, plan, stats):
     """Просит модель написать карточки на весь выпуск и раскладывает их обратно."""
     flat = [pick for _topic, picked in blocks for pick in picked]
     try:
@@ -305,13 +308,43 @@ def write_cards(blocks, plan, stats):
     for topic, picked in blocks:
         block = []
         for group, score, category in picked:
-            main = primary_of(group)
-            card = cards_map.get(idx) or {"headline": main["title"],
-                                          "what": main["summary"][:300], "why": ""}
-            block.append((card, group, score, category))
+            block.append((card_of(cards_map.get(idx), primary_of(group)),
+                          group, score, category))
             idx += 1
         out.append((topic, block))
+    stats["cost"] += localize(conn, out)
     return out
+
+
+def card_of(written, main) -> dict:
+    """Карточка новости: что написала модель, а чего не написала — из источника.
+
+    Пустое поле добираем здесь, а не при выводе: дальше карточка идёт на
+    перевод, и заголовок из фида должен попасть туда вместе с остальными.
+    """
+    written = written if isinstance(written, dict) else {}
+    return {"headline": written.get("headline") or main["title"],
+            "what": written.get("what") or main["summary"][:300],
+            "why": written.get("why") or ""}
+
+
+def localize(conn, blocks) -> float:
+    """Доводит готовые карточки до языка выпуска. Возвращает стоимость перевода.
+
+    Сюда карточка приходит любой: и написанная моделью (тогда переводить обычно
+    нечего), и запасная — из заголовка фида, когда саммари не написалось. Это
+    последняя проверка перед отправкой, поэтому она одна на весь выпуск и
+    относится ко всем разделам сразу.
+
+    Заодно запоминаем пару «заголовок источника → то, что увидел читатель»: по
+    ней /more и /saved потом покажут русский текст без запроса к модели.
+    """
+    cards = [card for _topic, block in blocks for card, _g, _s, _c in block]
+    cost = translate.localize(conn, cards)
+    translate.remember_headlines(
+        conn, [(primary_of(group)["title"], card.get("headline"))
+               for _topic, block in blocks for card, group, _s, _c in block])
+    return cost
 
 
 def empty_note(stats) -> str:

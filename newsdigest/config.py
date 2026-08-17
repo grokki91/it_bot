@@ -27,6 +27,14 @@ CFG = {
                                    # (profiles.DEFAULT_SECTIONS). Список всех
                                    # разделов — команда /sections
     "language":         "русский", # [env ND_LANGUAGE] язык дайджеста
+    "translate":        True,      # [env ND_TRANSLATE] доводить выпуск до языка
+                                   # дайджеста. Источники международные, и это
+                                   # правильно: надёжность важнее языка. Но всё,
+                                   # что осталось на чужом языке (модель не
+                                   # перевела заголовок или вообще не ответила),
+                                   # перед отправкой переводится отдельным
+                                   # запросом. Проверка работает для русского:
+                                   # у него свой алфавит. 0 = как ответила модель
     "send_at":          "09:00",   # [env ND_SEND_AT] во сколько отправлять (ВАШЕ время)
     "per_day":          2,         # [env ND_PER_DAY] выпусков в сутки: 1 — только
                                    # в send_at, 2 — ещё через 12 часов (по
@@ -73,6 +81,7 @@ CFG = {
     "model_rank":       "deepseek-v4-flash",  # ранжирование — дешёвая модель
     "model_summary":    "deepseek-v4-flash",  # саммари. Хотите качественнее: deepseek-v4-pro
     "llm_candidates":   28,        # сколько кластеров отдаём модели на оценку
+    "translate_batch":  20,        # строк в одном запросе на перевод
     "llm_timeout":      120,
     "llm_retries":      4,
     "disable_thinking": True,      # V4 умеет "думать" — нам это не нужно, дороже и медленнее
@@ -173,6 +182,7 @@ ENV_MAP = {
     "ND_SECTIONS": ("sections", str),
     "ND_PER_SECTION": ("per_section", int),
     "ND_LANGUAGE": ("language", str),
+    "ND_TRANSLATE": ("translate", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_SEND_AT": ("send_at", str),
     "ND_PER_DAY": ("per_day", int),
     "ND_TZ": ("tz", str),

@@ -20,7 +20,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, feedback, sections, settings, subscribers, userprofiles
+from . import (config, feedback, sections, settings, subscribers, translate,
+               userprofiles)
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
@@ -360,7 +361,8 @@ def cmd_more(ctx):
     lines = ["📎 <b>Ещё из вчерашнего отбора</b>", ""]
     for row in rows:
         lines.append('• <a href="%s">%s</a> — %s · ⭐ %.1f'
-                     % (esc(row["url"]), esc(row["title"]),
+                     % (esc(row["url"]),
+                        esc(translate.known(ctx.conn, row["title"])),
                         esc(row["source_id"]), row["score"]))
     return "\n".join(lines)
 
@@ -397,7 +399,8 @@ def cmd_saved(ctx):
     lines = ["🔖 <b>Закладки</b>", ""]
     for row in rows:
         lines.append('• <a href="%s">%s</a> — %s'
-                     % (esc(row["url"]), esc(row["title"] or row["url"]),
+                     % (esc(row["url"]),
+                        esc(translate.known(ctx.conn, row["title"]) or row["url"]),
                         esc(row["source_id"])))
     lines += ["", "<i>/saved clear — очистить</i>"]
     return "\n".join(lines)
