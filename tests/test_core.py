@@ -92,6 +92,38 @@ class TestFeedParse(unittest.TestCase):
         raw = b"\xef\xbb\xbf\n" + self.RSS.replace(b"Body text", b"Body\x07text")
         self.assertEqual(len(feedparse.parse_feed(raw)), 1)
 
+    #: GitHub в ленте релизов склеивает заголовок из имени тега и названия
+    #: релиза — в карточку попадал хеш коммита вместо сути новости
+    def test_strips_git_ref_prefix(self):
+        cases = {
+            "trunk/72387e8842743fc341463788a0c3277278222d4b: Attribute "
+            "CUDA-graph nodes (#191999)": "Attribute CUDA-graph nodes (#191999)",
+            "viable/strict/1786953788: [vllm hash update] update the pinned "
+            "vllm hash": "[vllm hash update] update the pinned vllm hash",
+            "refs/tags/v2.9.1: Release 2.9.1": "Release 2.9.1",
+            "72387e8842743fc341463788a0c3277278222d4b: [CUDA] GroupNorm NHWC":
+                "[CUDA] GroupNorm NHWC",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(feedparse.clean_title(raw), expected)
+
+    def test_keeps_human_titles(self):
+        for title in ("b10419",
+                      "trunk/72387e8842743fc341463788a0c3277278222d4b",
+                      "Reuters: Трамп подписал указ",
+                      "AC/DC: новый альбом",
+                      "OpenAI: GPT-5 выходит в 2026",
+                      "defaced: репутация компании"):
+            self.assertEqual(feedparse.clean_title(title), title)
+
+    def test_parse_feed_cleans_title(self):
+        raw = self.ATOM.replace(
+            b"<title>Atom entry</title>",
+            b"<title>trunk/8003932681db26d8bf530f868d44b3721ddc866f: "
+            b"[CUDA] GroupNorm NHWC (#191945)</title>")
+        self.assertEqual(feedparse.parse_feed(raw)[0]["title"],
+                         "[CUDA] GroupNorm NHWC (#191945)")
+
     def test_dates(self):
         self.assertIsNone(feedparse.parse_date(""))
         self.assertIsNone(feedparse.parse_date("вчера"))

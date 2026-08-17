@@ -38,7 +38,7 @@ import urllib.parse
 
 from . import sections, translate
 from .config import CFG, local_now, to_local
-from .feedparse import parse_date
+from .feedparse import clean_title, parse_date
 from .profiles import emoji as topic_emoji
 from .profiles import title as topic_title
 from .render import MONTHS
@@ -294,7 +294,8 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
         # этой колонки, берём заголовок фида
         out.append({
             "hash": row["url_hash"],
-            "title": str(column(row, "headline") or column(row, "title")),
+            "title": clean_title(
+                str(column(row, "headline") or column(row, "title"))),
             "summary": body(row),
             "url": row["url"] or "",
             "source": domain(row["url"]) or row["source_id"] or "источник",
@@ -444,7 +445,8 @@ def link_of(row, smap) -> dict:
     """
     topic = row["section"] or smap.get(row["source_id"], "")
     url = outward(column(row, "url"))
-    return {"title": str(column(row, "headline") or column(row, "title")),
+    return {"title": clean_title(
+                str(column(row, "headline") or column(row, "title"))),
             "url": url,
             "source": domain(url) or column(row, "source_id") or "источник",
             "score": round(float(column(row, "score", 0) or 0), 1),

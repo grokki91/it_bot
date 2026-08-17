@@ -25,6 +25,35 @@ def strip_html(raw: str, limit: int = 1000) -> str:
     return re.sub(r"\s+", " ", text).strip()[:limit]
 
 
+#: технический префикс git-ссылки перед двоеточием: `trunk/<sha40>: `,
+#: `viable/strict/1786953788: `, `refs/tags/v2.9.1: `. GitHub в ленте релизов
+#: склеивает заголовок из имени тега и названия релиза, и в заголовок карточки
+#: попадает хеш коммита — он ничего не сообщает о новости, а на телефоне ещё и
+#: распирает вёрстку. Отрезаем только заведомо машинную часть: в префиксе нет
+#: пробелов, есть слэш или длинный хеш и есть цифры — так «Reuters: ...» и
+#: «AC/DC: новый альбом» остаются нетронутыми.
+REF_PREFIX = re.compile(
+    r"""^(?:
+            refs/[\w.+-]+/[^\s:]+          # refs/tags/v2.9.1
+          | [\w.+-]*/[^\s:]*\d[^\s:]*      # trunk/72387e88…, viable/strict/17869…
+          | (?=[^\s:]*\d)                  # без цифры это просто слово
+            [\w.+-]*[0-9a-f]{7,40}[\w.+-]* # 72387e8842743fc34146…
+         ):\s+(?=\S)""", re.VERBOSE)
+
+
+def clean_title(text: str) -> str:
+    """Снимаем с заголовка служебный префикс вроде `trunk/<хеш>: `.
+
+    Смысл заголовка живёт в правой части; сам по себе тег читателю ничего не
+    говорит. Если после двоеточия ничего осмысленного нет (заголовок — только
+    тег, как `b10419`), оставляем строку как есть: пустой заголовок хуже
+    непонятного.
+    """
+    text = (text or "").strip()
+    rest = REF_PREFIX.sub("", text, count=1).strip()
+    return rest if rest else text
+
+
 def parse_date(value: str):
     value = (value or "").strip()
     if not value:
@@ -69,7 +98,7 @@ def parse_feed(raw: bytes) -> list:
         for child in el:
             name = _tagname(child.tag)
             if name == "title" and not title:
-                title = strip_html(_text(child), 300)
+                title = clean_title(strip_html(_text(child), 300))
             elif name == "link":
                 href = child.get("href")
                 if href:

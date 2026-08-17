@@ -198,8 +198,12 @@ header {
   font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
 }
 .news .star { color: var(--star); }
+/* заголовок нередко начинается с хеша коммита — неразрывного слова длиннее
+   экрана. Без переноса такое слово распирает карточку, а вместе с ней и всю
+   страницу: на телефоне появлялась горизонтальная прокрутка */
 .news h2 {
   font-size: 19px; line-height: 1.32; letter-spacing: -.01em; font-weight: 650;
+  overflow-wrap: anywhere;
 }
 /* заголовок — ссылка, но выглядеть должен заголовком, а не ссылкой */
 .news h2 a { color: inherit; }
@@ -296,6 +300,8 @@ header {
 }
 .mail li { display: flex; gap: 8px; font-size: 14.5px; line-height: 1.4; }
 .mail li .ico { flex: none; }
+/* та же беда, что и с заголовком новости: длинная ссылка без пробелов */
+.mail li span { min-width: 0; overflow-wrap: anywhere; }
 .mail .from { color: var(--dim); font-size: 13px; white-space: nowrap; }
 .mail .star { color: var(--star); white-space: nowrap; }
 
