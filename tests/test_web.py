@@ -18,9 +18,10 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, profiles, sections, storage  # noqa: E402
-from newsdigest import subscribers, web  # noqa: E402
+from newsdigest import bot, config, feedback, newsfeed, profiles  # noqa: E402
+from newsdigest import sections, storage, subscribers, translate, web  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
+from newsdigest.llm import LLMError  # noqa: E402
 from newsdigest.profiles import profile  # noqa: E402
 
 from test_core import item  # noqa: E402
@@ -46,12 +47,16 @@ class WebCase(unittest.TestCase):
         conn = storage.db()
         try:
             for table in ("outbox", "feedback", "saved", "subscribers",
-                          "leftover", "sent"):
+                          "leftover", "sent", "items", "translations"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.ensure_owner(conn)
         finally:
             conn.close()
+        # лента помнит между запросами, за какие строки к модели ходить не
+        # стоит; между тестами эта память мешает
+        newsfeed._stubborn.clear()
+        newsfeed._silent_until = 0.0
 
         self.server = web.build(worker=None, host="127.0.0.1", port=0)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -103,8 +108,12 @@ class WebCase(unittest.TestCase):
             conn.close()
 
     def delivered(self, url_hash, title, source_id, section="", score=0.0,
-                  summary="", url="", minute=0, chat=OWNER):
-        """Новость, которая читателю уже уходила, — из неё и состоит лента."""
+                  summary="", url="", minute=0, chat=OWNER, headline=None):
+        """Новость, которая читателю уже уходила, — из неё и состоит лента.
+
+        headline='' — запись, сделанная до появления карточки в истории:
+        заголовок у неё только из фида, а сути нет вовсе.
+        """
         conn = storage.db()
         try:
             conn.execute(
@@ -113,9 +122,33 @@ class WebCase(unittest.TestCase):
                 "sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (chat, url_hash, "", title,
                  url or "https://example.com/%s" % url_hash, source_id, "media",
-                 section, title, summary, score, "2026-08-17",
-                 "2026-08-17T09:%02d:00+00:00" % minute))
+                 section, title if headline is None else headline, summary,
+                 score, "2026-08-17", "2026-08-17T09:%02d:00+00:00" % minute))
             conn.commit()
+        finally:
+            conn.close()
+
+    def material(self, url_hash, title, summary, source_id="theverge"):
+        """Сам материал из фида: из него карточка берёт текст, если в истории
+        его нет."""
+        conn = storage.db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO items(url_hash,url,source_id,title,"
+                "summary,fetched_at,state) VALUES (?,?,?,?,?,?,'sent')",
+                (url_hash, "https://example.com/%s" % url_hash, source_id,
+                 title, summary, now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def stored(self, url_hash, chat=OWNER):
+        """Строка истории — что от карточки осело в базе."""
+        conn = storage.db()
+        try:
+            return conn.execute(
+                "SELECT * FROM sent WHERE chat_id=? AND url_hash=?",
+                (chat, url_hash)).fetchone()
         finally:
             conn.close()
 
@@ -454,6 +487,39 @@ class TestNews(WebCase):
         self.assertIn("Тегеран", card["summary"])
         self.assertTrue(card["tone"])
 
+    def test_card_carries_the_text_of_the_news(self):
+        """Превью — это заголовок И текст: по одному заголовку новость не понять."""
+        self.login()
+        card = [i for i in self.news()["items"] if i["hash"] == "h1"][0]
+        self.assertEqual(card["title"], "В Иране заявили о проходе через пролив")
+        self.assertEqual(card["summary"], "Тегеран ответил на заявление США.")
+
+    def test_card_without_a_summary_takes_it_from_the_material(self):
+        """У записи до 3.5 сути нет — текст берём из самого материала."""
+        self.material("h4", "Apple представила новые MacBook",
+                      "Ноутбуки получили процессор M6 и поступят в продажу "
+                      "на следующей неделе.")
+        self.login()
+        card = [i for i in self.news()["items"] if i["hash"] == "h4"][0]
+        self.assertIn("M6", card["summary"])
+
+    def test_long_text_is_cut_by_the_word(self):
+        self.delivered("h9", "Длинная новость", "ria", "incidents", 7.0,
+                       summary="Подробности события. " * 40, minute=9)
+        self.login()
+        card = [i for i in self.news()["items"] if i["hash"] == "h9"][0]
+        self.assertLessEqual(len(card["summary"]), newsfeed.LEAD + 1)
+        self.assertTrue(card["summary"].endswith("…"))
+        self.assertNotIn("Подроб…", card["summary"])
+
+    def test_search_looks_into_the_material_text(self):
+        """Найтись должно и то, что видно в карточке, а лежит в материалах."""
+        self.material("h4", "Apple представила новые MacBook",
+                      "Ноутбуки получили процессор M6.")
+        self.login()
+        found = self.news("?q=" + urllib.parse.quote("процессор"))["items"]
+        self.assertEqual([i["hash"] for i in found], ["h4"])
+
     def test_old_row_gets_its_section_from_the_source(self):
         """У истории до обновления раздела нет — берём его по источнику."""
         self.login()
@@ -604,6 +670,173 @@ class TestNews(WebCase):
         conn.close()
         self.login()
         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
+
+
+class TestNewsLanguage(WebCase):
+    """Лента на языке читателя — чем бы ни закончилась сборка выпуска.
+
+    Модель подменена: проверяется не качество перевода, а то, что английская
+    карточка вообще замечена, переведена один раз и осела в истории.
+    """
+
+    ENGLISH = "Boot Option Submitted Ahead Of Linux Kernel Release"
+    LEAD = "A last minute pull request was submitted for the new boot option."
+    #: чем «переводит» подменённая модель: номер говорит, какую строку она
+    #: получила, а кириллицы в ответе достаточно, чтобы он сошёл за перевод
+    RUSSIAN = "Русский текст строки номер %d"
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.asked = []
+        self._real_translate = translate.translate_texts
+        translate.translate_texts = self.fake
+
+    def tearDown(self):
+        translate.translate_texts = self._real_translate
+        WebCase.tearDown(self)
+
+    def fake(self, texts, language):
+        self.asked.append(list(texts))
+        return ({i: self.RUSSIAN % i for i in range(len(texts))},
+                {"in": 10, "out": 5})
+
+    def english(self, url_hash="e1", headline=None):
+        self.delivered(url_hash, self.ENGLISH, "phoronix", "hardware", 8.0,
+                       summary=self.LEAD, minute=1, headline=headline)
+
+    def items(self):
+        return self.ask("/api/news")[1]["items"]
+
+    def test_english_card_becomes_russian(self):
+        self.english()
+        self.login()
+        card = self.items()[0]
+        self.assertEqual(card["title"], self.RUSSIAN % 0)
+        self.assertEqual(card["summary"], self.RUSSIAN % 1)
+
+    def test_whole_page_costs_one_request(self):
+        for n in range(5):
+            self.delivered("e%d" % n, "%s %d" % (self.ENGLISH, n), "phoronix",
+                           "hardware", 8.0, summary=self.LEAD, minute=n)
+        self.login()
+        self.items()
+        self.assertEqual(len(self.asked), 1)
+
+    def test_old_row_without_a_card_is_translated_too(self):
+        """До 3.5 в истории лежал только заголовок из фида — и тот английский."""
+        self.english(headline="")
+        self.material("e1", self.ENGLISH, self.LEAD, "phoronix")
+        self.login()
+        card = self.items()[0]
+        self.assertEqual(card["title"], self.RUSSIAN % 0)
+        self.assertEqual(card["summary"], self.RUSSIAN % 1)
+
+    def test_translation_settles_in_the_history(self):
+        self.english()
+        self.login()
+        self.items()
+        row = self.stored("e1")
+        self.assertEqual(row["headline"], self.RUSSIAN % 0)
+        self.assertEqual(row["summary"], self.RUSSIAN % 1)
+
+    def test_second_visit_is_free(self):
+        self.english()
+        self.login()
+        self.items()
+        self.asked = []
+        card = self.items()[0]
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["title"], self.RUSSIAN % 0)
+
+    def test_search_finds_the_card_by_its_russian_words(self):
+        """Перевод осел в истории — значит, и поиск теперь по-русски."""
+        self.english()
+        self.login()
+        self.items()
+        found = self.ask("/api/news?q=" + urllib.parse.quote("русская"))[1]["items"]
+        self.assertEqual([i["hash"] for i in found], ["e1"])
+
+    def test_russian_card_never_reaches_the_model(self):
+        self.delivered("r1", "Ядро Linux получило новую опцию загрузки", "ria",
+                       "hardware", 8.0, summary="Патч приняли перед релизом.",
+                       minute=1)
+        self.login()
+        self.items()
+        self.assertEqual(self.asked, [])
+
+    def test_unreachable_model_leaves_the_card_readable(self):
+        def broken(texts, language):
+            self.asked.append(list(texts))
+            raise LLMError("модель недоступна")
+
+        translate.translate_texts = broken
+        self.english()
+        self.login()
+        card = self.items()[0]
+        self.assertEqual(card["title"], self.ENGLISH)      # лента всё же открылась
+        self.assertEqual(card["summary"], self.LEAD)
+
+    def test_unreachable_model_is_not_asked_on_every_scroll(self):
+        """Иначе каждая прокрутка ленты ждёт таймаутов и повторов."""
+        def broken(texts, language):
+            self.asked.append(list(texts))
+            raise LLMError("модель недоступна")
+
+        translate.translate_texts = broken
+        self.english()
+        self.login()
+        self.items()
+        self.items()
+        self.assertEqual(len(self.asked), 1)
+
+    def test_line_the_model_refuses_is_not_paid_for_twice(self):
+        """Строку вроде «Bump version to 4.7.2» модель вернёт как есть — и это
+        не повод спрашивать её о том же на каждом показе ленты."""
+        def partly(texts, language):
+            self.asked.append(list(texts))
+            return ({i: (self.RUSSIAN % i if i == 0 else text)
+                     for i, text in enumerate(texts)}, {"in": 1, "out": 1})
+
+        translate.translate_texts = partly
+        self.english()
+        self.login()
+        self.items()
+        self.assertEqual(self.items()[0]["summary"], self.LEAD)
+        self.assertEqual(len(self.asked), 1)
+
+    def test_switch_off_stops_asking_the_model(self):
+        CFG["translate"] = False
+        try:
+            self.english()
+            self.login()
+            card = self.items()[0]
+        finally:
+            CFG["translate"] = True
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["title"], self.ENGLISH)
+
+    def test_cached_translation_works_without_the_model(self):
+        """Кэш перевода — не роскошь: он закрывает почти всю ленту даром."""
+        conn = storage.db()
+        try:
+            translate.remember(conn, [(self.ENGLISH, "Опция загрузки в ядре")])
+        finally:
+            conn.close()
+        CFG["translate"] = False
+        try:
+            self.english()
+            self.login()
+            card = self.items()[0]
+        finally:
+            CFG["translate"] = True
+        self.assertEqual(card["title"], "Опция загрузки в ядре")
+
+    def test_bookmarks_speak_russian_too(self):
+        self.english()
+        self.login()
+        self.ask("/api/react", {"data": "fb:save:e1"})
+        card = self.ask("/api/news?view=saved")[1]["items"][0]
+        self.assertEqual(card["title"], self.RUSSIAN % 0)
 
 
 class TestSanitizer(unittest.TestCase):

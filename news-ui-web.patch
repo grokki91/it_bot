@@ -1,0 +1,798 @@
+diff --git a/README.md b/README.md
+index ebc6824..1ae293f 100644
+--- a/README.md
++++ b/README.md
+@@ -299,8 +299,10 @@ grep ND_WEB_TOKEN ~/.newsdigest/env
+ 
+ **Что там есть:**
+ 
+-- **Главное** — лента всех новостей, которые вам приходили: заголовок, суть,
+-  раздел, время, оценка модели ⭐ и ссылка на источник. Внизу «Показать ещё»;
++- **Главное** — лента всех новостей, которые вам приходили: заголовок, текст
++  новости, раздел, время, оценка модели ⭐ и ссылка на источник. Текст занимает
++  три строки и разворачивается нажатием, так что понять новость можно не
++  открывая источник. Внизу «Показать ещё»;
+ - **разделы** — слева списком (с числом новостей в каждом) и полосой плашек над
+   лентой. Это фильтр по уже пришедшему, модель он не дёргает и денег не стоит;
+ - **поиск** — по заголовкам, сути, источникам и ссылкам. Понимает падежи:
+@@ -319,8 +321,14 @@ grep ND_WEB_TOKEN ~/.newsdigest/env
+   список команд из `/help` в одно нажатие.
+ 
+ Лента собирается из истории отправленного: показывается ровно то, что вам уже
+-приходило. Никаких новых запросов к модели просмотр страницы не делает и денег
+-не стоит — свежие новости появляются в ней, когда придёт очередной выпуск.
++приходило. Ни ранжирования, ни карточек заново страница не заказывает — свежие
++новости появляются в ней, когда придёт очередной выпуск.
++
++Единственное исключение — язык: карточка, оставшаяся в истории английской (так
++бывает у выпусков, собранных при недоступной модели, и у новостей, пришедших до
++версии 3.5), переводится при первом же показе ленты и в переведённом виде в
++истории и остаётся. Платится это один раз на новость, а если модель недоступна —
++лента просто открывается с исходным текстом.
+ 
+ > 🖼 Картинок у новостей нет намеренно. В RSS они попадаются далеко не всегда, а
+ > грузить их со сторонних сайтов значит показывать этим сайтам, кто и когда
+@@ -373,7 +381,10 @@ python3 digest.py web --port 8080     # страница отдельно
+    версии остаются как в оригинале (Nvidia, Linux 7.2, GPT-5), остальное
+    переводится;
+ 3. перевод оседает в базе — та же новость другому подписчику, а потом и в
+-   `/more`, и в `/saved` достаётся уже без запроса к модели.
++   `/more`, и в `/saved` достаётся уже без запроса к модели;
++4. лента на странице проверяет язык ещё раз, у себя: история могла остаться
++   английской (модель была недоступна в тот вечер, новость пришла до версии
++   3.5) — такая карточка переводится при показе и в истории обновляется.
+ 
+ Проверка нужна как раз потому, что промпта мало: обычно модель пишет карточку
+ по-русски, но на английском источнике нет-нет да и оставит заголовок нетронутым,
+@@ -741,6 +752,9 @@ rm ~/.newsdigest/digest.log*
+    (проверка алфавитом работает для языка со своей письменностью)
+ 4. Заголовок из одних имён и версий («Nvidia Rubin CES 2026») переводить нечего —
+    он и по-русски выглядит так же
++5. В браузере такую карточку чинит сама лента: откройте страницу, и английские
++   заголовки уедут на перевод. Если после обновления они на месте — модель
++   недоступна, смотрите пункт 2
+ 
+ ### Неправильное время отправки
+ 
+@@ -803,7 +817,7 @@ newsdigest/
+ ├── bot.py                ← команды (их зовёт страница) и нажатия кнопок
+ ├── daemon.py             ← расписание + long-poll
+ ├── web.py                ← страница в браузере: HTTP, доступ, действия
+-├── newsfeed.py           ← лента страницы: выборки, поиск, источники, темы
++├── newsfeed.py           ← лента страницы: выборки, поиск, язык, источники, темы
+ ├── webpage.py            ← сама страница (HTML/CSS/JS одним файлом)
+ └── cli.py                ← аргументы командной строки
+ tests/                    ← смоук-тесты, сеть не трогают
+@@ -824,10 +838,14 @@ tests/                    ← смоук-тесты, сеть не трогаю
+ **Лента новостей — это история отправленного.** Вместе с каждой новостью в
+ таблицу `sent` пишется и сама карточка: раздел, заголовок, суть и оценка
+ модели. Из этих строк `newsfeed.py` и собирает ленту — фильтр по разделу,
+-поиск, закладки, популярные источники и темы. Ничего не пересчитывается и к
+-модели не ходит, поэтому страница открывается мгновенно и бесплатно. У истории,
+-собранной прошлыми версиями, этих полей нет: раздел таким новостям лента
+-определит по источнику, а звёздочку не покажет.
++поиск, закладки, популярные источники и темы. Ничего не пересчитывается,
++поэтому страница открывается мгновенно. У истории, собранной прошлыми версиями,
++этих полей нет: раздел таким новостям лента определит по источнику, суть
++достанет из самого материала (`items`), а звёздочку не покажет. Английская
++карточка на этом же шаге доводится до языка выпуска — сначала кэшем переводов,
++и лишь за остатком одним запросом к модели; результат пишется обратно в `sent`,
++так что второй раз он не стоит ничего, а поиск начинает находить новость по
++русским словам.
+ 
+ **Расписание.** У каждого дня столько выпусков, сколько сказано в `per_day`:
+ первый в `send_at`, дальше через равные промежутки. Отправленный выпуск
+diff --git a/newsdigest/newsfeed.py b/newsdigest/newsfeed.py
+index 42b1b46..4a60e76 100644
+--- a/newsdigest/newsfeed.py
++++ b/newsdigest/newsfeed.py
+@@ -17,15 +17,23 @@
+     saved   закладки 🔖
+     liked   отмеченное 👍
+ 
++Карточка ленты — это заголовок И текст новости: по одному заголовку понять,
++о чём новость, нельзя, а открывать ради этого источник читатель не должен.
++Текст берётся из истории, а где его там нет (записи до версии 3.5, выпуски,
++собранные при недоступной модели) — из самого материала в `items`.
++
++Язык проверяется здесь ещё раз, уже после выпуска: см. `russify`.
++
+ Telegram этого всего не касается: там по-прежнему приходит сообщение.
+ """
+ from __future__ import annotations
+ 
+ import re
++import time
+ import urllib.parse
+ 
+ from . import sections, translate
+-from .config import local_now, to_local
++from .config import CFG, local_now, to_local
+ from .feedparse import parse_date
+ from .profiles import emoji as topic_emoji
+ from .profiles import title as topic_title
+@@ -62,17 +70,24 @@ VIEWS = ("news", "saved", "liked")
+ #: Закладка и оценка живут в своих таблицах и знают о новости мало
+ #: (заголовок да ссылку), поэтому подтягиваем к ним строку истории: в ней
+ #: лежит и раздел, и суть, и оценка модели.
++#: К каждой новости подтягивается и сам материал (`items`): в нём лежит текст
++#: из фида — запасной текст карточки, когда в истории суть не сохранена.
+ SOURCES = {
+     "news": """
+-        SELECT url_hash, title, headline, summary, url, source_id, section,
+-               score, sent_at AS at
+-          FROM sent
+-         WHERE chat_id = ?
++        SELECT n.url_hash AS url_hash, n.title AS title,
++               n.headline AS headline, n.summary AS summary,
++               COALESCE(i.summary, '') AS lead,
++               n.url AS url, n.source_id AS source_id, n.section AS section,
++               n.score AS score, n.sent_at AS at
++          FROM sent n
++          LEFT JOIN items i ON i.url_hash = n.url_hash
++         WHERE n.chat_id = ?
+     """,
+     "saved": """
+         SELECT b.url_hash AS url_hash, b.title AS title,
+                COALESCE(n.headline, '') AS headline,
+                COALESCE(n.summary, '') AS summary,
++               COALESCE(i.summary, '') AS lead,
+                CASE WHEN b.url != '' THEN b.url
+                     ELSE COALESCE(n.url, '') END AS url,
+                CASE WHEN b.source_id != '' THEN b.source_id
+@@ -81,12 +96,14 @@ SOURCES = {
+                COALESCE(n.score, 0) AS score, b.at AS at
+           FROM saved b
+           LEFT JOIN sent n ON n.chat_id = b.chat_id AND n.url_hash = b.url_hash
++          LEFT JOIN items i ON i.url_hash = b.url_hash
+          WHERE b.chat_id = ?
+     """,
+     "liked": """
+         SELECT f.url_hash AS url_hash, f.title AS title,
+                COALESCE(n.headline, '') AS headline,
+                COALESCE(n.summary, '') AS summary,
++               COALESCE(i.summary, '') AS lead,
+                COALESCE(n.url, '') AS url,
+                CASE WHEN f.source_id != '' THEN f.source_id
+                     ELSE COALESCE(n.source_id, '') END AS source_id,
+@@ -94,12 +111,26 @@ SOURCES = {
+                COALESCE(n.score, 0) AS score, f.at AS at
+           FROM feedback f
+           LEFT JOIN sent n ON n.chat_id = f.chat_id AND n.url_hash = f.url_hash
++          LEFT JOIN items i ON i.url_hash = f.url_hash
+          WHERE f.chat_id = ? AND f.verdict = 'up'
+     """,
+ }
+ 
+ 
+ # ------------------------------------------------------------------ мелочи
++def column(row, name, default=""):
++    """Значение колонки, которой в строке может и не быть.
++
++    Карточки собираются не только из запросов выше: в тестах и в старых базах
++    строка приходит короче, и отсутствие колонки не повод падать.
++    """
++    try:
++        value = row[name]
++    except (IndexError, KeyError, TypeError):
++        return default
++    return default if value is None else value
++
++
+ def tone(topic: str) -> int:
+     """Оттенок раздела. Незнакомый (свой, из profiles.json) получает свой
+     собственный — устойчивый, чтобы цвет не прыгал от запроса к запросу."""
+@@ -119,6 +150,32 @@ def domain(url: str) -> str:
+     return host[4:] if host.startswith("www.") else host
+ 
+ 
++#: сколько текста новости кладём в карточку. Двух-трёх предложений хватает,
++#: чтобы понять новость, не открывая источник, — а на странице этот текст ещё
++#: и сворачивается до трёх строк, так что карточки остаются одного роста
++LEAD = 400
++
++
++def shorten(text: str, limit: int = LEAD) -> str:
++    """Обрезка по слову: обрывать текст на середине слова некрасиво."""
++    text = " ".join(str(text or "").split())
++    if len(text) <= limit:
++        return text
++    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
++    return cut.rstrip(" ,.:;—-·") + "…"
++
++
++def body(row) -> str:
++    """Текст карточки: суть, написанная моделью, а если её нет — текст из фида.
++
++    Пустая суть — это записи, сделанные до появления колонки (версия 3.5), и
++    выпуски, собранные, пока модель была недоступна. Показывать в такой
++    карточке один заголовок незачем: сам материал никуда не делся и лежит
++    рядом, в `items`, — он и идёт в дело.
++    """
++    return shorten(column(row, "summary") or column(row, "lead"))
++
++
+ def stamp(iso: str, now=None) -> str:
+     """«18:27» у сегодняшнего, «вчера, 18:27», дальше — «15.08»."""
+     at = parse_date(iso)
+@@ -177,8 +234,9 @@ def _section_filter(topic: str) -> tuple:
+ def _hit(row, words) -> bool:
+     """Поиск идёт в Python: LOWER() в SQLite знает только латиницу, а
+     искать «Ормузский» и «ормузский» читатель должен одинаково."""
+-    blob = " ".join(str(row[key] or "") for key in
+-                    ("title", "headline", "summary", "source_id", "url")).lower()
++    blob = " ".join(str(column(row, key)) for key in
++                    ("title", "headline", "summary", "lead", "source_id",
++                     "url")).lower()
+     return all(word in blob for word in words)
+ 
+ 
+@@ -219,8 +277,8 @@ def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE)
+     return window[:limit], len(window) > limit
+ 
+ 
+-def cards(conn, rows, verdicts=None, saved=None) -> list:
+-    """Строки истории -> карточки для страницы."""
++def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
++    """Строки истории -> карточки для страницы, доведённые до языка выпуска."""
+     verdicts, saved = verdicts or {}, saved or ()
+     smap = sections.source_map()
+     now = local_now()
+@@ -228,12 +286,11 @@ def cards(conn, rows, verdicts=None, saved=None) -> list:
+     for row in rows:
+         topic = row["section"] or smap.get(row["source_id"], "")
+         # заголовок карточки писала модель; у записей, сделанных до появления
+-        # этой колонки, берём заголовок фида — и его же перевод, если он есть
+-        head = row["headline"] or translate.known(conn, row["title"])
++        # этой колонки, берём заголовок фида
+         out.append({
+             "hash": row["url_hash"],
+-            "title": head,
+-            "summary": str(row["summary"] or "")[:240],
++            "title": str(column(row, "headline") or column(row, "title")),
++            "summary": body(row),
+             "url": row["url"] or "",
+             "source": domain(row["url"]) or row["source_id"] or "источник",
+             "section": topic,
+@@ -245,9 +302,99 @@ def cards(conn, rows, verdicts=None, saved=None) -> list:
+             "saved": row["url_hash"] in saved,
+             "verdict": verdicts.get(row["url_hash"], ""),
+         })
++    changed = russify(conn, out)
++    if changed and chat_id is not None:
++        remember(conn, chat_id, [card for card in out if card["hash"] in changed])
+     return out
+ 
+ 
++# --------------------------------------------------------- лента по-русски
++#: поля карточки, которые читает человек, — их язык и проверяем
++SPEECH = ("title", "summary")
++
++#: сколько строк за один показ ленты имеет смысл отправить модели. Страница
++#: ждёт ответа, поэтому берём столько, сколько нужно одной странице ленты,
++#: и ни строкой больше: остальное догонит следующий заход
++TRANSLATE_LIMIT = 45
++
++#: модель не ответила — столько секунд к ней не ходим. Иначе каждая прокрутка
++#: ленты упирается в таймауты и повторы, а страница висит вместе с ними
++TRANSLATE_PAUSE = 300
++
++#: строки, которые модель уже отказалась переводить (вернула их же). Платить
++#: за них на каждом показе ленты незачем; после перезапуска попробуем снова
++STUBBORN_MAX = 4000
++
++_stubborn = set()
++_silent_until = 0.0
++
++
++def ask_model(conn, texts) -> dict:
++    """Перевод того, чего не нашлось в кэше. Пусто — модель не помогла."""
++    global _silent_until
++    if not texts or not CFG["translate"] or time.time() < _silent_until:
++        return {}
++    part = [text for text in texts
++            if translate.key_of(text) not in _stubborn][:TRANSLATE_LIMIT]
++    if not part:
++        return {}
++    ready, _cost = translate.translated(conn, part)
++    if not ready:
++        # модель недоступна: молчим минуты, но строки не запоминаем — когда
++        # она вернётся, лента доведёт их до языка выпуска сама
++        _silent_until = time.time() + TRANSLATE_PAUSE
++        return {}
++    if len(_stubborn) > STUBBORN_MAX:
++        _stubborn.clear()
++    _stubborn.update(translate.key_of(text) for text in part if text not in ready)
++    return ready
++
++
++def russify(conn, cards) -> set:
++    """Догоняет карточки до языка выпуска. Возвращает хэши изменившихся.
++
++    Выпуск переводится при сборке, но в истории всё равно оседает английский: у
++    записей, сделанных до версии 3.5, заголовок взят прямо из фида, а когда
++    модель была недоступна, на языке источника остаётся и заголовок, и суть.
++    Читателю от причины не легче — лента обязана быть на его языке, чем бы ни
++    закончилась сборка выпуска.
++
++    Поэтому язык проверяется ещё раз здесь, ровно как перед отправкой (см.
++    `translate`): сначала кэш переводов — он закрывает почти всё и не стоит
++    ничего, — и только за остатком один запрос к модели.
++    """
++    spots = [(card, name) for card in cards for name in SPEECH
++             if translate.foreign(card.get(name))]
++    if not spots:
++        return set()
++    texts = list(dict.fromkeys(card[name] for card, name in spots))
++    ready = translate.cached(conn, texts)
++    ready.update(ask_model(conn, [text for text in texts if text not in ready]))
++
++    changed = set()
++    for card, name in spots:
++        fresh = ready.get(card[name])
++        if fresh:
++            card[name] = shorten(fresh) if name == "summary" else fresh
++            changed.add(card["hash"])
++    return changed
++
++
++def remember(conn, chat_id, cards) -> None:
++    """Русский текст оседает в истории.
++
++    Перевод и так лежит в кэше, но карточка целиком — это ещё и поиск: пока в
++    `sent` английский заголовок, запрос «Иран» эту новость не находит. Заодно
++    заполняется пустая суть у старых записей, и второй раз лента её из `items`
++    не достаёт.
++    """
++    conn.executemany(
++        "UPDATE sent SET headline=?, summary=? WHERE chat_id=? AND url_hash=?",
++        [(str(card["title"])[:300], str(card["summary"])[:500],
++          str(chat_id), card["hash"]) for card in cards])
++    conn.commit()
++
++
+ # --------------------------------------------------------------- панели вокруг
+ def counts(conn, chat_id) -> dict:
+     """Сколько новостей в каждом разделе; ключ "" — сколько всего."""
+diff --git a/newsdigest/web.py b/newsdigest/web.py
+index 44b901d..2b08f67 100644
+--- a/newsdigest/web.py
++++ b/newsdigest/web.py
+@@ -232,7 +232,7 @@ def news(query, worker=None) -> dict:
+         verdicts, saved = press_state(conn, chat)
+         payload = {"view": view, "section": section, "q": search,
+                    "offset": offset, "more": more,
+-                   "items": newsfeed.cards(conn, rows, verdicts, saved)}
++                   "items": newsfeed.cards(conn, rows, verdicts, saved, chat)}
+         if not offset:
+             payload["side"] = {
+                 "menu": newsfeed.menu(conn, chat, sections.plan(sub)),
+diff --git a/newsdigest/webpage.py b/newsdigest/webpage.py
+index f133fbd..1b2bb18 100644
+--- a/newsdigest/webpage.py
++++ b/newsdigest/webpage.py
+@@ -9,6 +9,11 @@
+ справа справка о выпуске, популярные источники и темы. Переписка с ботом
+ никуда не делась — она переехала в «Уведомления», а команды в «Ещё».
+ 
++Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
++речь, а ходить за этим на сайт источника читатель не нанимался. Текст занимает
++три строки и разворачивается нажатием: так карточки одного роста и на экране
++их помещается больше одной.
++
+ Картинок к новостям у нас нет и быть не может: в RSS они попадаются далеко не
+ всегда, а грузить их со сторонних сайтов значит показать этим сайтам, кто и
+ когда читает вашу ленту (и продырявить CSP, которая сейчас не пускает наружу
+@@ -195,10 +200,16 @@ header {
+ /* заголовок — ссылка, но выглядеть должен заголовком, а не ссылкой */
+ .news h2 a { color: inherit; }
+ .news h2 a:hover { color: var(--accent); text-decoration: none; }
++/* текст новости: три строки в превью, остальное — по нажатию. Без обрезки
++   одна многословная карточка занимала бы экран целиком */
+ .news .sum {
+   margin: 8px 0 0; color: var(--dim); font-size: 14px; line-height: 1.45;
+   overflow-wrap: anywhere;
++  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
++  overflow: hidden;
+ }
++.news .sum.more { cursor: pointer; }
++.news .sum.open { -webkit-line-clamp: 99; }
+ .news .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
+ .news .src { margin-left: auto; font-size: 13px; display: flex; gap: 5px; }
+ .act {
+@@ -350,16 +361,24 @@ header {
+   .news { padding: 14px; gap: 12px; }
+   .news h2 { font-size: 17px; }
+   .news .line { font-size: 11px; gap: 6px; }
++  .news .sum { margin-top: 6px; font-size: 13.5px; }
++  .news .foot { margin-top: 10px; }
+   /* на телефоне карточка не должна занимать полэкрана: обложка мельче,
+-     а суть сворачивается до двух строк */
+-  .news .sum {
+-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+-    overflow: hidden;
+-  }
+-  .cover { width: 92px; height: 92px; align-self: flex-start; font-size: 30px; }
++     а текст новости всё так же сворачивается до трёх строк */
++  .cover { width: 84px; height: 84px; align-self: flex-start; font-size: 28px; }
+   /* строка ввода не должна прятаться под нижней навигацией */
+   #ask { bottom: calc(58px + env(safe-area-inset-bottom)); }
+ }
++@media (max-width: 560px) {
++  /* на узком экране обложка отъедала у текста треть строки, и три строки сути
++     превращались в шесть. Значок раздела и так стоит в первой строке карточки,
++     поэтому обложке здесь остаётся роль метки — маленькой */
++  .news { padding: 12px; gap: 10px; }
++  .news h2 { font-size: 16px; }
++  .cover { width: 56px; height: 56px; font-size: 22px; border-radius: 10px; }
++  .head h1 { font-size: 21px; }
++  .tune { padding: 9px 12px; font-size: 13px; }
++}
+ </style>
+ </head>
+ <body>
+@@ -687,6 +706,7 @@ function drawList(items, reset) {
+   if (reset) { box.innerHTML = ''; }
+   items.forEach(function (item) { box.appendChild(drawCard(item)); });
+   if (!box.childNodes.length) { box.appendChild(drawEmpty()); }
++  markClamped();
+ }
+ 
+ function drawEmpty() {
+@@ -746,7 +766,7 @@ function drawCard(item) {
+     head.textContent = item.title;
+   }
+   text.appendChild(head);
+-  if (item.summary) { text.appendChild(el('p', 'sum', item.summary)); }
++  if (item.summary) { text.appendChild(drawSummary(item.summary)); }
+ 
+   var foot = el('div', 'foot');
+   foot.appendChild(actButton('🔖', 'save', item.saved, item));
+@@ -771,6 +791,34 @@ function drawCard(item) {
+   return card;
+ }
+ 
++function drawSummary(text) {
++  var sum = el('p', 'sum', text);
++  sum.onclick = function () {
++    if (sum.className.indexOf('more') < 0) { return; }   /* текст и так весь тут */
++    var open = sum.className.indexOf('open') < 0;
++    sum.className = open ? 'sum more open' : 'sum more';
++    sum.title = open ? 'Свернуть' : 'Показать целиком';
++  };
++  return sum;
++}
++
++/* Обрезал ли CSS текст новости, знает только браузер: три строки — это разное
++   число знаков на телефоне и на широком экране. Поэтому меряем уже вставленные
++   в страницу карточки и зовём развернуть только те, где текст не поместился. */
++function markClamped() {
++  var sums = document.querySelectorAll('#list .sum');
++  Array.prototype.forEach.call(sums, function (sum) {
++    if (sum.className.indexOf('open') >= 0) { return; }
++    if (sum.scrollHeight > sum.clientHeight + 1) {
++      sum.className = 'sum more';
++      sum.title = 'Показать целиком';
++    } else {
++      sum.className = 'sum';
++      sum.removeAttribute('title');
++    }
++  });
++}
++
+ function actButton(icon, kind, on, item) {
+   var button = el('button', 'act' + (on ? ' on' : ''), icon);
+   button.type = 'button';
+@@ -1124,6 +1172,9 @@ document.addEventListener('visibilitychange', function () {
+   if (!document.hidden && S.started) { refresh(false); }
+ });
+ 
++/* повернули телефон, растянули окно — в три строки помещается уже другое */
++window.addEventListener('resize', markClamped);
++
+ call('/api/feed').then(function (data) {
+   $('login').className = '';
+   $('app').className = 'on';
+diff --git a/tests/test_web.py b/tests/test_web.py
+index db879a1..7da2ee1 100644
+--- a/tests/test_web.py
++++ b/tests/test_web.py
+@@ -18,9 +18,10 @@ import urllib.request
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
+ 
+-from newsdigest import bot, config, feedback, profiles, sections, storage  # noqa: E402
+-from newsdigest import subscribers, web  # noqa: E402
++from newsdigest import bot, config, feedback, newsfeed, profiles  # noqa: E402
++from newsdigest import sections, storage, subscribers, translate, web  # noqa: E402
+ from newsdigest.config import CFG, now_iso  # noqa: E402
++from newsdigest.llm import LLMError  # noqa: E402
+ from newsdigest.profiles import profile  # noqa: E402
+ 
+ from test_core import item  # noqa: E402
+@@ -46,12 +47,16 @@ class WebCase(unittest.TestCase):
+         conn = storage.db()
+         try:
+             for table in ("outbox", "feedback", "saved", "subscribers",
+-                          "leftover", "sent"):
++                          "leftover", "sent", "items", "translations"):
+                 conn.execute("DELETE FROM %s" % table)
+             conn.commit()
+             subscribers.ensure_owner(conn)
+         finally:
+             conn.close()
++        # лента помнит между запросами, за какие строки к модели ходить не
++        # стоит; между тестами эта память мешает
++        newsfeed._stubborn.clear()
++        newsfeed._silent_until = 0.0
+ 
+         self.server = web.build(worker=None, host="127.0.0.1", port=0)
+         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+@@ -103,8 +108,12 @@ class WebCase(unittest.TestCase):
+             conn.close()
+ 
+     def delivered(self, url_hash, title, source_id, section="", score=0.0,
+-                  summary="", url="", minute=0, chat=OWNER):
+-        """Новость, которая читателю уже уходила, — из неё и состоит лента."""
++                  summary="", url="", minute=0, chat=OWNER, headline=None):
++        """Новость, которая читателю уже уходила, — из неё и состоит лента.
++
++        headline='' — запись, сделанная до появления карточки в истории:
++        заголовок у неё только из фида, а сути нет вовсе.
++        """
+         conn = storage.db()
+         try:
+             conn.execute(
+@@ -113,12 +122,36 @@ class WebCase(unittest.TestCase):
+                 "sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (chat, url_hash, "", title,
+                  url or "https://example.com/%s" % url_hash, source_id, "media",
+-                 section, title, summary, score, "2026-08-17",
+-                 "2026-08-17T09:%02d:00+00:00" % minute))
++                 section, title if headline is None else headline, summary,
++                 score, "2026-08-17", "2026-08-17T09:%02d:00+00:00" % minute))
+             conn.commit()
+         finally:
+             conn.close()
+ 
++    def material(self, url_hash, title, summary, source_id="theverge"):
++        """Сам материал из фида: из него карточка берёт текст, если в истории
++        его нет."""
++        conn = storage.db()
++        try:
++            conn.execute(
++                "INSERT OR REPLACE INTO items(url_hash,url,source_id,title,"
++                "summary,fetched_at,state) VALUES (?,?,?,?,?,?,'sent')",
++                (url_hash, "https://example.com/%s" % url_hash, source_id,
++                 title, summary, now_iso()))
++            conn.commit()
++        finally:
++            conn.close()
++
++    def stored(self, url_hash, chat=OWNER):
++        """Строка истории — что от карточки осело в базе."""
++        conn = storage.db()
++        try:
++            return conn.execute(
++                "SELECT * FROM sent WHERE chat_id=? AND url_hash=?",
++                (chat, url_hash)).fetchone()
++        finally:
++            conn.close()
++
+ 
+ class TestAuth(WebCase):
+     def test_page_opens_without_password(self):
+@@ -454,6 +487,39 @@ class TestNews(WebCase):
+         self.assertIn("Тегеран", card["summary"])
+         self.assertTrue(card["tone"])
+ 
++    def test_card_carries_the_text_of_the_news(self):
++        """Превью — это заголовок И текст: по одному заголовку новость не понять."""
++        self.login()
++        card = [i for i in self.news()["items"] if i["hash"] == "h1"][0]
++        self.assertEqual(card["title"], "В Иране заявили о проходе через пролив")
++        self.assertEqual(card["summary"], "Тегеран ответил на заявление США.")
++
++    def test_card_without_a_summary_takes_it_from_the_material(self):
++        """У записи до 3.5 сути нет — текст берём из самого материала."""
++        self.material("h4", "Apple представила новые MacBook",
++                      "Ноутбуки получили процессор M6 и поступят в продажу "
++                      "на следующей неделе.")
++        self.login()
++        card = [i for i in self.news()["items"] if i["hash"] == "h4"][0]
++        self.assertIn("M6", card["summary"])
++
++    def test_long_text_is_cut_by_the_word(self):
++        self.delivered("h9", "Длинная новость", "ria", "incidents", 7.0,
++                       summary="Подробности события. " * 40, minute=9)
++        self.login()
++        card = [i for i in self.news()["items"] if i["hash"] == "h9"][0]
++        self.assertLessEqual(len(card["summary"]), newsfeed.LEAD + 1)
++        self.assertTrue(card["summary"].endswith("…"))
++        self.assertNotIn("Подроб…", card["summary"])
++
++    def test_search_looks_into_the_material_text(self):
++        """Найтись должно и то, что видно в карточке, а лежит в материалах."""
++        self.material("h4", "Apple представила новые MacBook",
++                      "Ноутбуки получили процессор M6.")
++        self.login()
++        found = self.news("?q=" + urllib.parse.quote("процессор"))["items"]
++        self.assertEqual([i["hash"] for i in found], ["h4"])
++
+     def test_old_row_gets_its_section_from_the_source(self):
+         """У истории до обновления раздела нет — берём его по источнику."""
+         self.login()
+@@ -606,6 +672,173 @@ class TestNews(WebCase):
+         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
+ 
+ 
++class TestNewsLanguage(WebCase):
++    """Лента на языке читателя — чем бы ни закончилась сборка выпуска.
++
++    Модель подменена: проверяется не качество перевода, а то, что английская
++    карточка вообще замечена, переведена один раз и осела в истории.
++    """
++
++    ENGLISH = "Boot Option Submitted Ahead Of Linux Kernel Release"
++    LEAD = "A last minute pull request was submitted for the new boot option."
++    #: чем «переводит» подменённая модель: номер говорит, какую строку она
++    #: получила, а кириллицы в ответе достаточно, чтобы он сошёл за перевод
++    RUSSIAN = "Русский текст строки номер %d"
++
++    def setUp(self):
++        WebCase.setUp(self)
++        self.asked = []
++        self._real_translate = translate.translate_texts
++        translate.translate_texts = self.fake
++
++    def tearDown(self):
++        translate.translate_texts = self._real_translate
++        WebCase.tearDown(self)
++
++    def fake(self, texts, language):
++        self.asked.append(list(texts))
++        return ({i: self.RUSSIAN % i for i in range(len(texts))},
++                {"in": 10, "out": 5})
++
++    def english(self, url_hash="e1", headline=None):
++        self.delivered(url_hash, self.ENGLISH, "phoronix", "hardware", 8.0,
++                       summary=self.LEAD, minute=1, headline=headline)
++
++    def items(self):
++        return self.ask("/api/news")[1]["items"]
++
++    def test_english_card_becomes_russian(self):
++        self.english()
++        self.login()
++        card = self.items()[0]
++        self.assertEqual(card["title"], self.RUSSIAN % 0)
++        self.assertEqual(card["summary"], self.RUSSIAN % 1)
++
++    def test_whole_page_costs_one_request(self):
++        for n in range(5):
++            self.delivered("e%d" % n, "%s %d" % (self.ENGLISH, n), "phoronix",
++                           "hardware", 8.0, summary=self.LEAD, minute=n)
++        self.login()
++        self.items()
++        self.assertEqual(len(self.asked), 1)
++
++    def test_old_row_without_a_card_is_translated_too(self):
++        """До 3.5 в истории лежал только заголовок из фида — и тот английский."""
++        self.english(headline="")
++        self.material("e1", self.ENGLISH, self.LEAD, "phoronix")
++        self.login()
++        card = self.items()[0]
++        self.assertEqual(card["title"], self.RUSSIAN % 0)
++        self.assertEqual(card["summary"], self.RUSSIAN % 1)
++
++    def test_translation_settles_in_the_history(self):
++        self.english()
++        self.login()
++        self.items()
++        row = self.stored("e1")
++        self.assertEqual(row["headline"], self.RUSSIAN % 0)
++        self.assertEqual(row["summary"], self.RUSSIAN % 1)
++
++    def test_second_visit_is_free(self):
++        self.english()
++        self.login()
++        self.items()
++        self.asked = []
++        card = self.items()[0]
++        self.assertEqual(self.asked, [])
++        self.assertEqual(card["title"], self.RUSSIAN % 0)
++
++    def test_search_finds_the_card_by_its_russian_words(self):
++        """Перевод осел в истории — значит, и поиск теперь по-русски."""
++        self.english()
++        self.login()
++        self.items()
++        found = self.ask("/api/news?q=" + urllib.parse.quote("русская"))[1]["items"]
++        self.assertEqual([i["hash"] for i in found], ["e1"])
++
++    def test_russian_card_never_reaches_the_model(self):
++        self.delivered("r1", "Ядро Linux получило новую опцию загрузки", "ria",
++                       "hardware", 8.0, summary="Патч приняли перед релизом.",
++                       minute=1)
++        self.login()
++        self.items()
++        self.assertEqual(self.asked, [])
++
++    def test_unreachable_model_leaves_the_card_readable(self):
++        def broken(texts, language):
++            self.asked.append(list(texts))
++            raise LLMError("модель недоступна")
++
++        translate.translate_texts = broken
++        self.english()
++        self.login()
++        card = self.items()[0]
++        self.assertEqual(card["title"], self.ENGLISH)      # лента всё же открылась
++        self.assertEqual(card["summary"], self.LEAD)
++
++    def test_unreachable_model_is_not_asked_on_every_scroll(self):
++        """Иначе каждая прокрутка ленты ждёт таймаутов и повторов."""
++        def broken(texts, language):
++            self.asked.append(list(texts))
++            raise LLMError("модель недоступна")
++
++        translate.translate_texts = broken
++        self.english()
++        self.login()
++        self.items()
++        self.items()
++        self.assertEqual(len(self.asked), 1)
++
++    def test_line_the_model_refuses_is_not_paid_for_twice(self):
++        """Строку вроде «Bump version to 4.7.2» модель вернёт как есть — и это
++        не повод спрашивать её о том же на каждом показе ленты."""
++        def partly(texts, language):
++            self.asked.append(list(texts))
++            return ({i: (self.RUSSIAN % i if i == 0 else text)
++                     for i, text in enumerate(texts)}, {"in": 1, "out": 1})
++
++        translate.translate_texts = partly
++        self.english()
++        self.login()
++        self.items()
++        self.assertEqual(self.items()[0]["summary"], self.LEAD)
++        self.assertEqual(len(self.asked), 1)
++
++    def test_switch_off_stops_asking_the_model(self):
++        CFG["translate"] = False
++        try:
++            self.english()
++            self.login()
++            card = self.items()[0]
++        finally:
++            CFG["translate"] = True
++        self.assertEqual(self.asked, [])
++        self.assertEqual(card["title"], self.ENGLISH)
++
++    def test_cached_translation_works_without_the_model(self):
++        """Кэш перевода — не роскошь: он закрывает почти всю ленту даром."""
++        conn = storage.db()
++        try:
++            translate.remember(conn, [(self.ENGLISH, "Опция загрузки в ядре")])
++        finally:
++            conn.close()
++        CFG["translate"] = False
++        try:
++            self.english()
++            self.login()
++            card = self.items()[0]
++        finally:
++            CFG["translate"] = True
++        self.assertEqual(card["title"], "Опция загрузки в ядре")
++
++    def test_bookmarks_speak_russian_too(self):
++        self.english()
++        self.login()
++        self.ask("/api/react", {"data": "fb:save:e1"})
++        card = self.ask("/api/news?view=saved")[1]["items"][0]
++        self.assertEqual(card["title"], self.RUSSIAN % 0)
++
++
+ class TestSanitizer(unittest.TestCase):
+     def test_keeps_telegram_tags(self):
+         self.assertEqual(web.safe_html("<b>жирно</b> и <i>курсив</i>"),

@@ -17,15 +17,23 @@
     saved   закладки 🔖
     liked   отмеченное 👍
 
+Карточка ленты — это заголовок И текст новости: по одному заголовку понять,
+о чём новость, нельзя, а открывать ради этого источник читатель не должен.
+Текст берётся из истории, а где его там нет (записи до версии 3.5, выпуски,
+собранные при недоступной модели) — из самого материала в `items`.
+
+Язык проверяется здесь ещё раз, уже после выпуска: см. `russify`.
+
 Telegram этого всего не касается: там по-прежнему приходит сообщение.
 """
 from __future__ import annotations
 
 import re
+import time
 import urllib.parse
 
 from . import sections, translate
-from .config import local_now, to_local
+from .config import CFG, local_now, to_local
 from .feedparse import parse_date
 from .profiles import emoji as topic_emoji
 from .profiles import title as topic_title
@@ -62,17 +70,24 @@ VIEWS = ("news", "saved", "liked")
 #: Закладка и оценка живут в своих таблицах и знают о новости мало
 #: (заголовок да ссылку), поэтому подтягиваем к ним строку истории: в ней
 #: лежит и раздел, и суть, и оценка модели.
+#: К каждой новости подтягивается и сам материал (`items`): в нём лежит текст
+#: из фида — запасной текст карточки, когда в истории суть не сохранена.
 SOURCES = {
     "news": """
-        SELECT url_hash, title, headline, summary, url, source_id, section,
-               score, sent_at AS at
-          FROM sent
-         WHERE chat_id = ?
+        SELECT n.url_hash AS url_hash, n.title AS title,
+               n.headline AS headline, n.summary AS summary,
+               COALESCE(i.summary, '') AS lead,
+               n.url AS url, n.source_id AS source_id, n.section AS section,
+               n.score AS score, n.sent_at AS at
+          FROM sent n
+          LEFT JOIN items i ON i.url_hash = n.url_hash
+         WHERE n.chat_id = ?
     """,
     "saved": """
         SELECT b.url_hash AS url_hash, b.title AS title,
                COALESCE(n.headline, '') AS headline,
                COALESCE(n.summary, '') AS summary,
+               COALESCE(i.summary, '') AS lead,
                CASE WHEN b.url != '' THEN b.url
                     ELSE COALESCE(n.url, '') END AS url,
                CASE WHEN b.source_id != '' THEN b.source_id
@@ -81,12 +96,14 @@ SOURCES = {
                COALESCE(n.score, 0) AS score, b.at AS at
           FROM saved b
           LEFT JOIN sent n ON n.chat_id = b.chat_id AND n.url_hash = b.url_hash
+          LEFT JOIN items i ON i.url_hash = b.url_hash
          WHERE b.chat_id = ?
     """,
     "liked": """
         SELECT f.url_hash AS url_hash, f.title AS title,
                COALESCE(n.headline, '') AS headline,
                COALESCE(n.summary, '') AS summary,
+               COALESCE(i.summary, '') AS lead,
                COALESCE(n.url, '') AS url,
                CASE WHEN f.source_id != '' THEN f.source_id
                     ELSE COALESCE(n.source_id, '') END AS source_id,
@@ -94,12 +111,26 @@ SOURCES = {
                COALESCE(n.score, 0) AS score, f.at AS at
           FROM feedback f
           LEFT JOIN sent n ON n.chat_id = f.chat_id AND n.url_hash = f.url_hash
+          LEFT JOIN items i ON i.url_hash = f.url_hash
          WHERE f.chat_id = ? AND f.verdict = 'up'
     """,
 }
 
 
 # ------------------------------------------------------------------ мелочи
+def column(row, name, default=""):
+    """Значение колонки, которой в строке может и не быть.
+
+    Карточки собираются не только из запросов выше: в тестах и в старых базах
+    строка приходит короче, и отсутствие колонки не повод падать.
+    """
+    try:
+        value = row[name]
+    except (IndexError, KeyError, TypeError):
+        return default
+    return default if value is None else value
+
+
 def tone(topic: str) -> int:
     """Оттенок раздела. Незнакомый (свой, из profiles.json) получает свой
     собственный — устойчивый, чтобы цвет не прыгал от запроса к запросу."""
@@ -117,6 +148,32 @@ def domain(url: str) -> str:
     except ValueError:
         return ""
     return host[4:] if host.startswith("www.") else host
+
+
+#: сколько текста новости кладём в карточку. Двух-трёх предложений хватает,
+#: чтобы понять новость, не открывая источник, — а на странице этот текст ещё
+#: и сворачивается до трёх строк, так что карточки остаются одного роста
+LEAD = 400
+
+
+def shorten(text: str, limit: int = LEAD) -> str:
+    """Обрезка по слову: обрывать текст на середине слова некрасиво."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    return cut.rstrip(" ,.:;—-·") + "…"
+
+
+def body(row) -> str:
+    """Текст карточки: суть, написанная моделью, а если её нет — текст из фида.
+
+    Пустая суть — это записи, сделанные до появления колонки (версия 3.5), и
+    выпуски, собранные, пока модель была недоступна. Показывать в такой
+    карточке один заголовок незачем: сам материал никуда не делся и лежит
+    рядом, в `items`, — он и идёт в дело.
+    """
+    return shorten(column(row, "summary") or column(row, "lead"))
 
 
 def stamp(iso: str, now=None) -> str:
@@ -177,8 +234,9 @@ def _section_filter(topic: str) -> tuple:
 def _hit(row, words) -> bool:
     """Поиск идёт в Python: LOWER() в SQLite знает только латиницу, а
     искать «Ормузский» и «ормузский» читатель должен одинаково."""
-    blob = " ".join(str(row[key] or "") for key in
-                    ("title", "headline", "summary", "source_id", "url")).lower()
+    blob = " ".join(str(column(row, key)) for key in
+                    ("title", "headline", "summary", "lead", "source_id",
+                     "url")).lower()
     return all(word in blob for word in words)
 
 
@@ -219,8 +277,8 @@ def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE)
     return window[:limit], len(window) > limit
 
 
-def cards(conn, rows, verdicts=None, saved=None) -> list:
-    """Строки истории -> карточки для страницы."""
+def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
+    """Строки истории -> карточки для страницы, доведённые до языка выпуска."""
     verdicts, saved = verdicts or {}, saved or ()
     smap = sections.source_map()
     now = local_now()
@@ -228,12 +286,11 @@ def cards(conn, rows, verdicts=None, saved=None) -> list:
     for row in rows:
         topic = row["section"] or smap.get(row["source_id"], "")
         # заголовок карточки писала модель; у записей, сделанных до появления
-        # этой колонки, берём заголовок фида — и его же перевод, если он есть
-        head = row["headline"] or translate.known(conn, row["title"])
+        # этой колонки, берём заголовок фида
         out.append({
             "hash": row["url_hash"],
-            "title": head,
-            "summary": str(row["summary"] or "")[:240],
+            "title": str(column(row, "headline") or column(row, "title")),
+            "summary": body(row),
             "url": row["url"] or "",
             "source": domain(row["url"]) or row["source_id"] or "источник",
             "section": topic,
@@ -245,7 +302,97 @@ def cards(conn, rows, verdicts=None, saved=None) -> list:
             "saved": row["url_hash"] in saved,
             "verdict": verdicts.get(row["url_hash"], ""),
         })
+    changed = russify(conn, out)
+    if changed and chat_id is not None:
+        remember(conn, chat_id, [card for card in out if card["hash"] in changed])
     return out
+
+
+# --------------------------------------------------------- лента по-русски
+#: поля карточки, которые читает человек, — их язык и проверяем
+SPEECH = ("title", "summary")
+
+#: сколько строк за один показ ленты имеет смысл отправить модели. Страница
+#: ждёт ответа, поэтому берём столько, сколько нужно одной странице ленты,
+#: и ни строкой больше: остальное догонит следующий заход
+TRANSLATE_LIMIT = 45
+
+#: модель не ответила — столько секунд к ней не ходим. Иначе каждая прокрутка
+#: ленты упирается в таймауты и повторы, а страница висит вместе с ними
+TRANSLATE_PAUSE = 300
+
+#: строки, которые модель уже отказалась переводить (вернула их же). Платить
+#: за них на каждом показе ленты незачем; после перезапуска попробуем снова
+STUBBORN_MAX = 4000
+
+_stubborn = set()
+_silent_until = 0.0
+
+
+def ask_model(conn, texts) -> dict:
+    """Перевод того, чего не нашлось в кэше. Пусто — модель не помогла."""
+    global _silent_until
+    if not texts or not CFG["translate"] or time.time() < _silent_until:
+        return {}
+    part = [text for text in texts
+            if translate.key_of(text) not in _stubborn][:TRANSLATE_LIMIT]
+    if not part:
+        return {}
+    ready, _cost = translate.translated(conn, part)
+    if not ready:
+        # модель недоступна: молчим минуты, но строки не запоминаем — когда
+        # она вернётся, лента доведёт их до языка выпуска сама
+        _silent_until = time.time() + TRANSLATE_PAUSE
+        return {}
+    if len(_stubborn) > STUBBORN_MAX:
+        _stubborn.clear()
+    _stubborn.update(translate.key_of(text) for text in part if text not in ready)
+    return ready
+
+
+def russify(conn, cards) -> set:
+    """Догоняет карточки до языка выпуска. Возвращает хэши изменившихся.
+
+    Выпуск переводится при сборке, но в истории всё равно оседает английский: у
+    записей, сделанных до версии 3.5, заголовок взят прямо из фида, а когда
+    модель была недоступна, на языке источника остаётся и заголовок, и суть.
+    Читателю от причины не легче — лента обязана быть на его языке, чем бы ни
+    закончилась сборка выпуска.
+
+    Поэтому язык проверяется ещё раз здесь, ровно как перед отправкой (см.
+    `translate`): сначала кэш переводов — он закрывает почти всё и не стоит
+    ничего, — и только за остатком один запрос к модели.
+    """
+    spots = [(card, name) for card in cards for name in SPEECH
+             if translate.foreign(card.get(name))]
+    if not spots:
+        return set()
+    texts = list(dict.fromkeys(card[name] for card, name in spots))
+    ready = translate.cached(conn, texts)
+    ready.update(ask_model(conn, [text for text in texts if text not in ready]))
+
+    changed = set()
+    for card, name in spots:
+        fresh = ready.get(card[name])
+        if fresh:
+            card[name] = shorten(fresh) if name == "summary" else fresh
+            changed.add(card["hash"])
+    return changed
+
+
+def remember(conn, chat_id, cards) -> None:
+    """Русский текст оседает в истории.
+
+    Перевод и так лежит в кэше, но карточка целиком — это ещё и поиск: пока в
+    `sent` английский заголовок, запрос «Иран» эту новость не находит. Заодно
+    заполняется пустая суть у старых записей, и второй раз лента её из `items`
+    не достаёт.
+    """
+    conn.executemany(
+        "UPDATE sent SET headline=?, summary=? WHERE chat_id=? AND url_hash=?",
+        [(str(card["title"])[:300], str(card["summary"])[:500],
+          str(chat_id), card["hash"]) for card in cards])
+    conn.commit()
 
 
 # --------------------------------------------------------------- панели вокруг

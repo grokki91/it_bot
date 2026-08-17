@@ -232,7 +232,7 @@ def news(query, worker=None) -> dict:
         verdicts, saved = press_state(conn, chat)
         payload = {"view": view, "section": section, "q": search,
                    "offset": offset, "more": more,
-                   "items": newsfeed.cards(conn, rows, verdicts, saved)}
+                   "items": newsfeed.cards(conn, rows, verdicts, saved, chat)}
         if not offset:
             payload["side"] = {
                 "menu": newsfeed.menu(conn, chat, sections.plan(sub)),

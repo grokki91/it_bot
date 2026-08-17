@@ -9,6 +9,11 @@
 справа справка о выпуске, популярные источники и темы. Переписка с ботом
 никуда не делась — она переехала в «Уведомления», а команды в «Ещё».
 
+Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
+речь, а ходить за этим на сайт источника читатель не нанимался. Текст занимает
+три строки и разворачивается нажатием: так карточки одного роста и на экране
+их помещается больше одной.
+
 Картинок к новостям у нас нет и быть не может: в RSS они попадаются далеко не
 всегда, а грузить их со сторонних сайтов значит показать этим сайтам, кто и
 когда читает вашу ленту (и продырявить CSP, которая сейчас не пускает наружу
@@ -195,10 +200,16 @@ header {
 /* заголовок — ссылка, но выглядеть должен заголовком, а не ссылкой */
 .news h2 a { color: inherit; }
 .news h2 a:hover { color: var(--accent); text-decoration: none; }
+/* текст новости: три строки в превью, остальное — по нажатию. Без обрезки
+   одна многословная карточка занимала бы экран целиком */
 .news .sum {
   margin: 8px 0 0; color: var(--dim); font-size: 14px; line-height: 1.45;
   overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+.news .sum.more { cursor: pointer; }
+.news .sum.open { -webkit-line-clamp: 99; }
 .news .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
 .news .src { margin-left: auto; font-size: 13px; display: flex; gap: 5px; }
 .act {
@@ -350,15 +361,23 @@ header {
   .news { padding: 14px; gap: 12px; }
   .news h2 { font-size: 17px; }
   .news .line { font-size: 11px; gap: 6px; }
+  .news .sum { margin-top: 6px; font-size: 13.5px; }
+  .news .foot { margin-top: 10px; }
   /* на телефоне карточка не должна занимать полэкрана: обложка мельче,
-     а суть сворачивается до двух строк */
-  .news .sum {
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .cover { width: 92px; height: 92px; align-self: flex-start; font-size: 30px; }
+     а текст новости всё так же сворачивается до трёх строк */
+  .cover { width: 84px; height: 84px; align-self: flex-start; font-size: 28px; }
   /* строка ввода не должна прятаться под нижней навигацией */
   #ask { bottom: calc(58px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 560px) {
+  /* на узком экране обложка отъедала у текста треть строки, и три строки сути
+     превращались в шесть. Значок раздела и так стоит в первой строке карточки,
+     поэтому обложке здесь остаётся роль метки — маленькой */
+  .news { padding: 12px; gap: 10px; }
+  .news h2 { font-size: 16px; }
+  .cover { width: 56px; height: 56px; font-size: 22px; border-radius: 10px; }
+  .head h1 { font-size: 21px; }
+  .tune { padding: 9px 12px; font-size: 13px; }
 }
 </style>
 </head>
@@ -687,6 +706,7 @@ function drawList(items, reset) {
   if (reset) { box.innerHTML = ''; }
   items.forEach(function (item) { box.appendChild(drawCard(item)); });
   if (!box.childNodes.length) { box.appendChild(drawEmpty()); }
+  markClamped();
 }
 
 function drawEmpty() {
@@ -746,7 +766,7 @@ function drawCard(item) {
     head.textContent = item.title;
   }
   text.appendChild(head);
-  if (item.summary) { text.appendChild(el('p', 'sum', item.summary)); }
+  if (item.summary) { text.appendChild(drawSummary(item.summary)); }
 
   var foot = el('div', 'foot');
   foot.appendChild(actButton('🔖', 'save', item.saved, item));
@@ -769,6 +789,34 @@ function drawCard(item) {
   card.appendChild(text);
   card.appendChild(el('div', 'cover', item.emoji));
   return card;
+}
+
+function drawSummary(text) {
+  var sum = el('p', 'sum', text);
+  sum.onclick = function () {
+    if (sum.className.indexOf('more') < 0) { return; }   /* текст и так весь тут */
+    var open = sum.className.indexOf('open') < 0;
+    sum.className = open ? 'sum more open' : 'sum more';
+    sum.title = open ? 'Свернуть' : 'Показать целиком';
+  };
+  return sum;
+}
+
+/* Обрезал ли CSS текст новости, знает только браузер: три строки — это разное
+   число знаков на телефоне и на широком экране. Поэтому меряем уже вставленные
+   в страницу карточки и зовём развернуть только те, где текст не поместился. */
+function markClamped() {
+  var sums = document.querySelectorAll('#list .sum');
+  Array.prototype.forEach.call(sums, function (sum) {
+    if (sum.className.indexOf('open') >= 0) { return; }
+    if (sum.scrollHeight > sum.clientHeight + 1) {
+      sum.className = 'sum more';
+      sum.title = 'Показать целиком';
+    } else {
+      sum.className = 'sum';
+      sum.removeAttribute('title');
+    }
+  });
 }
 
 function actButton(icon, kind, on, item) {
@@ -1123,6 +1171,9 @@ function start() {
 document.addEventListener('visibilitychange', function () {
   if (!document.hidden && S.started) { refresh(false); }
 });
+
+/* повернули телефон, растянули окно — в три строки помещается уже другое */
+window.addEventListener('resize', markClamped);
 
 call('/api/feed').then(function (data) {
   $('login').className = '';
