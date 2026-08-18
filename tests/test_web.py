@@ -519,6 +519,59 @@ class TestNews(WebCase):
         self.login()
         self.assertEqual(len(self.news("?section=no-such-thing")["items"]), 4)
 
+    def test_filters_keep_several_sections_at_once(self):
+        """Фильтры страницы: «только происшествия и экономика»."""
+        self.login()
+        body = self.news("?sections=incidents,economy")
+        self.assertEqual(sorted(i["hash"] for i in body["items"]), ["h1", "h3"])
+        self.assertEqual(body["sections"], ["incidents", "economy"])
+
+    def test_filter_of_one_section_works_like_the_section_itself(self):
+        self.login()
+        items = self.news("?sections=incidents")["items"]
+        self.assertEqual([i["hash"] for i in items], ["h1"])
+
+    def test_filters_reach_rows_without_a_section(self):
+        """У старых записей раздела нет — фильтр находит их по источнику."""
+        self.login()
+        topic = sections.by_source("theverge")
+        items = self.news("?sections=" + topic + ",politics")["items"]
+        self.assertEqual(sorted(i["hash"] for i in items), ["h2", "h4"])
+
+    def test_filters_understand_human_names(self):
+        """Плашки шлют идентификаторы, но руками можно набрать и по-русски."""
+        self.login()
+        found = self.news("?sections=" + urllib.parse.quote("политика"))["items"]
+        self.assertEqual([i["hash"] for i in found], ["h2"])
+
+    def test_unknown_names_drop_out_of_the_filter(self):
+        self.login()
+        body = self.news("?sections=politics,no-such-thing")
+        self.assertEqual([i["hash"] for i in body["items"]], ["h2"])
+        self.assertEqual(body["sections"], ["politics"])
+
+    def test_empty_filter_shows_everything(self):
+        self.login()
+        body = self.news("?sections=")
+        self.assertEqual(len(body["items"]), 4)
+        self.assertEqual(body["sections"], [])
+
+    def test_open_section_beats_the_filters(self):
+        """Читатель зашёл в раздел — показываем раздел, а не набор плашек."""
+        self.login()
+        body = self.news("?section=politics&sections=incidents,economy")
+        self.assertEqual([i["hash"] for i in body["items"]], ["h2"])
+        self.assertEqual(body["section"], "politics")
+
+    def test_filters_work_together_with_search(self):
+        self.login()
+        found = self.news("?sections=incidents,economy&q=" +
+                          urllib.parse.quote("иран"))["items"]
+        self.assertEqual(sorted(i["hash"] for i in found), ["h1", "h3"])
+        narrow = self.news("?sections=economy&q=" +
+                           urllib.parse.quote("иран"))["items"]
+        self.assertEqual([i["hash"] for i in narrow], ["h3"])
+
     def test_search_ignores_case_in_russian(self):
         """LOWER() в SQLite кириллицу не знает — поиск обязан знать."""
         self.login()

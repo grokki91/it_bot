@@ -152,12 +152,18 @@ def news(query, worker=None) -> dict:
     Меню разделов, популярные источники и темы считаются только на первой
     странице: при нажатии «Показать ещё» они не меняются, а лишние запросы к
     базе на каждую подгрузку не нужны.
+
+    Фильтры (`sections`) — это набор разделов, закреплённый читателем на
+    странице: «только наука и спорт». Открытый раздел (`section`) их
+    перебивает: раз уж читатель зашёл в «Космос», показываем «Космос».
     """
     chat = chat_id()
     view = str((query.get("view") or ["news"])[0])
     if view not in newsfeed.VIEWS:
         view = "news"
     section = sections.resolve((query.get("section") or [""])[0])
+    picked, _unknown = sections.parse((query.get("sections") or [""])[0])
+    picked = picked[:sections.MAX_SECTIONS]
     search = str((query.get("q") or [""])[0])[:120]
     offset = max(to_int((query.get("offset") or ["0"])[0], 0), 0)
 
@@ -165,10 +171,11 @@ def news(query, worker=None) -> dict:
     try:
         subscribers.ensure_owner(conn)
         sub = subscribers.get(conn, chat)
-        rows, more = newsfeed.page(conn, chat, view, section, search, offset)
+        rows, more = newsfeed.page(conn, chat, view, section or picked,
+                                   search, offset)
         verdicts, saved = press_state(conn, chat)
-        payload = {"view": view, "section": section, "q": search,
-                   "offset": offset, "more": more,
+        payload = {"view": view, "section": section, "sections": picked,
+                   "q": search, "offset": offset, "more": more,
                    "items": newsfeed.cards(conn, rows, verdicts, saved, chat)}
         if not offset:
             payload["side"] = {

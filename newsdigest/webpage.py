@@ -8,7 +8,15 @@
 Страница устроена как новостной сайт: слева разделы, в центре лента карточек,
 справа справка о выпуске, популярные источники и темы. «Уведомления» — это
 список рассылок: когда пришла, сколько было новостей и пять главных ссылок.
-«Настройки» — подписчики и значения настроек, только для чтения.
+«Настройки» (человечек в шапке) — подписчики и значения настроек, только для
+чтения.
+
+Кнопка «Фильтры» над лентой закрепляет разделы: можно оставить один, можно
+несколько («только наука, спорт и экономика») — и «Главное» покажет новости
+только из них. Выбранное видно плашками над лентой, снимается нажатием на
+плашку и переживает закрытие браузера: набор лежит в localStorage. Пока не
+выбрано ничего, полосы плашек нет вовсе — второй список разделов рядом с
+левым меню только мешал бы.
 
 Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
 командуют на самом VPS, а страница — читалка.
@@ -165,8 +173,9 @@ header {
   border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 14px;
   white-space: nowrap;
 }
-/* разделов больше, чем влезает в строку: остальные уезжают вправо, и край
-   растушёван — иначе не видно, что список продолжается */
+/* плашки — это закреплённые фильтры, а не второй список разделов: разделы и
+   так стоят слева. Фильтров не выбрано — полосы нет вовсе. Выбрано много —
+   лишние уезжают вправо, и край растушёван, чтобы это было видно */
 .chips {
   display: flex; gap: 8px; overflow-x: auto; padding-bottom: 14px;
   scrollbar-width: none;
@@ -182,6 +191,51 @@ header {
   background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
   font-weight: 600;
 }
+.chips button .x { margin-left: 8px; opacity: .75; font-weight: 400; }
+
+/* ----------------------------------------------------------------- фильтры */
+/* Выбор разделов ленты: подложка на весь экран и панель по центру. Отмечают
+   галочками, а лента меняется по «Применить» — чтобы набор из трёх разделов
+   не собирался тремя запросами к базе */
+.sheet {
+  display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 40; background: rgba(16, 24, 40, .45); padding: 20px;
+  align-items: center; justify-content: center;
+}
+.sheet.on { display: flex; }
+.pane {
+  background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+  padding: 20px; width: 100%; max-width: 420px; max-height: 84vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 14px 44px rgba(16, 24, 40, .3);
+}
+.pane h3 { font-size: 17px; }
+.pane .hint { color: var(--dim); font-size: 13px; margin: 6px 0 0; }
+.pick {
+  display: flex; flex-direction: column; gap: 2px; margin: 14px 0 16px;
+  overflow-y: auto;
+}
+.pick button {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: none; border: 0; border-radius: 11px; padding: 9px 10px;
+  font-size: 15px;
+}
+.pick button:hover { background: var(--soft); }
+.pick button.on { background: var(--tint); color: var(--accent); font-weight: 600; }
+.pick .tick {
+  width: 20px; height: 20px; border-radius: 6px; flex: none;
+  border: 1.5px solid var(--line); background: var(--bg); color: transparent;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+.pick button.on .tick {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+}
+.pick .ico { font-size: 17px; width: 22px; text-align: center; flex: none; }
+.pick .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; }
+.pick .num { color: var(--dim); font-size: 12px; font-weight: 500; }
+.pane .pair .primary { width: auto; flex: 1; margin-top: 0; padding: 10px 16px; }
+.pane .pair .ghost { padding: 10px 16px; }
 #list { display: flex; flex-direction: column; gap: 12px; }
 
 .news {
@@ -436,7 +490,7 @@ header {
       <div class="head">
         <h1 id="title">Главное</h1>
         <div class="meta" id="meta"></div>
-        <button class="tune" onclick="go('tools')">⚙ Настройки</button>
+        <button class="tune" id="tune" onclick="openFilters()">⚙ Фильтры</button>
       </div>
       <div class="chips" id="chips"></div>
       <div id="list"></div>
@@ -456,6 +510,19 @@ header {
   <nav class="tabs" id="tabs"></nav>
 </div>
 
+<div id="picker" class="sheet" onclick="backdrop(event)">
+  <div class="pane">
+    <h3>Фильтры ленты</h3>
+    <p class="hint">Отметьте разделы, которые хотите видеть в «Главном».
+       Можно несколько. Ничего не отмечено — показываем все.</p>
+    <div class="pick" id="pick"></div>
+    <div class="pair">
+      <button class="ghost" type="button" onclick="clearPick()">Сбросить</button>
+      <button class="primary" type="button" onclick="applyPick()">Применить</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -464,7 +531,8 @@ header {
 var S = {
   view: 'news', section: '', q: '', offset: 0, more: false,
   seen: '', unread: 0, hello: true, started: false, timer: null, typing: null,
-  state: null, alerts: [], tools: null, menu: [], side: null
+  state: null, alerts: [], tools: null, menu: [], side: null,
+  filters: [], pick: []
 };
 
 /* Пункты, которые не про разделы: избранное, уведомления и настройки. */
@@ -570,6 +638,73 @@ function hueOf(name) {
   return (sum * 37) % 360;
 }
 
+/* --------------------------------------------------------------- фильтры */
+/* Закреплённые разделы: «только наука и спорт». Это про то, как читателю
+   удобно смотреть ленту, а не про настройки бота, — поэтому набор живёт в
+   браузере и переживает закрытие вкладки. */
+var KEEP = 'nd.filters';
+
+function loadFilters() {
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEEP) || '[]');
+    if (!saved || !saved.length) { return []; }
+    return saved.filter(function (id) { return typeof id === 'string' && id; });
+  } catch (err) {
+    return [];        /* приватный режим или запрет хранилища — живём без памяти */
+  }
+}
+
+function keepFilters() {
+  try { localStorage.setItem(KEEP, JSON.stringify(S.filters)); } catch (err) { }
+}
+
+S.filters = loadFilters();
+
+/* Фильтры работают в «Главном»: в разделе читатель уже выбрал, что смотреть,
+   а «Сохранённые» и «Избранное» он отмечал руками — там резать нечего. */
+function filtering() {
+  return S.view === 'news' && !S.section && S.filters.length > 0;
+}
+
+function menuEntry(id) {
+  for (var i = 0; i < S.menu.length; i++) {
+    if (S.menu[i].id === id) { return S.menu[i]; }
+  }
+  return null;
+}
+
+/* Сколько новостей увидит читатель в «Главном» с его набором фильтров. */
+function countPicked() {
+  var sum = 0;
+  S.filters.forEach(function (id) {
+    var entry = menuEntry(id);
+    if (entry) { sum += entry.count || 0; }
+  });
+  return sum;
+}
+
+/* Раздел пропал из меню (новостей нет и в плане его больше нет) — убираем
+   его и из набора: плашка висела бы, а лента про него ничего не знает. */
+function pruneFilters() {
+  if (!S.menu.length || !S.filters.length) { return; }
+  var live = S.filters.filter(function (id) { return !!menuEntry(id); });
+  if (live.length !== S.filters.length) {
+    S.filters = live;
+    keepFilters();
+  }
+}
+
+/* Набор поменялся: запомнили и вернулись в «Главное» — там его и видно. */
+function setFilters(list) {
+  S.filters = list;
+  keepFilters();
+  go('news');
+}
+
+function dropFilter(id) {
+  setFilters(S.filters.filter(function (item) { return item !== id; }));
+}
+
 /* ------------------------------------------------------------ навигация */
 function go(view, section) {
   S.view = view;
@@ -585,25 +720,26 @@ function go(view, section) {
 function paint() {
   var news = isNews(S.view);
   $('list').className = news ? '' : 'hide';
-  $('chips').className = 'chips' + (S.view === 'news' ? '' : ' hide');
+  showChips();
   $('more').className = news && S.more ? '' : 'hide';
   $('alerts').className = S.view === 'alerts' ? '' : 'hide';
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
   $('bell').className = 'icon' + (S.view === 'alerts' ? ' on' : '');
   $('who').className = 'icon' + (S.view === 'tools' ? ' on' : '');
+  $('tune').textContent = S.filters.length
+    ? '⚙ Фильтры · ' + S.filters.length : '⚙ Фильтры';
   drawMeta();
   drawNav();
+  drawChips();
   drawTabs();
   if (S.view === 'alerts') { drawAlerts(); }
   if (S.view === 'tools') { drawPanel(); }
 }
 
 function sectionName(id) {
-  for (var i = 0; i < S.menu.length; i++) {
-    if (S.menu[i].id === id) { return S.menu[i].title; }
-  }
-  return id;
+  var entry = menuEntry(id);
+  return entry ? entry.title : id;
 }
 
 function drawMeta() {
@@ -622,7 +758,10 @@ function drawNav() {
   nav.innerHTML = '';
   S.menu.forEach(function (entry) {
     var on = S.view === 'news' && S.section === entry.id;
-    nav.appendChild(navItem(entry.emoji, entry.title, entry.count, on,
+    /* с фильтрами «Главное» показывает не всё — и число рядом должно быть
+       про то, что читатель там увидит */
+    var count = !entry.id && S.filters.length ? countPicked() : entry.count;
+    nav.appendChild(navItem(entry.emoji, entry.title, count, on,
                             function () { go('news', entry.id); }));
   });
   var aux = $('navAux');
@@ -665,14 +804,86 @@ function drawTabs() {
   if (S.unread) { bell.appendChild(el('span', 'badge', S.unread)); }
 }
 
+/* Полоса плашек видна, только когда фильтры есть и работают. Меню ещё не
+   пришло — плашек нет: имя раздела берётся оттуда, а показывать вместо него
+   идентификатор незачем. */
+function showChips() {
+  var show = filtering() && S.menu.length > 0;
+  $('chips').className = 'chips' + (show ? '' : ' hide');
+}
+
+/* Плашки над лентой — это выбранные фильтры. Второго списка разделов тут не
+   нужно: он и так стоит слева. Нажатие на плашку снимает фильтр. */
 function drawChips() {
   var box = $('chips');
   box.innerHTML = '';
-  S.menu.forEach(function (entry) {
-    var button = el('button', S.section === entry.id ? 'on' : '',
-                    entry.id ? entry.title : 'Все');
+  if (!S.filters.length || !S.menu.length) { return; }
+  S.filters.forEach(function (id) {
+    var entry = menuEntry(id);
+    var button = el('button', 'on',
+                    entry ? entry.emoji + ' ' + entry.title : id);
     button.type = 'button';
-    button.onclick = function () { go('news', entry.id); };
+    button.title = 'Убрать из фильтров';
+    button.appendChild(el('span', 'x', '✕'));
+    button.onclick = function () { dropFilter(id); };
+    box.appendChild(button);
+  });
+  if (S.filters.length > 1) {
+    var all = el('button', null, 'Сбросить всё');
+    all.type = 'button';
+    all.onclick = function () { setFilters([]); };
+    box.appendChild(all);
+  }
+}
+
+/* ------------------------------------------------------- выбор фильтров */
+/* Отмечают галочками, а лента меняется по «Применить»: набор из трёх
+   разделов не должен собираться тремя запросами к базе. */
+function openFilters() {
+  S.pick = S.filters.slice();
+  $('picker').className = 'sheet on';
+  drawPick();
+}
+
+function closeFilters() { $('picker').className = 'sheet'; }
+
+/* нажали мимо панели — закрываем, ничего не меняя */
+function backdrop(event) {
+  if (event.target === $('picker')) { closeFilters(); }
+}
+
+function togglePick(id) {
+  S.pick = S.pick.indexOf(id) < 0
+    ? S.pick.concat([id])
+    : S.pick.filter(function (item) { return item !== id; });
+  drawPick();
+}
+
+function clearPick() { S.pick = []; drawPick(); }
+
+function applyPick() {
+  closeFilters();
+  setFilters(S.pick.slice());
+}
+
+function drawPick() {
+  var box = $('pick');
+  box.innerHTML = '';
+  var live = S.menu.filter(function (entry) { return !!entry.id; });
+  if (!live.length) {
+    box.appendChild(el('div', 'hint',
+      'Разделы появятся здесь, когда придёт первый выпуск.'));
+    return;
+  }
+  live.forEach(function (entry) {
+    var on = S.pick.indexOf(entry.id) >= 0;
+    var button = el('button', on ? 'on' : '');
+    button.type = 'button';
+    button.appendChild(el('span', 'tick', '✓'));
+    button.appendChild(el('span', 'ico', entry.emoji));
+    button.appendChild(el('span', 'nm', entry.title));
+    if (entry.count) { button.appendChild(el('span', 'num', entry.count)); }
+    button.onclick = function () { togglePick(entry.id); };
     box.appendChild(button);
   });
 }
@@ -682,6 +893,7 @@ function loadNews(reset) {
   if (reset) { S.offset = 0; }
   var path = '/api/news?view=' + encodeURIComponent(isNews(S.view) ? S.view : 'news')
            + '&section=' + encodeURIComponent(S.section)
+           + '&sections=' + encodeURIComponent(filtering() ? S.filters.join(',') : '')
            + '&q=' + encodeURIComponent(S.q)
            + '&offset=' + S.offset;
   return call(path).then(function (data) {
@@ -689,9 +901,11 @@ function loadNews(reset) {
     if (data.side) {
       S.side = data.side;
       S.menu = data.side.menu || [];
+      pruneFilters();
       drawChips();
       drawNav();
       drawRail();
+      showChips();
     }
     S.more = !!data.more;
     S.offset = data.offset + (data.items || []).length;
@@ -717,7 +931,9 @@ function drawEmpty() {
     box.appendChild(el('b', null, 'Ничего не нашлось'));
     box.appendChild(el('div', null,
       'По запросу «' + S.q + '» в вашей ленте пусто. Ищется только то, что ' +
-      'вам уже приходило.'));
+      'вам уже приходило.' + (filtering()
+        ? ' И только в выбранных разделах — снимите плашки, чтобы искать по ' +
+          'всей ленте.' : '')));
     return box;
   }
   if (S.view === 'saved') {
@@ -729,6 +945,13 @@ function drawEmpty() {
     box.appendChild(el('b', null, 'Ничего не отмечено'));
     box.appendChild(el('div', null,
       'Нажмите 👍 под новостью: так бот поймёт, что вам интересно.'));
+    return box;
+  }
+  if (filtering()) {
+    box.appendChild(el('b', null, 'По вашим фильтрам пусто'));
+    box.appendChild(el('div', null,
+      'В выбранных разделах новостей пока нет. Снимите плашку или наберите ' +
+      'другие разделы — кнопка «Фильтры» над лентой.'));
     return box;
   }
   box.appendChild(el('b', null, 'Здесь пока пусто'));
@@ -1166,6 +1389,10 @@ function start() {
 
 document.addEventListener('visibilitychange', function () {
   if (!document.hidden && S.started) { refresh(false); }
+});
+
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape') { closeFilters(); }
 });
 
 /* повернули телефон, растянули окно — в три строки помещается уже другое */

@@ -236,6 +236,31 @@ def _section_filter(topic: str) -> tuple:
             % ",".join("?" * len(names)), [topic] + names)
 
 
+def wanted(section) -> list:
+    """Разделы, по которым отбираем ленту: одно имя или их набор.
+
+    Страница умеет держать несколько фильтров сразу («только наука и спорт»),
+    и приходит от неё либо строка с одним разделом, либо список.
+    """
+    names = [section] if isinstance(section, str) else list(section or ())
+    out = []
+    for name in names:
+        topic = str(name or "").strip()
+        if topic and topic not in out:
+            out.append(topic)
+    return out
+
+
+def _sections_filter(topics) -> tuple:
+    """Условие «новость из любого выбранного раздела»."""
+    clauses, args = [], []
+    for topic in topics:
+        clause, params = _section_filter(topic)
+        clauses.append(clause)
+        args += params
+    return "(%s)" % " OR ".join(clauses), args
+
+
 def _hit(row, words) -> bool:
     """Поиск идёт в Python: LOWER() в SQLite знает только латиницу, а
     искать «Ормузский» и «ормузский» читатель должен одинаково."""
@@ -259,13 +284,17 @@ def needle(query: str) -> list:
 def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE):
     """Карточки одной страницы ленты и признак «есть ещё».
 
+    `section` — раздел или их набор: читатель на странице может закрепить
+    несколько разделов сразу, и тогда лента идёт по ним всем.
+
     Без поиска пагинация делается базой. С поиском — по прочитанным строкам:
     отбор идёт по словам в Python (см. `_hit`), и SQL про него не знает.
     """
     base = SOURCES.get(view) or SOURCES["news"]
     args, offset, limit = [str(chat_id)], max(int(offset), 0), max(int(limit), 1)
-    if section:
-        clause, params = _section_filter(section)
+    topics = wanted(section)
+    if topics:
+        clause, params = _sections_filter(topics)
         base = "SELECT * FROM (%s) WHERE %s" % (base, clause)
         args += params
 
