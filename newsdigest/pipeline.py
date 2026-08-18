@@ -11,7 +11,8 @@
        собирался бы минуты);
     4) разделы разбираются по очереди, и всё уже занятое пропускается —
        поэтому одна и та же новость не приходит дважды под двумя вывесками;
-    5) карточки пишутся пачками и уходят одним-двумя сообщениями.
+    5) карточки пишутся пачками и уходят одним сообщением — оглавлением
+       выпуска, из которого разделы открываются кнопками (issueview.py).
 """
 from __future__ import annotations
 
@@ -19,15 +20,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, subscribers, translate
+from . import config, issueview, sections, subscribers, translate
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
 from .profiles import PROFILES, title
 from .rank import SentIndex, cluster, primary_of, select
-from .render import feedback_keyboard, fit_blocks
+from .render import feedback_keyboard, fit_blocks, issue_info
 from .sources import sources_for
-from .storage import db, log_run, meta_set, save_leftover
+from .storage import db, log_run, meta_set, save_issue, save_leftover
 from .telegram import plain, tg_send
 
 
@@ -224,21 +225,18 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     stats["selected"] = sum(len(block) for _topic, block in cards)
     stats["sections"] = len(cards)
 
-    messages = fit_blocks(cards, stats["candidates"], note=empty_note(stats))
+    info = issue_info(cards, stats["candidates"], empty_note(stats))
 
     if dry_run:
         print()
-        print(("\n" + "─" * 60 + "\n").join(plain(text) for text, _ in messages))
+        print(preview(cards, info))
         print("\n[dry-run] отправки не было. Примерная стоимость запроса: $%.4f"
               % stats["cost"])
         log_run(conn, "digest", "dry-run", stats)
         conn.close()
         return stats
 
-    for text, chunk in messages:
-        tg_send(chat_id, text, keyboard=feedback_keyboard(chunk))
-        stats["sent"] += 1
-        time.sleep(1.0)
+    stats["sent"] = send_issue(conn, chat_id, cards, info)
 
     day = local_now().strftime("%Y-%m-%d")
     for topic, block in cards:
@@ -271,6 +269,52 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     log.info("Отправлено: %d новостей из %d разделов, %d сообщение(й), ~$%.4f",
              stats["selected"], stats["sections"], stats["sent"], stats["cost"])
     return stats
+
+
+# ------------------------------------------------------------------- отправка
+def screens_view() -> bool:
+    """Выпуск экранами (оглавление + разделы) или старой сплошной лентой."""
+    return str(CFG["tg_view"]).lower() != "feed"
+
+
+def send_issue(conn, chat_id, cards, info) -> int:
+    """Отправляет выпуск читателю. Возвращает, сколько сообщений ушло.
+
+    Экранами выпуск всегда умещается в одно сообщение: разделы читатель
+    открывает кнопками, и сообщение переписывается на месте.
+    """
+    if not screens_view():
+        return send_feed(chat_id, cards, info)
+    issue = issueview.snapshot(cards, info)
+    ident = save_issue(conn, chat_id, issue)
+    text, keyboard = issueview.screen(issue, ident)
+    tg_send(chat_id, text, keyboard=keyboard or None)
+    return 1
+
+
+def send_feed(chat_id, cards, info) -> int:
+    """Старый вид: сплошная лента, при нужде в два-три сообщения подряд."""
+    sent = 0
+    for text, chunk in fit_blocks(cards, info["scanned"], note=info["note"]):
+        tg_send(chat_id, text, keyboard=feedback_keyboard(chunk))
+        sent += 1
+        time.sleep(1.0)
+    return sent
+
+
+def preview(cards, info) -> str:
+    """Что увидит читатель — для `--dry-run` в терминале.
+
+    У выпуска экранами их несколько, поэтому печатаются все подряд: иначе в
+    терминале было бы видно только оглавление, а проверять надо весь выпуск.
+    """
+    rule = "\n" + "─" * 60 + "\n"
+    if not screens_view():
+        return rule.join(plain(text) for text, _chunk
+                         in fit_blocks(cards, info["scanned"], note=info["note"]))
+    issue = issueview.snapshot(cards, info)
+    return rule.join("[ %s ]\n\n%s" % (name, plain(text))
+                     for name, text in issueview.screens(issue))
 
 
 def rank_all(shortlists, hint, stats) -> dict:

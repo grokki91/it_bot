@@ -117,6 +117,25 @@ def tg_answer_callback(callback_id, text="", alert=False):
         return None
 
 
+def tg_edit_text(chat_id, message_id, text, keyboard=None):
+    """Переписывает уже отправленное сообщение — так листаются экраны выпуска.
+
+    Новое сообщение на каждое нажатие превратило бы чат в ленту черновиков:
+    читатель ходит по разделам внутри одного выпуска, и выпуск должен
+    оставаться одним сообщением.
+    """
+    payload = {"chat_id": chat_id, "message_id": message_id,
+               "text": text[:TG_LIMIT], "parse_mode": "HTML",
+               "disable_web_page_preview": not CFG["link_preview"],
+               "reply_markup": {"inline_keyboard": keyboard or []}}
+    try:
+        return tg_call("editMessageText", payload, attempts=2)
+    except RuntimeError as exc:
+        if "not modified" in str(exc).lower():
+            return None
+        raise
+
+
 def tg_edit_markup(chat_id, message_id, keyboard):
     try:
         return tg_call("editMessageReplyMarkup",

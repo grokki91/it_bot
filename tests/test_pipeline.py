@@ -201,7 +201,7 @@ class TestBuildAndSend(PipelineCase):
         try:
             self.fill(3)
             pipeline.build_and_send(chat_id=CHAT)
-            self.assertIsNone(self.sent[0][2])
+            self.assertFalse(self.sent[0][2])
         finally:
             CFG["feedback_buttons"] = True
 

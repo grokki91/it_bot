@@ -170,6 +170,26 @@ def show_style(value):
             else "rows — ряд под каждой новостью")
 
 
+#: как выглядит выпуск в Telegram: экранами с оглавлением или сплошной лентой
+VIEWS = {"screens": "screens", "экраны": "screens", "разделы": "screens",
+         "оглавление": "screens", "кнопки": "screens",
+         "feed": "feed", "лента": "feed", "текстом": "feed",
+         "сплошной": "feed", "как_раньше": "feed"}
+
+
+def as_view(raw):
+    value = VIEWS.get(raw.strip().lower())
+    if not value:
+        raise Invalid("бывает screens (оглавление, разделы по кнопкам) "
+                      "или feed (сплошная лента одним текстом)")
+    return value
+
+
+def show_view(value):
+    return ("screens — оглавление, разделы по кнопкам" if value == "screens"
+            else "feed — сплошная лента одним текстом")
+
+
 # ------------------------------------------------------------------- реестр
 SPEC = {
     "topic": Setting("topic", "ND_TOPIC", as_topic,
@@ -206,6 +226,9 @@ SPEC = {
     "quiet": Setting("breaking_quiet", "ND_BREAKING_QUIET", as_quiet,
                      "часы тишины для срочного, ЧЧ:ММ-ЧЧ:ММ или «нет»",
                      lambda v: v or "нет"),
+    "view": Setting("tg_view", "ND_TG_VIEW", as_view,
+                    "как выглядит выпуск в Telegram: screens — оглавление "
+                    "и разделы по кнопкам, feed — сплошная лента", show_view),
     "buttons": Setting("feedback_buttons", "ND_FEEDBACK", as_bool,
                        "кнопки 👍/👎/🔖 под выпуском", on_off),
     "style": Setting("feedback_style", "ND_FEEDBACK_STYLE", as_style,
@@ -228,6 +251,7 @@ ALIASES = {
     "перевод": "translate", "переводить": "translate",
     "тихо": "quiet", "срочные": "breaking", "кнопки": "buttons",
     "feedback_style": "style", "реакции": "style", "вид_кнопок": "style",
+    "tg_view": "view", "вид": "view", "выпуск": "view", "экраны": "view",
     "feedback_weight": "taste", "вкусы": "taste", "звук": "silent",
     "разделы": "sections", "темы": "sections", "topics": "sections",
     "per_section": "each", "на_раздел": "each", "поразделу": "each",

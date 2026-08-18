@@ -158,10 +158,28 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_chat ON outbox(chat_id, id);
 CREATE INDEX IF NOT EXISTS idx_outbox_message ON outbox(chat_id, message_id);
+
+-- Выпуск, разложенный по разделам. В Telegram выпуск приходит одним
+-- сообщением-оглавлением, а разделы читатель открывает кнопками: чтобы
+-- собрать экран раздела через час после отправки, нужны сами карточки —
+-- ни кластеров, ни ответа модели к тому времени уже нет. В кнопку выпуск
+-- не влезает (64 байта на callback_data), поэтому в ней едет только номер
+-- строки отсюда.
+CREATE TABLE IF NOT EXISTS issues (
+    id      INTEGER PRIMARY KEY,
+    chat_id TEXT NOT NULL DEFAULT '',
+    at      TEXT NOT NULL,
+    data    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_issues_chat ON issues(chat_id, id);
 """
 
 #: сколько последних сообщений храним для страницы (на каждый чат)
 OUTBOX_KEEP = 400
+
+#: сколько выпусков помним на чат. Telegram и так не даёт править сообщения
+#: старше двух суток, а десятка выпусков хватает на неделю вперёд
+ISSUES_KEEP = 10
 
 
 def table_exists(conn, name: str) -> bool:
@@ -390,6 +408,36 @@ def outbox_keyboard(conn, chat_id, message_id) -> list:
     except ValueError:
         return []
     return keyboard if isinstance(keyboard, list) else []
+
+
+def save_issue(conn, chat_id, issue) -> int:
+    """Кладёт выпуск для листания по разделам. Возвращает его номер.
+
+    Заодно подрезает хвост: старые выпуски листать всё равно нельзя —
+    Telegram не даёт править сообщения старше 48 часов.
+    """
+    cur = conn.execute(
+        "INSERT INTO issues(chat_id, at, data) VALUES (?,?,?)",
+        (str(chat_id), now_iso(), json.dumps(issue, ensure_ascii=False)))
+    new_id = int(cur.lastrowid)
+    conn.execute("DELETE FROM issues WHERE chat_id=? AND id NOT IN "
+                 "(SELECT id FROM issues WHERE chat_id=? ORDER BY id DESC "
+                 "LIMIT ?)", (str(chat_id), str(chat_id), ISSUES_KEEP))
+    conn.commit()
+    return new_id
+
+
+def load_issue(conn, chat_id, ident) -> dict:
+    """Выпуск по номеру. Пусто — выпуска нет или он не этого чата."""
+    if not ident:
+        return {}
+    row = conn.execute("SELECT data FROM issues WHERE id=? AND chat_id=?",
+                       (int(ident), str(chat_id))).fetchone()
+    try:
+        issue = json.loads(row["data"]) if row and row["data"] else {}
+    except ValueError:
+        return {}
+    return issue if isinstance(issue, dict) else {}
 
 
 def outbox_page(conn, chat_id, after=None, limit=60):

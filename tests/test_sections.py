@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, pipeline, sections  # noqa: E402
+from newsdigest import bot, config, issueview, pipeline, sections  # noqa: E402
 from newsdigest import storage, subscribers, userprofiles  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.profiles import BUILTIN, DEFAULT_SECTIONS, PROFILES, title  # noqa: E402
@@ -229,6 +229,22 @@ class DigestCase(unittest.TestCase):
     def text(self):
         return "\n".join(t for _chat, t, _kb in self.sent)
 
+    def buttons(self):
+        """Подписи всех кнопок отправленного: названия разделов теперь там."""
+        return " ".join(b["text"] for _chat, _t, kb in self.sent
+                        for row in (kb or []) for b in row)
+
+    def screen(self, name=issueview.HOME, arg=""):
+        """Экран выпуска, который читатель откроет кнопкой."""
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT id FROM issues WHERE chat_id=? "
+                               "ORDER BY id DESC LIMIT 1", (self.CHAT,)).fetchone()
+            issue = storage.load_issue(conn, self.CHAT, row["id"])
+        finally:
+            conn.close()
+        return issueview.screen(issue, row["id"], name, arg)
+
     def sent_rows(self):
         conn = storage.db()
         try:
@@ -246,9 +262,11 @@ class TestMorningDigest(DigestCase):
         self.assertEqual(stats["sections"], 3)
         self.assertEqual(stats["selected"], 6)
 
-        text = self.text()
+        # выпуск приходит одним сообщением-оглавлением, а разделы читатель
+        # открывает кнопками — там же и их названия
+        self.assertEqual(len(self.sent), 1)
         for topic in self.PLAN:
-            self.assertIn(title(topic), text)
+            self.assertIn(title(topic), self.buttons())
 
         # ровно по две новости из источников каждого раздела
         for topic in self.PLAN:
@@ -273,11 +291,29 @@ class TestMorningDigest(DigestCase):
         self.assertEqual(len(titles), len(set(titles)))
 
     def test_empty_sections_are_named(self):
+        """Пустые разделы названы, но не в шапке выпуска.
+
+        Молчание хуже: из него непонятно, бот пропустил раздел или там правда
+        тихо. Место этой строки — экран со списком разделов; когда новости
+        нашлись в одном разделе и списка нет, она уходит под его новости.
+        """
         self.fill("ai")
         pipeline.build_and_send(chat_id=self.CHAT)
         text = self.text()
         self.assertIn("без новостей", text)
         self.assertIn(title("crypto"), text)
+        self.assertNotIn("без новостей", text.split("\n\n")[0])
+
+    def test_header_of_the_issue_is_short(self):
+        """Шапка выпуска — только время суток, дата и сколько новостей."""
+        for topic in self.PLAN:
+            self.fill(topic)
+        pipeline.build_and_send(chat_id=self.CHAT)
+        head = self.text().split("\n\n")[0]
+        self.assertEqual(len(head.split("\n")), 2)
+        self.assertIn("6 новостей", head)
+        for gone in ("материалов за сутки", "раздела", "без новостей"):
+            self.assertNotIn(gone, head)
 
     def test_nothing_new_second_time(self):
         for topic in self.PLAN:

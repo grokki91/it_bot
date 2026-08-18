@@ -2,7 +2,8 @@
 """Команды, нажатия кнопок и фоновые задачи.
 
 В Telegram бот только рассылает: команд там нет, он принимает лишь нажатия
-кнопок под выпуском (👍/👎/🔖) и решения владельца по заявкам новых чатов.
+кнопок под выпуском — переходы по разделам, 👍/👎/🔖 — и решения владельца
+по заявкам новых чатов.
 На любую команду из чата приходит одна и та же справка о расписании — вся
 переписка с ботом сводится к ней (ND_CHAT_REPLY=off убирает и её). Страница в
 браузере команд тоже не выполняет: боту командуют на самом VPS, через
@@ -21,16 +22,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import (config, feedback, sections, settings, subscribers, translate,
-               userprofiles)
+from . import (config, feedback, issueview, sections, settings, subscribers,
+               translate, userprofiles)
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
 from .render import MONTHS, collapse, esc, expand, mark_pressed
 from .sources import all_feeds, collect, fetch_source
-from .storage import (db, item_facts, meta_get, meta_set, outbox_keyboard,
-                      take_leftover)
-from .telegram import tg_answer_callback, tg_call, tg_edit_markup, tg_send
+from .storage import (db, item_facts, load_issue, meta_get, meta_set,
+                      outbox_keyboard, take_leftover)
+from .telegram import (tg_answer_callback, tg_call, tg_edit_markup,
+                       tg_edit_text, tg_send)
 
 #: сколько секунд держим long-poll соединение открытым
 POLL_TIMEOUT = 25
@@ -848,8 +850,41 @@ def handle_fold_callback(cb, chat_id, message, kind) -> None:
         log.debug("Разметку свернуть/развернуть не удалось: %s", exc)
 
 
+def handle_nav_callback(cb, chat_id, message, data) -> None:
+    """Переход по экранам выпуска: раздел, «← К разделам», «ещё».
+
+    Экран собирается заново из выпуска, сохранённого при отправке, и правит
+    то же самое сообщение: чат не растёт, а читатель ходит по разделам, как
+    по вкладкам. Отметки о нажатых 👍/👎/🔖 расставляются по базе — раскладка
+    их не помнит, а читателю важно видеть, что он уже оценил.
+    """
+    ident, name, arg = issueview.parse(data)
+    conn = db()
+    try:
+        issue = load_issue(conn, chat_id, ident)
+        verdicts, saved = feedback.press_state(conn, chat_id)
+    finally:
+        conn.close()
+    if not issue:
+        tg_answer_callback(cb.get("id"),
+                           "Этот выпуск уже не листается — он старый.")
+        return
+
+    text, keyboard = issueview.screen(issue, ident, name, arg, verdicts, saved)
+    # сначала правим сообщение, потом гасим «часики»: не вышло — скажем об
+    # этом в той же всплывашке, второй раз ответить на нажатие нельзя
+    try:
+        tg_edit_text(chat_id, message.get("message_id"), text, keyboard)
+    except RuntimeError as exc:
+        log.debug("Экран выпуска не открылся: %s", exc)
+        tg_answer_callback(cb.get("id"),
+                           "Не получилось открыть: выпуск слишком старый.")
+        return
+    tg_answer_callback(cb.get("id"))
+
+
 def handle_callback(cb, worker) -> None:
-    """Нажатие кнопки: оценка под карточкой или решение по заявке."""
+    """Нажатие кнопки: переход по выпуску, оценка новости или ответ по заявке."""
     message = cb.get("message") or {}
     chat_id = str((message.get("chat") or {}).get("id") or "")
     data = cb.get("data") or ""
@@ -858,6 +893,9 @@ def handle_callback(cb, worker) -> None:
         return
     if not is_allowed(chat_id):
         tg_answer_callback(cb.get("id"), "Это личный бот-дайджест.")
+        return
+    if data.startswith(issueview.NAV + ":"):
+        handle_nav_callback(cb, chat_id, message, data)
         return
     if not data.startswith("fb:") or data.count(":") < 2:
         tg_answer_callback(cb.get("id"))

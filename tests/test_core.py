@@ -338,13 +338,20 @@ class TestRender(unittest.TestCase):
         self.assertEqual(keyboard[1][0]["text"], "👍 Заголовок 1")
 
     def test_delivery_follows_style(self):
+        """Свёртка — про сплошную ленту: там ряды на весь выпуск сразу."""
         keyboard = render.feedback_keyboard(self.cards(4))
-        CFG["feedback_style"] = "rows"
+        saved = CFG["tg_view"], CFG["feedback_style"]
         try:
+            CFG["tg_view"] = "feed"
+            CFG["feedback_style"] = "rows"
+            self.assertEqual(render.for_delivery(keyboard), keyboard)
+            CFG["feedback_style"] = "compact"
+            self.assertEqual(len(render.for_delivery(keyboard)), 1)
+            # у выпуска экранами реакции и так разложены по разделам
+            CFG["tg_view"] = "screens"
             self.assertEqual(render.for_delivery(keyboard), keyboard)
         finally:
-            CFG["feedback_style"] = "compact"
-        self.assertEqual(len(render.for_delivery(keyboard)), 1)
+            CFG["tg_view"], CFG["feedback_style"] = saved
 
     def test_signup_keyboard_is_never_folded(self):
         keyboard = [[{"text": "✅ Пустить", "callback_data": "sub:ok:1"},
@@ -399,6 +406,8 @@ class TestSending(unittest.TestCase):
         from newsdigest import telegram
         keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n}]
                     for n in (1, 2, 3)]
+        self.addCleanup(CFG.update, {"tg_view": CFG["tg_view"]})
+        CFG["tg_view"] = "feed"                 # свёртка бывает только там
         telegram.tg_send("77", "выпуск", keyboard=keyboard)
         sent = self.payloads[0]["reply_markup"]["inline_keyboard"]
         self.assertEqual(len(sent), 1)

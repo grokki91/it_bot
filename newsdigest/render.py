@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """Сборка текста выпуска и подгонка под лимит Telegram.
 
-Выпуск — это одна лента: шапка с датой и временем суток, а под ней разделы
-друг за другом. Один блок без названия — это обычный дайджест по одной теме
-(так выглядел выпуск до версии 3.2), один блок с названием — ответ команды
-/news, много блоков — плановый выпуск по всем разделам.
+Здесь живут карточка новости и сплошная лента (`ND_TG_VIEW=feed`). По
+умолчанию выпуск уходит экранами — оглавление и разделы по кнопкам, — их
+собирает issueview.py из тех же карточек.
+
+Сплошная лента читается как одно целое: шапка с датой и временем суток, а под
+ней разделы друг за другом. Один блок без названия — это обычный дайджест по
+одной теме (так выглядел выпуск до версии 3.2), один блок с названием — ответ
+команды /news, много блоков — плановый выпуск по всем разделам.
 
 Читатель видит выпуск как единое целое, поэтому:
 
@@ -22,7 +26,8 @@ from __future__ import annotations
 import html as html_mod
 
 from . import feedback
-from .config import CFG, local_now, log
+from .config import CFG, local_now, log, to_local
+from .feedparse import parse_date
 from .profiles import emoji as topic_emoji
 from .profiles import title as topic_title
 from .rank import primary_of
@@ -66,10 +71,15 @@ def slot(now=None) -> tuple:
     return SLOTS[0][1], SLOTS[0][2]      # до пяти утра — всё ещё ночь
 
 
+def day(now=None) -> str:
+    """«16 августа» — дата словами."""
+    when = now or local_now()
+    return "%d %s" % (when.day, MONTHS[when.month - 1])
+
+
 def today(now=None) -> str:
     """«сегодня, 16 августа» — дата словами и явная отметка «сегодня»."""
-    day = now or local_now()
-    return "сегодня, %d %s" % (day.day, MONTHS[day.month - 1])
+    return "сегодня, " + day(now)
 
 
 def issue_info(blocks, scanned, note="") -> dict:
@@ -83,29 +93,60 @@ def issue_info(blocks, scanned, note="") -> dict:
             "sections": len(blocks),
             "topic": blocks[0][0] if len(blocks) == 1 else "",
             "scanned": scanned, "note": note,
-            "date": today(), "slot": slot()}
+            "date": today(), "day": day(), "slot": slot()}
 
 
-def card_block(card, group, score, trim):
-    """Одна новость: заголовок, суть, зачем это знать и ссылка."""
+def stamp(published) -> str:
+    """«20:48» — время новости в поясе читателя. Пусто, если даты в фиде нет."""
+    when = parse_date(str(published or ""))
+    return to_local(when).strftime("%H:%M") if when else ""
+
+
+def card_facts(card, group, score) -> dict:
+    """Карточка простыми полями — всё, что читатель о новости увидит.
+
+    Тройка (карточка, кластер, оценка) живёт ровно столько, сколько идёт
+    сборка выпуска. Экранам выпуска карточка нужна и через час — когда
+    читатель нажмёт «ИИ и технологии», — поэтому нужное складывается в
+    словарь: он переживает и запись в базу, и перезапуск бота.
+    """
     main = primary_of(group)
-    title = card.get("headline") or main["title"]
-    others = sorted({i["source_id"] for i in group} - {main["source_id"]})[:2]
-    also = " · " + esc(", ".join(others)) if others else ""
+    return {"hash": main["url_hash"],
+            "title": str(card.get("headline") or main["title"]),
+            "what": str(card.get("what") or main["summary"][:300]).strip(),
+            "why": str(card.get("why") or "").strip(),
+            "url": main["url"], "source": main["source_id"],
+            "also": sorted({i["source_id"] for i in group}
+                           - {main["source_id"]})[:2],
+            "score": float(score), "at": stamp(main.get("published_at"))}
+
+
+def card_text(facts, trim=0, when=False) -> str:
+    """Одна новость: заголовок, суть, зачем это знать и ссылка.
+
+    when — дописывать ли время новости. На экране раздела оно к месту (видно,
+    насколько свежее), в сплошной ленте только удлиняет строку.
+    """
+    also = " · " + esc(", ".join(facts.get("also") or ())) if facts.get("also") else ""
     link = '🔗 <a href="%s">%s</a>%s · ⭐ %.1f' % (
-        esc(main["url"]), esc(main["source_id"]), also, score)
-    head = "<b>%s</b>" % esc(title)
+        esc(facts["url"]), esc(facts["source"]), also, facts["score"])
+    if when and facts.get("at"):
+        link += " · " + esc(facts["at"])
+    head = "<b>%s</b>" % esc(facts["title"])
     if trim >= 2:
         return "%s\n%s" % (head, link)
     lines = [head]
-    what = str(card.get("what") or main["summary"][:300]).strip()
-    if what:
-        lines.append(esc(what))
-    why = str(card.get("why") or "").strip()
-    if why and trim == 0:
-        lines.append("💡 " + esc(why))
+    if facts["what"]:
+        lines.append(esc(facts["what"]))
+    if facts["why"] and trim == 0:
+        lines.append("💡 " + esc(facts["why"]))
     lines.append(link)
     return "\n".join(lines)
+
+
+def card_block(card, group, score, trim):
+    """Новость сплошной ленты — та же карточка, собранная на лету."""
+    return card_text(card_facts(card, group, score), trim)
 
 
 def counts(info) -> str:
@@ -398,8 +439,15 @@ def is_pressed(data, verdicts=None, saved=None) -> bool:
 
 
 def for_delivery(keyboard):
-    """Что показать под сообщением: свёрнутое или полное — по настройке."""
+    """Что показать под сообщением: свёрнутое или полное — по настройке.
+
+    Сворачивать есть смысл только в сплошной ленте: там под одним сообщением
+    лежат ряды на все новости выпуска сразу. У выпуска экранами реакции уже
+    разложены по разделам — прятать три ряда за кнопкой незачем.
+    """
     if not keyboard or str(CFG["feedback_style"]).lower() != "compact":
+        return keyboard
+    if str(CFG["tg_view"]).lower() != "feed":
         return keyboard
     return collapse(keyboard)
 
