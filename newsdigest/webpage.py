@@ -21,6 +21,11 @@
 выбрано ничего, полосы плашек нет вовсе — второй список разделов рядом с
 левым меню только мешал бы.
 
+На телефоне поиск свёрнут до лупы в шапке и разворачивается нажатием на неё:
+полем ввода пользуются раз в сеанс, а целый ряд шапки оно занимало всегда.
+Свёрнутый поиск уносит с собой и запрос: строка, ушедшая вместе с невидимым
+фильтром на ленте, хуже, чем её отсутствие.
+
 Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
 командуют на самом VPS, а страница — читалка.
 
@@ -143,6 +148,7 @@ header {
   background: none; border: 0; color: var(--dim); padding: 6px 8px;
   border-radius: 8px;
 }
+#find { display: none; }
 .tools { display: flex; gap: 8px; margin-left: auto; }
 .icon {
   position: relative; width: 42px; height: 42px; border-radius: 50%;
@@ -484,7 +490,14 @@ header {
 @media (max-width: 860px) {
   header { padding: 8px 12px calc(8px + env(safe-area-inset-top)); }
   .brand { width: auto; font-size: 16px; }
-  .search { order: 3; flex-basis: 100%; }
+  /* Строка поиска свёрнута до лупы в шапке и разворачивается по нажатию на
+     неё: ряд, который она занимала всегда, на телефоне дороже удобства
+     редкого запроса. */
+  #find { display: flex; }
+  .search { display: none; }
+  header.finding .search {
+    display: block; order: 3; flex-basis: 100%; margin-top: 8px;
+  }
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
            gap: 0; }
   .side { display: none; }
@@ -532,7 +545,7 @@ header {
 </div>
 
 <div id="app">
-  <header>
+  <header id="hdr">
     <div class="top">
       <div class="brand" id="brand" role="button" tabindex="0"
            title="На главную" onclick="home()"
@@ -544,11 +557,14 @@ header {
         <span class="lens">🔍</span>
         <input type="text" id="q" autocomplete="off" spellcheck="false"
                placeholder="Поиск по новостям, темам или источникам"
-               oninput="typed()">
+               oninput="typed()"
+               onkeydown="if (event.key === 'Escape') { hideSearch(); }">
         <button type="button" class="clear hide" id="clear"
                 onclick="clearSearch()" title="Очистить">✕</button>
       </form>
       <div class="tools">
+        <button class="icon" id="find" onclick="toggleSearch()"
+                title="Поиск">🔍</button>
         <button class="icon" id="star" onclick="go('liked')"
                 title="Избранное">⭐</button>
         <button class="icon" id="bell" onclick="go('alerts')"
@@ -608,7 +624,7 @@ header {
 /* Состояние страницы целиком: что показываем, где остановились в ленте и
    какую рассылку читатель видел последней. */
 var S = {
-  view: 'news', section: '', q: '', offset: 0, more: false,
+  view: 'news', section: '', q: '', offset: 0, more: false, finding: false,
   seen: '', unread: 0, hot: false, hello: true, started: false,
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
@@ -793,6 +809,7 @@ function home() {
   $('q').value = '';
   $('clear').className = 'clear hide';
   S.q = '';
+  S.finding = false;
   go('news');
 }
 
@@ -810,6 +827,7 @@ function paint() {
   $('who').className = 'icon' + (S.view === 'tools' ? ' on' : '');
   $('tune').textContent = S.filters.length
     ? '⚙ Фильтры · ' + S.filters.length : '⚙ Фильтры';
+  markSearch();
   drawMeta();
   drawNav();
   drawChips();
@@ -1266,7 +1284,36 @@ function find(text) {
   S.q = text;
   $('q').value = text;
   $('clear').className = 'clear';
+  S.finding = true;     /* запрос пришёл не из строки — покажем, что ищем */
   go('news', '');
+}
+
+/* На телефоне строка поиска свёрнута до лупы в шапке: разворачиваем по
+   нажатию и сворачиваем, когда искать больше нечего. На широком экране
+   строка стоит в шапке всегда — там это переключение ничего не меняет,
+   кроме самого запроса. */
+function toggleSearch() {
+  if (S.finding) { hideSearch(); } else { showSearch(); }
+}
+
+function showSearch() {
+  S.finding = true;
+  markSearch();
+  $('q').focus();
+  $('q').select();
+}
+
+/* Сворачиваем вместе с запросом: строка ушла, а лента осталась резаной по
+   невидимому слову — это худшее, что можно сделать с читателем. */
+function hideSearch() {
+  S.finding = false;
+  markSearch();
+  if (S.q || $('q').value) { clearSearch(); }
+}
+
+function markSearch() {
+  $('hdr').className = S.finding ? 'finding' : '';
+  $('find').className = 'icon' + (S.finding ? ' on' : '');
 }
 
 function search(event) {
