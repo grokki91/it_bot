@@ -126,6 +126,9 @@ header {
   font-weight: 700; width: 216px; flex: none;
 }
 .brand span { font-size: 22px; }
+.brand { cursor: pointer; user-select: none; }
+.brand:focus-visible { outline: 2px solid var(--dim); outline-offset: 4px;
+                       border-radius: 8px; }
 .search { flex: 1 1 240px; position: relative; min-width: 0; }
 .search input {
   background: var(--soft); border-color: transparent; padding-left: 40px;
@@ -531,7 +534,12 @@ header {
 <div id="app">
   <header>
     <div class="top">
-      <div class="brand"><span>📡</span> Дайджест</div>
+      <div class="brand" id="brand" role="button" tabindex="0"
+           title="На главную" onclick="home()"
+           onkeydown="if (event.key === 'Enter' || event.key === ' ')
+                      { event.preventDefault(); home(); }">
+        <span>📡</span> Дайджест
+      </div>
       <form class="search" onsubmit="return search(event)">
         <span class="lens">🔍</span>
         <input type="text" id="q" autocomplete="off" spellcheck="false"
@@ -778,6 +786,14 @@ function go(view, section) {
   paint();
   if (isNews(view)) { loadNews(true); }
   if (view === 'tools') { loadTools(); }
+}
+
+/* Клик по логотипу — возврат на главную: чистый поиск и общая лента. */
+function home() {
+  $('q').value = '';
+  $('clear').className = 'clear hide';
+  S.q = '';
+  go('news');
 }
 
 /* Что видно при этом виде: карточки ленты, уведомления или настройки. */
