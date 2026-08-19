@@ -6,9 +6,12 @@
 показывать, решает `web.py`.
 
 Страница устроена как новостной сайт: слева разделы, в центре лента карточек,
-справа справка о выпуске, популярные источники и темы. «Уведомления» — это
-список рассылок: когда пришла, сколько было новостей и пять главных ссылок.
-«Настройки» (человечек в шапке) — подписчики и значения настроек, только для
+справа справка о выпуске, популярные источники и темы. Левое меню — это только
+разделы: оно не прокручивается и всегда видно целиком, а если разделов больше,
+чем влезает в экран, список сам переходит на более плотный шаг. Всё служебное
+переехало в шапку: «Избранное» (звёздочка), «Уведомления» (колокольчик) — это
+список рассылок: когда пришла, сколько было новостей и пять главных ссылок, —
+и «Настройки» (человечек) — подписчики и значения настроек, только для
 чтения.
 
 Кнопка «Фильтры» над лентой закрепляет разделы: можно оставить один, можно
@@ -146,17 +149,45 @@ header {
   max-width: 1460px; margin: 0 auto; padding: 20px; align-items: start;
 }
 .side, .rail { position: sticky; top: 84px; }
-.side nav { display: flex; flex-direction: column; gap: 2px; }
-.side .gap { height: 22px; }
-.side .foot { color: var(--dim); font-size: 12px; padding: 18px 12px 0; }
+/* Меню разделов не прокручивается: список целиком стоит перед глазами, а если
+   разделов больше, чем влезает, страница сама переходит на более плотный шаг
+   (см. fitNav) — вместо полосы прокрутки, из-под которой раньше выглядывали
+   служебные кнопки. */
+.side {
+  --nav-gap: 2px; --item-pad: 10px 12px; --item-font: 15px; --item-ico: 17px;
+  --item-round: 12px; --foot-pad: 18px;
+  display: flex; flex-direction: column; overflow: hidden;
+  max-height: calc(100vh - 104px);
+}
+.side.d1 { --nav-gap: 2px; --item-pad: 8px 11px; --item-font: 14.5px;
+           --item-ico: 16px; --item-round: 11px; --foot-pad: 14px; }
+.side.d2 { --nav-gap: 1px; --item-pad: 6px 10px; --item-font: 14px;
+           --item-ico: 15px; --item-round: 10px; --foot-pad: 10px; }
+.side.d3 { --nav-gap: 1px; --item-pad: 4px 10px; --item-font: 13.5px;
+           --item-ico: 14px; --item-round: 9px; --foot-pad: 8px; }
+.side.d4 { --nav-gap: 0px; --item-pad: 2px 9px; --item-font: 13px;
+           --item-ico: 13px; --item-round: 8px; --foot-pad: 6px; }
+.side nav {
+  display: flex; flex-direction: column; gap: var(--nav-gap);
+  flex: 0 1 auto; min-height: 0; overflow: hidden;
+}
+.side .foot {
+  color: var(--dim); font-size: 12px; padding: var(--foot-pad) 12px 0;
+  flex: none;
+}
+.side.d4 .foot { display: none; }
+/* Крайний случай: разделов столько, что не спасает и самый плотный шаг.
+   Прокрутка тут — меньшее зло, чем разделы, срезанные краем экрана. */
+.side.roomy nav { overflow-y: auto; }
 .item {
-  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
-  border-radius: 12px; border: 0; background: none; width: 100%;
-  text-align: left; font-size: 15px; font-weight: 500;
+  display: flex; align-items: center; gap: 12px; padding: var(--item-pad);
+  border-radius: var(--item-round); border: 0; background: none; width: 100%;
+  text-align: left; font-size: var(--item-font); font-weight: 500;
 }
 .item:hover { background: var(--card); }
 .item.on { background: var(--tint); color: var(--accent); font-weight: 600; }
-.item .ico { font-size: 17px; width: 22px; text-align: center; flex: none; }
+.item .ico { font-size: var(--item-ico); width: 22px; text-align: center;
+             flex: none; }
 .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; }
 .item .num { color: var(--dim); font-size: 12px; font-weight: 500; }
@@ -417,6 +448,9 @@ header {
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
            gap: 0; }
   .side { display: none; }
+  /* «Избранное» на телефоне живёт в нижней панели — в шапке звезда только
+     теснила бы поиск */
+  #star { display: none; }
   .tabs { display: flex; }
   .head { flex-wrap: wrap; }
   .head h1 { font-size: 23px; }
@@ -470,6 +504,8 @@ header {
                 onclick="clearSearch()" title="Очистить">✕</button>
       </form>
       <div class="tools">
+        <button class="icon" id="star" onclick="go('liked')"
+                title="Избранное">⭐</button>
         <button class="icon" id="bell" onclick="go('alerts')"
                 title="Уведомления">🔔</button>
         <button class="icon" id="who" onclick="go('tools')"
@@ -481,8 +517,6 @@ header {
   <div class="shell">
     <aside class="side">
       <nav id="nav"></nav>
-      <div class="gap"></div>
-      <nav id="navAux"></nav>
       <div class="foot">© Дайджест<br>Все права защищены</div>
     </aside>
 
@@ -534,14 +568,6 @@ var S = {
   state: null, alerts: [], tools: null, menu: [], side: null,
   filters: [], pick: []
 };
-
-/* Пункты, которые не про разделы: избранное, уведомления и настройки. */
-var AUX = [
-  { id: 'liked',  icon: '⭐', name: 'Избранное' },
-  { id: 'alerts', icon: '🔔', name: 'Уведомления' },
-  { id: 'saved',  icon: '🔖', name: 'Сохранённые' },
-  { id: 'tools',  icon: '⚙',  name: 'Настройки' }
-];
 
 var TABS = [
   { id: 'news',   icon: '🏠', name: 'Главная' },
@@ -725,6 +751,7 @@ function paint() {
   $('alerts').className = S.view === 'alerts' ? '' : 'hide';
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
+  $('star').className = 'icon' + (S.view === 'liked' ? ' on' : '');
   $('bell').className = 'icon' + (S.view === 'alerts' ? ' on' : '');
   $('who').className = 'icon' + (S.view === 'tools' ? ' on' : '');
   $('tune').textContent = S.filters.length
@@ -764,15 +791,46 @@ function drawNav() {
     nav.appendChild(navItem(entry.emoji, entry.title, count, on,
                             function () { go('news', entry.id); }));
   });
-  var aux = $('navAux');
-  aux.innerHTML = '';
-  AUX.forEach(function (entry) {
-    aux.appendChild(navItem(entry.icon, entry.name,
-                            entry.id === 'alerts' ? S.unread : 0,
-                            S.view === entry.id,
-                            function () { go(entry.id); }));
-  });
+  fitNav();
 }
+
+/* Меню живёт без прокрутки: сколько бы разделов ни пришло, они должны
+   помещаться в экран целиком. Подбираем шаг списка от просторного к плотному
+   и останавливаемся на первом, при котором список перестаёт вылезать. Если не
+   влезает даже самый плотный — берём его: это всё, что можно ужать, не теряя
+   разделы. */
+var DENSITY = ['', 'd1', 'd2', 'd3', 'd4'];
+
+function fitNav() {
+  var side = document.querySelector('.side');
+  var nav = $('nav');
+  if (!side || !nav || !nav.children.length) { return; }
+  side.style.cssText = '';
+  /* на телефоне меню скрыто, а у скрытого узла высоты нет — мерить нечего */
+  if (!side.offsetParent && side.offsetHeight === 0) { return; }
+  for (var i = 0; i < DENSITY.length; i++) {
+    side.className = 'side' + (DENSITY[i] ? ' ' + DENSITY[i] : '');
+    /* лишний пиксель — запас на дробные высоты строк, иначе список ужимался
+       бы на ровном месте */
+    if (nav.scrollHeight <= nav.clientHeight + 1) { return; }
+  }
+  /* Не помог и самый плотный шаг: считаем строку прямо под оставшуюся высоту,
+     но не мельче читаемого. */
+  var row = Math.floor(nav.clientHeight / nav.children.length);
+  var font = Math.max(11, Math.min(13, row - 6));
+  var pad = Math.max(0, Math.floor((row - font * 1.45) / 2));
+  side.style.setProperty('--nav-gap', '0px');
+  side.style.setProperty('--item-pad', pad + 'px 8px');
+  side.style.setProperty('--item-font', font + 'px');
+  side.style.setProperty('--item-ico', Math.max(11, font - 1) + 'px');
+  if (nav.scrollHeight > nav.clientHeight + 1) { side.className = 'side d4 roomy'; }
+}
+
+var fitTimer = null;
+window.addEventListener('resize', function () {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fitNav, 120);
+});
 
 function navItem(icon, name, count, on, act) {
   var button = el('button', 'item' + (on ? ' on' : ''));
