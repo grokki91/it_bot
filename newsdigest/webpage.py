@@ -21,10 +21,13 @@
 выбрано ничего, полосы плашек нет вовсе — второй список разделов рядом с
 левым меню только мешал бы.
 
-На телефоне поиск свёрнут до лупы в шапке и разворачивается нажатием на неё:
-полем ввода пользуются раз в сеанс, а целый ряд шапки оно занимало всегда.
-Свёрнутый поиск уносит с собой и запрос: строка, ушедшая вместе с невидимым
-фильтром на ленте, хуже, чем её отсутствие.
+На телефоне левого меню нет, и разделы переехали в шапку строкой рубрик:
+они видны сразу, прокручиваются вбок, выбранная подсвечена и сама
+подтягивается к середине. Ряд под них освободил поиск — он свернулся до лупы
+рядом с колокольчиком и разворачивается нажатием на неё. Полем ввода
+пользуются раз в сеанс, разделами — постоянно, поэтому постоянный ряд достаётся
+разделам. Свёрнутый поиск уносит с собой и запрос: строка, ушедшая вместе с
+невидимым фильтром на ленте, хуже, чем её отсутствие.
 
 Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
 командуют на самом VPS, а страница — читалка.
@@ -147,6 +150,28 @@ header {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
   background: none; border: 0; color: var(--dim); padding: 6px 8px;
   border-radius: 8px;
+}
+/* Рубрики в шапке — телефонная замена левому меню: на узком экране места на
+   список разделов нет, а строка поиска занимала целый ряд ради того, чем
+   пользуются раз в сеанс. Поиск ушёл под лупу, ряд достался рубрикам: они
+   видны сразу, прокручиваются вбок, выбранная подсвечена, а правый край
+   растушёван — видно, что за ним ещё есть. На широком экране разделы стоят
+   слева, и ни строка рубрик, ни лупа не нужны. */
+.rubrics {
+  display: none; gap: 8px; overflow-x: auto; scrollbar-width: none;
+  max-width: 1460px; margin: 0 auto; padding: 10px 0 2px;
+  -webkit-mask-image: linear-gradient(to right, #000 92%, transparent);
+  mask-image: linear-gradient(to right, #000 92%, transparent);
+}
+.rubrics::-webkit-scrollbar { display: none; }
+.rubrics button {
+  flex: none; background: var(--soft); border: 1px solid transparent;
+  color: var(--ink); border-radius: 999px; padding: 6px 13px; font-size: 13.5px;
+  white-space: nowrap;
+}
+.rubrics button.on {
+  background: var(--accent); border-color: var(--accent);
+  color: var(--accent-ink); font-weight: 600;
 }
 #find { display: none; }
 .tools { display: flex; gap: 8px; margin-left: auto; }
@@ -491,13 +516,15 @@ header {
   header { padding: 8px 12px calc(8px + env(safe-area-inset-top)); }
   .brand { width: auto; font-size: 16px; }
   /* Строка поиска свёрнута до лупы в шапке и разворачивается по нажатию на
-     неё: ряд, который она занимала всегда, на телефоне дороже удобства
-     редкого запроса. */
+     неё; пока ищут — рубрики уступают строке свой ряд, чтобы шапка не
+     съедала пол-экрана. */
   #find { display: flex; }
   .search { display: none; }
   header.finding .search {
     display: block; order: 3; flex-basis: 100%; margin-top: 8px;
   }
+  .rubrics { display: flex; }
+  header.finding .rubrics { display: none; }
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
            gap: 0; }
   .side { display: none; }
@@ -573,6 +600,7 @@ header {
                 title="Настройки">👤</button>
       </div>
     </div>
+    <nav class="rubrics" id="rubrics"></nav>
   </header>
 
   <div class="shell">
@@ -830,6 +858,7 @@ function paint() {
   markSearch();
   drawMeta();
   drawNav();
+  drawRubrics();
   drawChips();
   drawTabs();
   if (S.view === 'alerts') { drawAlerts(); }
@@ -903,6 +932,44 @@ window.addEventListener('resize', function () {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(fitNav, 120);
 });
+
+/* Рубрики в шапке — то же меню разделов, что слева на широком экране:
+   на телефоне левого меню нет, а ходить за разделами в отдельный экран
+   читатель не станет. Выбранная рубрика подтягивается к середине строки —
+   иначе она осталась бы за краем, и было бы не видно, что вообще выбрано. */
+var rubricsDrawn = null;
+
+function drawRubrics() {
+  var box = $('rubrics');
+  var ids = S.menu.map(function (entry) { return entry.id; });
+  var sign = ids.length + ':' + ids.join(',') + ':'
+           + (S.view === 'news' ? '1' : '0') + S.section;
+  /* Перерисовка сбрасывает прокрутку строки вбок, а лента перечитывается и
+     сама («Показать ещё», пришедший выпуск): рисуем, только когда набор
+     рубрик или выбранная и правда поменялись. */
+  if (sign === rubricsDrawn) { return; }
+  rubricsDrawn = sign;
+  box.innerHTML = '';
+  var here = null;
+  S.menu.forEach(function (entry) {
+    var on = S.view === 'news' && S.section === entry.id;
+    /* «Главное» в строке рубрик — это «Все»: рядом с названиями разделов
+       читается как ещё один раздел, а это вся лента целиком */
+    var button = el('button', on ? 'on' : null, entry.id ? entry.title : 'Все');
+    button.type = 'button';
+    button.onclick = function () { go('news', entry.id); };
+    if (on) { here = button; }
+    box.appendChild(button);
+  });
+  if (here) { centerRubric(box, here); }
+}
+
+/* Подтянуть рубрику к середине строки, не трогая прокрутку самой страницы:
+   scrollIntoView увёл бы заодно и её. */
+function centerRubric(box, button) {
+  var shift = button.offsetLeft - (box.clientWidth - button.offsetWidth) / 2;
+  box.scrollLeft = Math.max(0, shift);
+}
 
 function navItem(icon, name, count, on, act) {
   var button = el('button', 'item' + (on ? ' on' : ''));
@@ -1041,6 +1108,7 @@ function loadNews(reset) {
       pruneFilters();
       drawChips();
       drawNav();
+      drawRubrics();
       drawRail();
       showChips();
     }
