@@ -94,23 +94,24 @@ class WebCase(unittest.TestCase):
 
     def delivered(self, url_hash, title, source_id, section="", score=0.0,
                   summary="", url="", minute=0, chat=OWNER, headline=None,
-                  hour=9):
+                  hour=9, breaking=0):
         """Новость, которая читателю уже уходила, — из неё и состоит лента.
 
         headline='' — запись, сделанная до появления карточки в истории:
         заголовок у неё только из фида, а сути нет вовсе. Час отправки нужен
         «Уведомлениям»: по разрыву во времени они и делят историю на рассылки.
+        breaking=1 — новость пришла вне расписания, по тревоге.
         """
         conn = storage.db()
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO sent(chat_id,url_hash,sig,title,url,"
-                "source_id,category,section,headline,summary,score,digest_date,"
-                "sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "source_id,category,section,headline,summary,score,breaking,"
+                "digest_date,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (chat, url_hash, "", title,
                  url or "https://example.com/%s" % url_hash, source_id, "media",
                  section, title if headline is None else headline, summary,
-                 score, "2026-08-17",
+                 score, breaking, "2026-08-17",
                  "2026-08-17T%02d:%02d:00+00:00" % (hour, minute)))
             conn.commit()
         finally:
@@ -262,6 +263,35 @@ class TestAlerts(WebCase):
         link = self.alerts()["alerts"][0]["links"][0]
         self.assertEqual(link["url"], "")
         self.assertEqual(link["source"], "ria")
+
+    def test_urgent_mailing_is_marked(self):
+        """Срочное приходит одной новостью — по ней уведомление и красится."""
+        self.delivered("s1", "Землетрясение у берегов Японии", "ria",
+                       "incidents", 9.1, hour=14, breaking=1)
+        self.login()
+        mail = self.alerts()["alerts"][0]
+        self.assertTrue(mail["breaking"])
+        self.assertTrue(mail["links"][0]["breaking"])
+
+    def test_ordinary_mailing_is_not_marked(self):
+        self.digest(9, ["c1", "c2"])
+        self.login()
+        mail = self.alerts()["alerts"][0]
+        self.assertFalse(mail["breaking"])
+        self.assertFalse(any(link["breaking"] for link in mail["links"]))
+
+    def test_urgent_inside_a_digest_marks_the_whole_mailing(self):
+        """Срочное может лечь в историю рядом с плановым выпуском: тогда
+        помечено и уведомление, и та самая ссылка внутри него."""
+        self.digest(9, ["d1", "d2"])
+        self.delivered("d3", "Землетрясение", "ria", "incidents", 9.5,
+                       url="https://ria.ru/d3", hour=9, minute=2, breaking=1)
+        self.login()
+        mail = self.alerts()["alerts"][0]
+        self.assertEqual(mail["count"], 3)
+        self.assertTrue(mail["breaking"])
+        hot = [link["title"] for link in mail["links"] if link["breaking"]]
+        self.assertEqual(hot, ["Землетрясение"])
 
     def test_bot_messages_are_not_shown_anymore(self):
         """Переписка с ботом на странице больше не живёт — только рассылки."""
@@ -700,6 +730,47 @@ class TestNews(WebCase):
         conn.close()
         self.login()
         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
+
+
+class TestUrgent(WebCase):
+    """Срочное в ленте: карточка должна отличаться от плановой новости."""
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.delivered("u1", "Землетрясение у берегов Японии", "ria",
+                       "incidents", 9.1, "Магнитуда 7,4.",
+                       "https://ria.ru/quake", minute=1, breaking=1)
+        self.delivered("p1", "Apple представила новые MacBook", "theverge",
+                       "hardware", 6.2, "Новый чип.",
+                       "https://www.theverge.com/mac", minute=2)
+
+    def news(self, params=""):
+        return self.ask("/api/news" + params)[1]
+
+    def test_urgent_card_is_marked(self):
+        self.login()
+        cards = {i["hash"]: i for i in self.news()["items"]}
+        self.assertTrue(cards["u1"]["breaking"])
+
+    def test_ordinary_card_is_not_marked(self):
+        self.login()
+        cards = {i["hash"]: i for i in self.news()["items"]}
+        self.assertFalse(cards["p1"]["breaking"])
+
+    def test_mark_survives_in_bookmarks(self):
+        """Закладка и оценка тянут строку из истории — метка тянется вместе."""
+        self.login()
+        self.ask("/api/react", {"data": "fb:save:u1"})
+        self.assertTrue(self.news("?view=saved")["items"][0]["breaking"])
+
+    def test_mark_survives_in_favourites(self):
+        self.login()
+        self.ask("/api/react", {"data": "fb:up:u1"})
+        self.assertTrue(self.news("?view=liked")["items"][0]["breaking"])
+
+    def test_old_row_without_the_column_is_ordinary(self):
+        """История, собранная до появления метки, срочной не становится."""
+        self.assertFalse(newsfeed.urgent({"title": "Без колонки"}))
 
 
 class TestNewsLanguage(WebCase):

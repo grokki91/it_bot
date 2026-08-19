@@ -83,7 +83,7 @@ SOURCES = {
                n.headline AS headline, n.summary AS summary,
                COALESCE(i.summary, '') AS lead,
                n.url AS url, n.source_id AS source_id, n.section AS section,
-               n.score AS score, n.sent_at AS at
+               n.score AS score, n.breaking AS breaking, n.sent_at AS at
           FROM sent n
           LEFT JOIN items i ON i.url_hash = n.url_hash
          WHERE n.chat_id = ?
@@ -98,7 +98,8 @@ SOURCES = {
                CASE WHEN b.source_id != '' THEN b.source_id
                     ELSE COALESCE(n.source_id, '') END AS source_id,
                COALESCE(n.section, '') AS section,
-               COALESCE(n.score, 0) AS score, b.at AS at
+               COALESCE(n.score, 0) AS score,
+               COALESCE(n.breaking, 0) AS breaking, b.at AS at
           FROM saved b
           LEFT JOIN sent n ON n.chat_id = b.chat_id AND n.url_hash = b.url_hash
           LEFT JOIN items i ON i.url_hash = b.url_hash
@@ -113,7 +114,8 @@ SOURCES = {
                CASE WHEN f.source_id != '' THEN f.source_id
                     ELSE COALESCE(n.source_id, '') END AS source_id,
                COALESCE(n.section, '') AS section,
-               COALESCE(n.score, 0) AS score, f.at AS at
+               COALESCE(n.score, 0) AS score,
+               COALESCE(n.breaking, 0) AS breaking, f.at AS at
           FROM feedback f
           LEFT JOIN sent n ON n.chat_id = f.chat_id AND n.url_hash = f.url_hash
           LEFT JOIN items i ON i.url_hash = f.url_hash
@@ -168,6 +170,15 @@ def shorten(text: str, limit: int = LEAD) -> str:
         return text
     cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
     return cut.rstrip(" ,.:;—-·") + "…"
+
+
+def urgent(row) -> bool:
+    """Пришла ли новость как срочная — вне расписания, по тревоге.
+
+    Метку ставит `breaking.deliver`; у записей, сделанных до её появления,
+    колонки может не быть вовсе — такие считаем обычными.
+    """
+    return bool(column(row, "breaking", 0))
 
 
 def body(row) -> str:
@@ -334,6 +345,7 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
             "tone": tone(topic),
             "at": stamp(row["at"], now),
             "score": round(float(row["score"] or 0), 1),
+            "breaking": urgent(row),
             "saved": row["url_hash"] in saved,
             "verdict": verdicts.get(row["url_hash"], ""),
         })
@@ -479,6 +491,7 @@ def link_of(row, smap) -> dict:
             "url": url,
             "source": domain(url) or column(row, "source_id") or "источник",
             "score": round(float(column(row, "score", 0) or 0), 1),
+            "breaking": urgent(row),
             "emoji": topic_emoji(topic) if topic else "📰"}
 
 
@@ -491,6 +504,7 @@ def mailing(group, smap, now) -> dict:
     return {"id": str(rows[0]["sent_at"]),
             "when": spoken_date(local, now),
             "time": local.strftime("%H:%M"),
+            "breaking": any(urgent(row) for row in rows),
             "count": len(rows),
             "sections": len([topic for topic in topics if topic]),
             "links": [link_of(row, smap) for row in best[:MAILING_LINKS]]}
@@ -506,7 +520,8 @@ def mailings(conn, chat_id, limit=MAILINGS) -> list:
     """
     rows = list(conn.execute(
         "SELECT url_hash, title, headline, url, source_id, section, score, "
-        "sent_at FROM sent WHERE chat_id = ? ORDER BY sent_at DESC LIMIT ?",
+        "breaking, sent_at FROM sent WHERE chat_id = ? "
+        "ORDER BY sent_at DESC LIMIT ?",
         (str(chat_id), MAILING_ROWS)))
     groups = []
     for row in rows:

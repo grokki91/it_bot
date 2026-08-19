@@ -336,10 +336,14 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
 
     # раздел у срочного свой не считается: кандидаты берутся сразу по всем
     # разделам читателя, поэтому вывеску определяем по источнику
+    # breaking=1 — единственное, чем эта запись отличается от плановой.
+    # По ней страница и рисует срочное иначе: обводка у карточки, молния в
+    # уведомлениях. В самом сообщении пометка есть (`render.breaking_card`),
+    # но история про текст сообщения ничего не знает
     conn.execute(
         "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,digest_date,"
-        "sent_at,source_id,category,section,headline,summary,score) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "sent_at,source_id,category,section,headline,summary,score,breaking) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
         (chat_id, main["url_hash"], main["sig"], main["title"], main["url"],
          local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"], category,
          sections.by_source(main["source_id"]),

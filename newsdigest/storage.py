@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sent (
     headline    TEXT NOT NULL DEFAULT '',
     summary     TEXT NOT NULL DEFAULT '',
     score       REAL NOT NULL DEFAULT 0,
+    breaking    INTEGER NOT NULL DEFAULT 0,
     digest_date TEXT NOT NULL,
     sent_at     TEXT NOT NULL,
     PRIMARY KEY (chat_id, url_hash)
@@ -216,6 +217,7 @@ def upgrade(conn) -> None:
     add_outbox_message_id(conn)
     add_digest_slot(conn)
     add_news_card(conn)
+    add_breaking_mark(conn)
 
 
 def add_news_card(conn) -> None:
@@ -234,6 +236,23 @@ def add_news_card(conn) -> None:
     ensure_column(conn, "sent", "headline", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "sent", "summary", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "sent", "score", "REAL NOT NULL DEFAULT 0")
+
+
+def add_breaking_mark(conn) -> None:
+    """Пометка «срочное» прямо в истории (3.6, срочное видно на странице).
+
+    Раньше срочная новость отличалась от плановой только тем, что пришла
+    одна и не в свой час: в самом сообщении стояло «⚡ Срочно», а в истории
+    от этого не оставалось ничего. Странице этого мало — по ленте не
+    отличить срочное от обычного, — поэтому метка переезжает в базу.
+
+    Старые записи остаются с нулём: какая из них приходила вне расписания,
+    достоверно уже не сказать, а угадывать по времени отправки значит
+    развесить молнии не там.
+    """
+    if not table_exists(conn, "sent"):
+        return                      # новая база: колонка придёт из SCHEMA
+    ensure_column(conn, "sent", "breaking", "INTEGER NOT NULL DEFAULT 0")
 
 
 def add_digest_slot(conn) -> None:

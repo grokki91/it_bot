@@ -29,6 +29,14 @@
 три строки и разворачивается нажатием: так карточки одного роста и на экране
 их помещается больше одной.
 
+Срочное (см. `breaking.py`) в ленте видно до чтения: карточка стоит в красной
+рамке и с плашкой «⚡ Срочно» над заголовком. Цветом одним дело не обходится —
+на чёрно-белом экране и при дальтонизме он не читается, поэтому рядом с рамкой
+всегда стоит слово. То же и в «Уведомлениях»: рамка у самого уведомления,
+«⚡ Срочно» вместо «📬 Выпуск» в заголовке, молния у ссылки, если срочная
+новость легла в историю рядом с плановым выпуском, и ⚡ вместо счётчика на
+колокольчике, пока непрочитанное срочное есть.
+
 Картинок к новостям у нас нет и быть не может: в RSS они попадаются далеко не
 всегда, а грузить их со сторонних сайтов значит показать этим сайтам, кто и
 когда читает вашу ленту (и продырявить CSP, которая сейчас не пускает наружу
@@ -49,6 +57,7 @@ PAGE = """<!doctype html>
   --bg: #f1f3f7; --card: #ffffff; --ink: #14161b; --dim: #6b7280;
   --line: #e5e7eb; --soft: #f3f5f9; --accent: #2f6fed; --accent-ink: #ffffff;
   --tint: #e8effd; --warn: #b45309; --star: #f5a524;
+  --hot: #e5484d; --hot-tint: #fff1f1; --hot-ring: rgba(229, 72, 77, .16);
   --shadow: 0 1px 2px rgba(16, 24, 40, .06);
   --tone-l: 40%; --tone-s: 68%;
 }
@@ -57,6 +66,7 @@ PAGE = """<!doctype html>
     --bg: #101216; --card: #1a1d23; --ink: #e8eaee; --dim: #98a0ac;
     --line: #272b33; --soft: #22262e; --accent: #5b8dff; --accent-ink: #0c0e12;
     --tint: #1c2740; --warn: #fbbf24; --star: #fbbf24;
+    --hot: #ff6b6f; --hot-tint: #241417; --hot-ring: rgba(255, 107, 111, .22);
     --shadow: none;
     --tone-l: 68%; --tone-s: 62%;
   }
@@ -283,6 +293,18 @@ header {
   font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
 }
 .news .star { color: var(--star); }
+/* срочное видно ещё до чтения: карточка в красной рамке с мягким ободком и
+   чуть тёплой подложкой. Плашка раздела при этом остаётся своего цвета —
+   «срочно» отвечает на вопрос «когда пришло», а не «о чём» */
+.news.hot {
+  border-color: var(--hot);
+  box-shadow: 0 0 0 3px var(--hot-ring), var(--shadow);
+  background: var(--hot-tint);
+}
+.news .hot-tag {
+  color: var(--hot); font-weight: 800; text-transform: uppercase;
+  letter-spacing: .04em; white-space: nowrap;
+}
 /* заголовок нередко начинается с хеша коммита — неразрывного слова длиннее
    экрана. Без переноса такое слово распирает карточку, а вместе с ней и всю
    страницу: на телефоне появлялась горизонтальная прокрутка */
@@ -389,6 +411,21 @@ header {
 .mail li span { min-width: 0; overflow-wrap: anywhere; }
 .mail .from { color: var(--dim); font-size: 13px; white-space: nowrap; }
 .mail .star { color: var(--star); white-space: nowrap; }
+/* срочное и в уведомлениях: та же рамка, что у карточки, и молния у самой
+   строки — в общем выпуске срочная новость идёт вперемешку с остальными */
+.mail.hot {
+  border-color: var(--hot);
+  box-shadow: 0 0 0 3px var(--hot-ring), var(--shadow);
+  background: var(--hot-tint);
+}
+.mail h2 .hot-tag {
+  color: var(--hot); font-size: 13px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+}
+.mail li .bolt { color: var(--hot); font-weight: 700; white-space: nowrap; }
+/* колокольчик: пока непрочитанное срочное — на значке молния вместо счёта.
+   Число тут и так небольшое, а «сколько» рядом со «срочно» никого не спасает */
+.icon .badge.hot, .tabs button .badge.hot { background: var(--hot); }
 
 /* --------------------------------------------------------------- настройки */
 #panel { display: flex; flex-direction: column; gap: 12px; }
@@ -564,7 +601,8 @@ header {
    какую рассылку читатель видел последней. */
 var S = {
   view: 'news', section: '', q: '', offset: 0, more: false,
-  seen: '', unread: 0, hello: true, started: false, timer: null, typing: null,
+  seen: '', unread: 0, hot: false, hello: true, started: false,
+  timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
   filters: [], pick: []
 };
@@ -852,14 +890,21 @@ function drawTabs() {
     button.appendChild(el('b', null, tab.icon));
     button.appendChild(el('span', null, tab.name));
     if (tab.id === 'alerts' && S.unread) {
-      button.appendChild(el('span', 'badge', S.unread));
+      button.appendChild(alertBadge());
     }
     button.onclick = function () { go(tab.id); };
     box.appendChild(button);
   });
   var bell = $('bell');
   bell.innerHTML = '🔔';
-  if (S.unread) { bell.appendChild(el('span', 'badge', S.unread)); }
+  if (S.unread) { bell.appendChild(alertBadge()); }
+}
+
+/* Значок непрочитанного. Обычно это счётчик рассылок, но если среди них есть
+   срочное — вместо числа молния: важно не «сколько пришло», а «что». */
+function alertBadge() {
+  return S.hot ? el('span', 'badge hot', '⚡')
+               : el('span', 'badge', S.unread);
 }
 
 /* Полоса плашек видна, только когда фильтры есть и работают. Меню ещё не
@@ -1020,12 +1065,18 @@ function drawEmpty() {
 }
 
 function drawCard(item) {
-  var card = el('article', 'news');
+  var card = el('article', 'news' + (item.breaking ? ' hot' : ''));
   card.id = 'n' + item.hash;
   card.style.setProperty('--h', String(item.tone));
 
   var text = el('div', 'text');
   var line = el('div', 'line');
+  /* срочное первым делом: рамка бросается в глаза, но словом надёжнее —
+     на чёрно-белом экране и при дальтонизме цвет не читается вовсе */
+  if (item.breaking) {
+    line.appendChild(el('span', 'hot-tag', '⚡ Срочно'));
+    line.appendChild(el('span', null, '·'));
+  }
   line.appendChild(el('span', 'tag', item.emoji + ' ' + item.label));
   if (item.at) {
     line.appendChild(el('span', null, '·'));
@@ -1248,9 +1299,16 @@ function drawAlerts() {
 }
 
 function drawMail(mail) {
-  var box = el('div', 'mail');
+  var box = el('div', 'mail' + (mail.breaking ? ' hot' : ''));
   var head = el('h2');
-  head.appendChild(el('span', null, '📬 Выпуск'));
+  /* срочное приходит одной новостью и вне расписания — такое и не выпуск
+     вовсе. Если же оно попало в общий выпуск, заголовок остаётся выпуском,
+     а молния встаёт рядом плашкой */
+  var alone = mail.breaking && mail.count === 1;
+  head.appendChild(el('span', null, alone ? '⚡ Срочно' : '📬 Выпуск'));
+  if (mail.breaking && !alone) {
+    head.appendChild(el('span', 'hot-tag', '⚡ Срочно'));
+  }
   head.appendChild(el('span', 'at', mail.when + ', ' + mail.time));
   box.appendChild(head);
 
@@ -1264,16 +1322,23 @@ function drawMail(mail) {
 
   if (mail.links.length) {
     var list = el('ul');
-    mail.links.forEach(function (link) { list.appendChild(drawLink(link)); });
+    /* в одиночном срочном молния уже стоит в заголовке — в единственной
+       строке под ним она только повторяется */
+    mail.links.forEach(function (link) {
+      list.appendChild(drawLink(link, !alone));
+    });
     box.appendChild(list);
   }
   return box;
 }
 
-function drawLink(link) {
+function drawLink(link, mark) {
   var row = el('li');
   row.appendChild(el('span', 'ico', link.emoji));
   var text = el('span');
+  if (link.breaking && mark) {
+    text.appendChild(el('span', 'bolt', '⚡ Срочно '));
+  }
   if (link.url) {
     var out = el('a', null, link.title);
     out.href = link.url;
@@ -1352,12 +1417,14 @@ function applyAlerts(data) {
   /* непрочитанное — это рассылки, пришедшие после последней увиденной.
      При заходе считать нечего: всё, что уже лежит, читатель видел раньше */
   S.unread = 0;
+  S.hot = false;
   if (S.hello) {
     S.hello = false;
     seen();
   } else {
     for (var i = 0; i < S.alerts.length && S.alerts[i].id !== S.seen; i++) {
       S.unread++;
+      if (S.alerts[i].breaking) { S.hot = true; }
     }
   }
   if (S.view === 'alerts') { seen(); drawAlerts(); }
@@ -1371,6 +1438,7 @@ function applyAlerts(data) {
 function seen() {
   S.seen = S.alerts.length ? S.alerts[0].id : S.seen;
   S.unread = 0;
+  S.hot = false;
 }
 
 /* Отметку о нажатии ставим в карточке ленты — там, где кнопки и живут. */

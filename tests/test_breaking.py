@@ -148,6 +148,17 @@ class TestCheck(BreakingCase):
         finally:
             conn.close()
 
+    def test_history_remembers_that_it_was_urgent(self):
+        """Метка нужна странице: по ней лента и уведомления рисуют срочное."""
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        breaking.check(chat_id=CHAT)
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT breaking FROM sent").fetchone()
+            self.assertEqual(row["breaking"], 1)
+        finally:
+            conn.close()
+
     def test_single_source_is_not_breaking(self):
         self.fill(["theverge"])
         self.assertEqual(breaking.check(chat_id=CHAT), 0)

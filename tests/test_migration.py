@@ -104,6 +104,17 @@ class TestUpgradeFrom20(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_history_gets_the_urgent_mark(self):
+        """Метка «срочное» появляется нулём: какая из старых новостей приходила
+        вне расписания, задним числом уже не сказать."""
+        conn = storage.db()
+        try:
+            row = conn.execute(
+                "SELECT * FROM sent WHERE url_hash='h0'").fetchone()
+            self.assertEqual(row["breaking"], 0)
+        finally:
+            conn.close()
+
     def test_migration_is_idempotent(self):
         storage.db().close()
         conn = storage.db()
