@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import candidates, config, sections, subscribers, userprofiles
+from . import candidates, config, sections, subscribers, trust, userprofiles
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
@@ -366,6 +366,119 @@ def cmd_web(args):
     return 0
 
 
+def bar(share, width=24) -> str:
+    """Полоска для доли 0..1 — глазами быстрее, чем по цифрам."""
+    filled = int(round(max(0.0, min(share, 1.0)) * width))
+    return "█" * filled + "·" * (width - filled)
+
+
+def cmd_report(args):
+    """Что бот делал за период: разделы, источники, вкусы, срочное.
+
+    `status` отвечает на вопрос «работает ли оно», а этот отчёт — на вопрос
+    «стало лучше или хуже». Без него любая правка порогов и весов остаётся
+    гаданием: в `runs` цифры копятся, но никто их не сводит.
+    """
+    days = max(1, int(getattr(args, "days", 7) or 7))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = db()
+    try:
+        print("=== Отчёт за %d дн. ===\n" % days)
+        report_sections(conn, since)
+        report_sources(conn, since)
+        report_routing(conn)
+        report_taste(conn, since)
+        breaking_report(conn, since)
+    finally:
+        conn.close()
+    return 0
+
+
+def report_sections(conn, since) -> None:
+    """Сколько новостей каждый раздел дал и как их оценивала модель."""
+    rows = list(conn.execute(
+        "SELECT section, COUNT(*) AS n, AVG(score) AS avg_score FROM sent "
+        "WHERE sent_at > ? GROUP BY section ORDER BY n DESC", (since,)))
+    total = sum(row["n"] for row in rows)
+    print("--- Разделы (всего новостей: %d) ---" % total)
+    if not total:
+        print("  выпусков не было\n")
+        return
+    for row in rows:
+        name = topic_title(row["section"]) if row["section"] else "без раздела"
+        print("  %-22s %4d  %s  ср. оценка %.1f"
+              % (name[:22], row["n"], bar(row["n"] / float(total)),
+                 row["avg_score"] or 0))
+
+    # раздел, который есть в подборке, но новостей не дал, — это либо сухие
+    # источники, либо слишком узкая маршрутизация. И то и другое надо видеть
+    seen = {row["section"] for row in rows}
+    silent = [t for t in sections.plan() if t not in seen]
+    if silent:
+        print("  Ни одной новости за период: %s"
+              % ", ".join(topic_title(t) for t in silent))
+    print()
+
+
+def report_sources(conn, since) -> None:
+    """Кто наполняет выпуск. Перекос в одного издателя виден сразу."""
+    rows = list(conn.execute(
+        "SELECT source_id, COUNT(*) AS n FROM sent WHERE sent_at > ? "
+        "GROUP BY source_id ORDER BY n DESC LIMIT 12", (since,)))
+    total = conn.execute("SELECT COUNT(*) c FROM sent WHERE sent_at > ?",
+                         (since,)).fetchone()["c"]
+    if not total:
+        return
+    print("--- Источники в выпуске ---")
+    for row in rows:
+        print("  %-22s %4d  %s  доверие %.2f"
+              % (row["source_id"][:22], row["n"], bar(row["n"] / float(total)),
+                 trust.trust(row["source_id"])))
+    heavy = rows[0] if rows else None
+    if heavy and heavy["n"] > total * 0.25:
+        print("  %s занимает больше четверти выпуска — стоит понизить его вес"
+              " или добавить конкурентов в раздел" % heavy["source_id"])
+    print()
+
+
+def report_routing(conn) -> None:
+    """Насколько маршрутизация справляется: доля материалов со своим разделом."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, SUM(CASE WHEN section != '' THEN 1 ELSE 0 END) "
+        "AS routed FROM items").fetchone()
+    total = row["n"] or 0
+    print("--- Маршрутизация по разделам ---")
+    if not total:
+        print("  материалов в базе нет\n")
+        return
+    routed = row["routed"] or 0
+    print("  раздел определён: %d из %d  %s  %.0f%%"
+          % (routed, total, bar(routed / float(total)),
+             100.0 * routed / total))
+    if routed < total * 0.8:
+        print("  Больше пятой части материалов раскладывается по источнику, а не"
+              " по смыслу.")
+        print("  Пополните словарь в newsdigest/classify.py или поднимите"
+              " classify_max.")
+    print()
+
+
+def report_taste(conn, since) -> None:
+    """👍/👎 — единственный сигнал о вкусах. Молчание тоже сигнал."""
+    row = conn.execute(
+        "SELECT SUM(CASE WHEN verdict='up' THEN 1 ELSE 0 END) AS up, "
+        "SUM(CASE WHEN verdict='down' THEN 1 ELSE 0 END) AS down "
+        "FROM feedback WHERE at > ?", (since,)).fetchone()
+    up, down = row["up"] or 0, row["down"] or 0
+    print("--- Обратная связь ---")
+    if not up and not down:
+        print("  реакций нет: отбор идёт без поправки на вкусы\n")
+        return
+    print("  👍 %d   👎 %d   доля полезного: %.0f%%"
+          % (up, down, 100.0 * up / (up + down)))
+    print()
+
+
 def breaking_report(conn, since) -> None:
     """Что было со срочным за неделю.
 
@@ -604,6 +717,10 @@ def build_parser():
     web.add_argument("--port", type=int, default=0, help="по умолчанию ND_WEB_PORT")
     web.set_defaults(func=cmd_web)
 
+    report = sub.add_parser("report", help="что бот делал за период: разделы, "
+                                          "источники, вкусы, срочное")
+    report.add_argument("--days", type=int, default=7, help="за сколько дней (7)")
+    report.set_defaults(func=cmd_report)
     sub.add_parser("status", help="прогоны, расход, здоровье источников").set_defaults(
         func=cmd_status)
     sub.add_parser("service", help="напечатать unit-файл systemd").set_defaults(
