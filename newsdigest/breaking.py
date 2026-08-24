@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, subscribers, translate
+from . import config, sections, subscribers, translate, trust
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .llm import LLMError, llm_cost, rank_clusters, summarize
@@ -80,10 +80,31 @@ def count_sent(conn, chat_id="") -> None:
 
 
 def is_hot(group) -> bool:
-    """Первый фильтр — дешёвый и без модели: консенсус или взрыв на HN."""
-    sources = {i["source_id"] for i in group}
+    """Первый фильтр — дешёвый и без модели: консенсус или взрыв на HN.
+
+    Подтверждения считаются по ИЗДАТЕЛЯМ, а не по фидам. Одна редакция
+    держит по нескольку лент (Guardian — шесть, ScienceDaily — пять), и статья,
+    попавшая сразу в две из них, раньше выглядела как два независимых сайта.
+
+    Сколько подтверждений нужно, зависит от того, кто подтверждает:
+      * два мировых агентства — этого достаточно, они и есть эталон
+        подтверждения (`breaking_min_wires`);
+      * обычный набор — `breaking_min_sources` издателей, и хотя бы один
+        первоисточник;
+      * раздел без первоисточников вообще (спорт, кино — там нет ни одного
+        tier-1) иначе не дал бы срочного НИКОГДА, поэтому для него работает
+        более широкий консенсус без требования tier-1
+        (`breaking_min_wide`).
+    """
+    names = trust.publishers(group)
+    wires = {trust.publisher(i["source_id"]) for i in group
+             if trust.kind(i["source_id"]) == "wire"}
+    if len(wires) >= CFG["breaking_min_wires"]:
+        return True
     has_primary = any(i["tier"] == 1 for i in group)
-    if len(sources) >= CFG["breaking_min_sources"] and has_primary:
+    if len(names) >= CFG["breaking_min_sources"] and has_primary:
+        return True
+    if len(names) >= CFG["breaking_min_wide"]:
         return True
     return max(i["social"] for i in group) >= CFG["breaking_social"]
 

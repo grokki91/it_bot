@@ -31,6 +31,7 @@ import json
 import re
 import urllib.parse
 
+from . import trust
 from .config import PROFILES_FILE, log
 from .profiles import BUILTIN, PROFILES
 
@@ -126,6 +127,7 @@ def apply() -> dict:
 
     PROFILES.clear()
     PROFILES.update(merged)
+    trust.reset()          # реестр источников разбирает PROFILES и кэширует разбор
     return PROFILES
 
 

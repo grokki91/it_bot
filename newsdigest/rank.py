@@ -6,6 +6,7 @@ import math
 import urllib.parse
 from datetime import datetime, timezone
 
+from . import trust
 from .config import CFG, WEIGHTS
 from .feedparse import parse_date
 from .textutil import sim_sets
@@ -36,14 +37,19 @@ def cluster(items, threshold):
 
 
 def primary_of(group):
-    """Первоисточник важнее агрегатора: сначала tier, потом дата."""
-    return sorted(group, key=lambda i: (i["tier"], i["published_at"] or ""))[0]
+    """Лицо кластера: сначала tier, потом дата.
+
+    Пресс-релиз вендора и госагентство уступают тем, кто эту новость проверял:
+    ссылка в карточке должна вести на разбор, а не на анонс. Если проверять
+    было некому, порядок прежний — tier, дата.
+    """
+    return sorted(group, key=lambda i: (trust.demoted(i, group), i["tier"],
+                                        i["published_at"] or ""))[0]
 
 
 def prescore(group) -> float:
     """Детерминированный балл: дёшево, воспроизводимо, легко отлаживается."""
     main = primary_of(group)
-    tier = {1: 1.0, 2: 0.6, 3: 0.3}.get(main["tier"], 0.3)
     domains = {urllib.parse.urlparse(i["url"]).netloc for i in group}
     corroboration = min(math.log(len(domains) + 1, 2) / 2.5, 1.0)
     social = max(i["social"] for i in group)
@@ -52,7 +58,8 @@ def prescore(group) -> float:
     if published:
         age_h = (datetime.now(timezone.utc) - published).total_seconds() / 3600
         freshness = 0.5 ** (max(age_h, 0) / 24.0)
-    return (WEIGHTS["source_tier"] * tier + WEIGHTS["corroboration"] * corroboration
+    return (WEIGHTS["trust"] * trust.trust(main["source_id"])
+            + WEIGHTS["corroboration"] * corroboration
             + WEIGHTS["social"] * social + WEIGHTS["freshness"] * freshness)
 
 
