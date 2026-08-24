@@ -378,9 +378,17 @@ def cmd_breaking(ctx):
     skip = breaking.why_not(ctx.conn, sub, chat_id)
 
     def job():
-        if not breaking.check(chat_id=chat_id, sub=sub):
+        if breaking.check(chat_id=chat_id, sub=sub):
+            return
+        # молнии нет — но что-то могло уйти в очередь важного, и тогда молчать
+        # неправильно: читатель нажал кнопку и ждёт ответа
+        queued = len(breaking.pending_alerts(ctx.conn, chat_id))
+        if queued:
+            tg_send(chat_id, "🔔 Молнии нет, но %d важн(ая/ых) новост(ь/и) уже "
+                             "в очереди — придут сводкой." % queued)
+        else:
             tg_send(chat_id, "🕊 Ничего срочного: подтверждённых событий выше "
-                             "порога %.1f нет." % CFG["breaking_min_score"])
+                             "порога %.1f нет." % CFG["breaking_alert_score"])
 
     if skip:
         return "Срочные сейчас не ищу — %s." % esc(skip)

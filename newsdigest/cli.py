@@ -281,6 +281,46 @@ def cmd_web(args):
     return 0
 
 
+def breaking_report(conn, since) -> None:
+    """Что было со срочным за неделю.
+
+    Без этого на вопрос «не пропускаю ли я срочное» ответить нечем: видно
+    только то, что дошло, а сколько кандидатов отсеялось порогом и насколько
+    близко они были — нет.
+    """
+    counts, best = {}, []
+    for row in conn.execute(
+            "SELECT status, stats FROM runs WHERE kind='breaking' AND at > ?",
+            (since,)):
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+        try:
+            score = float(json.loads(row["stats"]).get("best", 0))
+        except (ValueError, TypeError):
+            continue
+        if score > 0:
+            best.append(score)
+
+    print("\n=== Срочные за неделю ===")
+    if not counts:
+        print("  проверок не было")
+        return
+    print("  ⚡ молний отправлено:   %d" % counts.get("ok", 0))
+    print("  🔔 важного в очередь:   %d  (сводок отправлено: %d)"
+          % (counts.get("queued", 0), counts.get("bulletin", 0)))
+    print("  отсеяно порогом:       %d  (придержано: %d, модель не ответила: %d)"
+          % (counts.get("below-threshold", 0), counts.get("held", 0),
+             counts.get("llm-failed", 0)))
+    if best:
+        near = sum(1 for s in best if CFG["breaking_alert_score"] - 1.5 <= s
+                   < CFG["breaking_alert_score"])
+        print("  лучшая срочность:      %.1f   средняя: %.1f   порог: %.1f/%.1f"
+              % (max(best), sum(best) / len(best), CFG["breaking_alert_score"],
+                 CFG["breaking_flash_score"]))
+        if near:
+            print("  ...и %d раз(а) кандидат не дотянул меньше полутора баллов —"
+                  " если такое повторяется, порог стоит опустить" % near)
+
+
 def cmd_status(_args):
     conn = db()
     print("=== Последние прогоны ===")
@@ -303,6 +343,8 @@ def cmd_status(_args):
         except (ValueError, TypeError):
             pass
     print("Расход DeepSeek за неделю: $%.4f  (≈ $%.2f/мес)" % (cost, cost * 4.3))
+
+    breaking_report(conn, week)
 
     print("\n=== Проблемные источники ===")
     bad = list(conn.execute("SELECT source_id, fails, err FROM health WHERE fails > 0 "

@@ -36,7 +36,8 @@ class BreakingCase(unittest.TestCase):
     def setUp(self):
         conn = storage.db()
         try:
-            for table in ("items", "sent", "meta", "runs", "feedback", "subscribers"):
+            for table in ("items", "sent", "meta", "runs", "feedback",
+                          "subscribers", "alerts"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.add(conn, CHAT, role="member", title="тест")
@@ -46,22 +47,28 @@ class BreakingCase(unittest.TestCase):
 
         self.sent = []
         self.saved_cfg = {k: CFG[k] for k in CFG}
-        self._real = (breaking.tg_send, breaking.rank_clusters, breaking.summarize,
+        self._real = (breaking.tg_send, breaking.rate_urgency, breaking.summarize,
                       breaking.local_now)
         breaking.tg_send = lambda chat, text, keyboard=None, silent=None: \
             self.sent.append((chat, text))
-        breaking.rank_clusters = lambda groups, persona: (
-            [{"id": i, "score": 9.2, "category": "labs"} for i in range(len(groups))],
-            {"in": 5, "out": 5})
+        breaking.rate_urgency = lambda groups, persona: (
+            [{"id": i, "urgency": 9.2, "scope": "global", "category": "labs"}
+             for i in range(len(groups))], {"in": 5, "out": 5})
         breaking.summarize = lambda picked, persona, lang: (
             {0: {"headline": "Срочный заголовок", "what": "суть", "why": "важно"}},
             {"in": 5, "out": 5})
         breaking.local_now = Clock(12)
 
     def tearDown(self):
-        (breaking.tg_send, breaking.rank_clusters, breaking.summarize,
+        (breaking.tg_send, breaking.rate_urgency, breaking.summarize,
          breaking.local_now) = self._real
         CFG.update(self.saved_cfg)
+
+    def urgency(self, value, scope="global"):
+        """Подменить оценку срочности: уровень выбирается именно по ней."""
+        breaking.rate_urgency = lambda groups, persona: (
+            [{"id": i, "urgency": value, "scope": scope, "category": "labs"}
+             for i in range(len(groups))], {"in": 5, "out": 5})
 
     def fill(self, sources, title="Крупная лаборатория выпустила новую модель",
              social=0.0, tiers=None):
@@ -165,8 +172,7 @@ class TestCheck(BreakingCase):
         self.assertEqual(self.sent, [])
 
     def test_low_model_score_blocks_send(self):
-        breaking.rank_clusters = lambda groups, persona: (
-            [{"id": 0, "score": 6.0, "category": "labs"}], {"in": 5, "out": 5})
+        self.urgency(6.0)
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
         conn = storage.db()
@@ -178,29 +184,37 @@ class TestCheck(BreakingCase):
         def broken(groups, persona):
             raise LLMError("нет связи")
 
-        breaking.rank_clusters = broken
+        breaking.rate_urgency = broken
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
         self.assertEqual(self.sent, [])
 
-    def test_quiet_hours_block(self):
+    def test_quiet_hours_block_a_local_flash(self):
+        """Ночью отраслевая молния ждёт: она уходит в очередь важного."""
         breaking.local_now = Clock(3)
         CFG["breaking_quiet"] = "23:00-08:00"
+        self.urgency(9.5, scope="industry")
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.sent, [])
 
     def test_daily_limit(self):
+        """Исчерпанный лимит молний не теряет событие: оно уходит в очередь."""
         CFG["breaking_max_per_day"] = 1
+        CFG["alert_max_per_day"] = 1
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
+
         self.fill(["openai", "arstechnica", "venturebeat"],
                   title="Совсем другое крупное событие в отрасли",
                   tiers={"openai": 1})
-        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)   # молнией — уже нельзя
         conn = storage.db()
         try:
+            self.assertEqual(len(breaking.pending_alerts(conn, CHAT)), 1)
+            # оба лимита исчерпаны — проверку больше не запускаем
             self.assertIn("лимит", breaking.why_not(conn, chat_id=CHAT))
-            # у другого подписчика счётчик свой
+            # у другого подписчика счётчики свои
             self.assertEqual(breaking.why_not(conn, chat_id="другой"), "")
         finally:
             conn.close()
@@ -301,15 +315,16 @@ class TestGrouped(BreakingCase):
 
         def rank(groups, persona):
             self.ranked.append(len(groups))
-            return ([{"id": i, "score": 9.2, "category": "labs"}
-                     for i in range(len(groups))], {"in": 5, "out": 5})
+            return ([{"id": i, "urgency": 9.2, "scope": "global",
+                      "category": "labs"} for i in range(len(groups))],
+                    {"in": 5, "out": 5})
 
         def write(picked, persona, language):
             self.written.append(language)
             return ({0: {"headline": "Срочный заголовок", "what": "суть",
                          "why": "важно"}}, {"in": 5, "out": 5})
 
-        breaking.rank_clusters = rank
+        breaking.rate_urgency = rank
         breaking.summarize = write
 
     def reader(self, chat_id, topics="", **fields):
@@ -373,7 +388,7 @@ class TestGrouped(BreakingCase):
         def broken(groups, persona):
             raise LLMError("нет связи")
 
-        breaking.rank_clusters = broken
+        breaking.rate_urgency = broken
         readers = [self.reader("101", "ai"), self.reader("102", "ai")]
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check_all(readers), 0)
@@ -382,3 +397,143 @@ class TestGrouped(BreakingCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLevels(BreakingCase):
+    """Два уровня срочности: ⚡ молния сразу, 🔔 важное сводкой."""
+
+    def confirmed(self, title="Крупная лаборатория выпустила новую модель"):
+        self.fill(["openai", "theverge", "techcrunch"], title=title,
+                  tiers={"openai": 1})
+
+    def queued(self, chat_id=CHAT):
+        conn = storage.db()
+        try:
+            return breaking.pending_alerts(conn, chat_id)
+        finally:
+            conn.close()
+
+    def test_flash_goes_out_at_once(self):
+        self.urgency(9.5)
+        self.confirmed()
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertIn("⚡", self.sent[0][1])
+        self.assertEqual(self.queued(), [])
+
+    def test_alert_is_queued_not_sent(self):
+        """Важное человека не будит: оно ждёт сводки."""
+        self.urgency(8.0)
+        self.confirmed()
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_below_alert_threshold_waits_for_the_issue(self):
+        self.urgency(7.0)
+        self.confirmed()
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.queued(), [])
+
+    def test_queued_alert_does_not_repeat_in_the_digest(self):
+        """Событие уже обещано читателю — плановый выпуск его повторять не должен."""
+        self.urgency(8.0)
+        self.confirmed()
+        breaking.check(chat_id=CHAT)
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT breaking FROM sent WHERE chat_id=?",
+                               (CHAT,)).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["breaking"], 1)
+        finally:
+            conn.close()
+
+    def test_bulletin_delivers_the_queue(self):
+        self.urgency(8.0)
+        self.confirmed()
+        breaking.check(chat_id=CHAT)
+        conn = storage.db()
+        try:
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 1)
+            self.assertEqual(breaking.pending_alerts(conn, CHAT), [])
+        finally:
+            conn.close()
+        self.assertIn("🔔", self.sent[0][1])
+        self.assertIn("Срочный заголовок", self.sent[0][1])
+
+    def test_bulletin_waits_for_its_interval(self):
+        CFG["breaking_alert_every_h"] = 4
+        self.urgency(8.0)
+        self.confirmed()
+        breaking.check(chat_id=CHAT)
+        conn = storage.db()
+        try:
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 1)
+            self.confirmed(title="Совсем другое крупное событие в отрасли")
+            breaking.check(chat_id=CHAT)
+            self.assertEqual(len(breaking.pending_alerts(conn, CHAT)), 1)
+            # интервал ещё не прошёл — вторая сводка подождёт
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 0)
+        finally:
+            conn.close()
+
+    def test_empty_queue_sends_nothing(self):
+        conn = storage.db()
+        try:
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 0)
+        finally:
+            conn.close()
+        self.assertEqual(self.sent, [])
+
+
+class TestQuietHoursLevels(BreakingCase):
+    """Тихие часы: молния мирового масштаба будит, остальное копится к утру."""
+
+    def setUp(self):
+        super().setUp()
+        CFG["breaking_quiet"] = "23:00-08:00"
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+
+    def test_global_flash_wakes_you_up(self):
+        """Ради землетрясения M7 человека будят и в три часа ночи."""
+        breaking.local_now = Clock(3)
+        self.urgency(9.8, scope="global")
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertIn("⚡", self.sent[0][1])
+
+    def test_global_flash_can_be_forbidden(self):
+        breaking.local_now = Clock(3)
+        CFG["flash_override_quiet"] = False
+        self.urgency(9.8, scope="global")
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.sent, [])
+
+    def test_industry_flash_waits_until_morning(self):
+        """Отраслевая молния ночью не будит, но и не теряется."""
+        breaking.local_now = Clock(3)
+        self.urgency(9.5, scope="industry")
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.sent, [])
+
+        conn = storage.db()
+        try:
+            self.assertEqual(len(breaking.pending_alerts(conn, CHAT)), 1)
+            # ночью сводку не отдаём
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 0)
+            # ...а утром накопленное догоняет
+            breaking.local_now = Clock(9)
+            self.assertEqual(breaking.flush_alerts(conn, CHAT), 1)
+        finally:
+            conn.close()
+        self.assertIn("🔔", self.sent[0][1])
+
+    def test_alert_queues_at_night(self):
+        breaking.local_now = Clock(2)
+        self.urgency(8.0)
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        conn = storage.db()
+        try:
+            self.assertEqual(len(breaking.pending_alerts(conn, CHAT)), 1)
+        finally:
+            conn.close()

@@ -324,6 +324,27 @@ def breaking_card(card, group, score):
     return "\n".join(lines)
 
 
+def alert_bulletin(rows) -> str:
+    """🔔 Сводка важного: то, что не тянет на молнию, но и не ждёт до утра.
+
+    Коротко — по строке на новость. Читатель уже понял по значку, что это
+    внеплановое; разворачивать здесь нечего, для этого есть выпуск.
+    """
+    lines = ["🔔 <b>Важное за последние часы</b>", ""]
+    for row in rows:
+        headline = str(row["headline"] or row["title"])
+        lines.append("• <b>%s</b>" % esc(headline))
+        what = str(row["what"] or "").strip()
+        if what:
+            lines.append(esc(what))
+        lines.append('🔗 <a href="%s">%s</a> · ⭐ %.1f'
+                     % (esc(row["url"]), esc(row["source_id"]),
+                        float(row["urgency"] or 0)))
+        lines.append("")
+    lines.append("<i>Подробности — в очередном выпуске.</i>")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------- кнопки под выпуском
 MARK = "✓"
 BUTTONS = ((feedback.UP, "👍"), (feedback.DOWN, "👎"), ("save", "🔖"))

@@ -63,6 +63,28 @@ CREATE TABLE IF NOT EXISTS sent (
 CREATE INDEX IF NOT EXISTS idx_sent_at ON sent(sent_at);
 CREATE INDEX IF NOT EXISTS idx_sent_chat ON sent(chat_id, sent_at);
 
+-- Очередь «важного» (🔔): событие прошло порог alert, но будить ради него
+-- человека незачем. Копится и уходит одной короткой сводкой раз в
+-- breaking_alert_every_h, а накопленное за тихие часы — утром.
+-- Запись в `sent` кладётся сразу при постановке в очередь: событие уже
+-- обещано читателю, и плановый выпуск повторять его не должен.
+CREATE TABLE IF NOT EXISTS alerts (
+    id        INTEGER PRIMARY KEY,
+    chat_id   TEXT NOT NULL DEFAULT '',
+    url_hash  TEXT NOT NULL,
+    title     TEXT NOT NULL,
+    url       TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL DEFAULT '',
+    section   TEXT NOT NULL DEFAULT '',
+    headline  TEXT NOT NULL DEFAULT '',
+    what      TEXT NOT NULL DEFAULT '',
+    urgency   REAL NOT NULL DEFAULT 0,
+    scope     TEXT NOT NULL DEFAULT '',
+    at        TEXT NOT NULL,
+    sent_at   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_chat ON alerts(chat_id, sent_at);
+
 CREATE TABLE IF NOT EXISTS health (
     source_id  TEXT PRIMARY KEY,
     ok_at      TEXT,

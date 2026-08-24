@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import classify
+from . import classify, trust
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
@@ -117,15 +117,19 @@ def mark_health(conn, source_id, ok, err="", count=0):
     conn.commit()
 
 
-def collect(topics=None) -> dict:
+def collect(topics=None, wire_only=False) -> dict:
     """Обходит источники. topics=None — все разделы, которые кто-то читает;
     список разделов — только их фиды (так /news отвечает за секунды, а не
-    ждёт обхода сотни источников)."""
+    ждёт обхода сотни источников).
+
+    wire_only — быстрая полоса: только агентства и службы оповещения
+    (`trust.is_wire`). Их два десятка, обход занимает секунды, и именно он
+    позволяет проверять срочное раз в четверть часа, а не раз в четыре."""
     conn = db()
     stats = {"ok": 0, "failed": 0, "muted": 0, "fetched": 0, "new": 0}
-    partial = topics is not None
-    topics = list(topics) if partial else topics_in_use(conn)
-    feeds = all_feeds(topics)
+    partial = topics is not None or wire_only
+    topics = list(topics) if topics is not None else topics_in_use(conn)
+    feeds = all_feeds(topics, wire_only=wire_only)
     sources = [s for s in feeds if not is_muted(conn, s[0])]
     stats["muted"] = len(feeds) - len(sources)
 
@@ -141,7 +145,9 @@ def collect(topics=None) -> dict:
                 mark_health(conn, src[0], True, count=len(items))
                 rows.extend(items)
 
-    if CFG["use_hackernews"]:
+    # Hacker News на быстрой полосе не нужен: он не агентство, а форум, и на
+    # четвертьчасовом опросе даёт только лишний трафик
+    if CFG["use_hackernews"] and not wire_only:
         rows.extend(fetch_hackernews(keywords_for(topics)))
 
     stats["fetched"] = len(rows)
@@ -182,6 +188,10 @@ def collect(topics=None) -> dict:
         stats["topics"] = topics
     else:
         meta_set(conn, "last_collect", now_iso())
+    # быструю полосу обходит и полный сбор, и она сама — но не сбор одного
+    # раздела по запросу: агентств в нём может не оказаться вовсе
+    if wire_only or not partial:
+        meta_set(conn, "last_wire", now_iso())
     log_run(conn, "collect", "ok", stats)
     conn.close()
     log.info("Сбор: источников ok=%d, ошибок=%d, отключено=%d, получено=%d, новых=%d",
@@ -223,14 +233,18 @@ def topics_in_use(conn=None) -> list:
     return topics
 
 
-def all_feeds(topics=None) -> list:
-    """Источники всех используемых тем без повторов."""
+def all_feeds(topics=None, wire_only=False) -> list:
+    """Источники всех используемых тем без повторов.
+
+    wire_only — только быстрая полоса: агентства и службы оповещения.
+    """
     seen, feeds = set(), []
     for topic in (topics if topics is not None else topics_in_use()):
         for feed in PROFILES.get(topic, {}).get("feeds", []):
-            if feed[0] not in seen:
-                seen.add(feed[0])
-                feeds.append(feed)
+            if feed[0] in seen or (wire_only and not trust.is_wire(feed[0])):
+                continue
+            seen.add(feed[0])
+            feeds.append(feed)
     return feeds
 
 

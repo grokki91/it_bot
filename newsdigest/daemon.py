@@ -58,39 +58,61 @@ def digest_job(sub):
     return job
 
 
+def urgent_job(subs, wire=False):
+    """Проверка срочного: при желании — со своим коротким обходом агентств.
+
+    Подписчиков проверяем разом: у кого разделы совпадают, тем хватит одной
+    оценки модели на всех. Сводка накопленного важного идёт следом, тем же
+    заходом: отдельный таймер ей не нужен, она сама решает, пора ли.
+    """
+    def job():
+        if wire:
+            collect(wire_only=True)
+        breaking.check_all(subs)
+        breaking.flush_all(subs)
+    return job
+
+
 def tick(worker) -> None:
     """Один заход планировщика: решает, что запустить, и уходит."""
     conn = db()
     try:
         subscribers.ensure_owner(conn)
         last_collect = parse_date(meta_get(conn, "last_collect", ""))
+        last_wire = parse_date(meta_get(conn, "last_wire", ""))
         ready = subscribers.due(conn)
         waiting = subscribers.active(conn)
     finally:
         conn.close()
 
+    now = datetime.now(timezone.utc)
     need_collect = (last_collect is None or
-                    datetime.now(timezone.utc) - last_collect
-                    >= timedelta(hours=CFG["collect_every_h"]))
+                    now - last_collect >= timedelta(hours=CFG["collect_every_h"]))
+    # быстрая полоса: пара десятков агентств и служб оповещения. Обход занимает
+    # секунды, поэтому срочное проверяется раз в четверть часа, а не раз в
+    # четыре — землетрясение не должно ждать очередного полного сбора
+    need_wire = (last_wire is None or
+                 now - last_wire
+                 >= timedelta(minutes=max(1, int(CFG["breaking_every_min"]))))
 
     if ready:
         # свежее собираем один раз на всех, дальше выпуск каждому свой
-        def collect_first():
-            collect()
-        worker.submit("collect", collect_first)
+        worker.submit("collect", collect)
         for sub in ready:
             worker.submit("digest:%s" % sub["chat_id"], digest_job(sub))
+        # ...и срочное проверяем тоже. Раньше здесь стоял ранний выход, и в
+        # часы планового выпуска проверка не выполнялась вовсе
+        worker.submit("breaking", urgent_job(waiting))
         return
 
     if need_collect:
-        # срочное ищем сразу после сбора: свежие материалы уже в базе,
-        # а до планового выпуска может оставаться много часов. Подписчиков
-        # проверяем разом: у кого разделы совпадают, тем хватит одной оценки
-        # модели на всех
+        # срочное ищем сразу после сбора: свежие материалы уже в базе
         def job():
             collect()
-            breaking.check_all(waiting)
+            urgent_job(waiting)()
         worker.submit("collect", job)
+    elif need_wire:
+        worker.submit("wire", urgent_job(waiting, wire=True))
 
 
 def scheduler_loop(worker, stop) -> None:

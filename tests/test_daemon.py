@@ -46,14 +46,14 @@ class TestTick(unittest.TestCase):
         self._owner = config.TG_CHAT
         config.TG_CHAT = self.OWNER
         self.saved = {k: CFG[k] for k in ("send_at", "per_day", "collect_every_h",
-                                          "breaking")}
+                                          "breaking", "breaking_every_min")}
         CFG["breaking"] = False
         CFG["per_day"] = 1              # один выпуск в сутки: так «23:59» = «ещё рано»
 
         self.collected = []
         self.digests = []
         self._real = (daemon.collect, daemon.build_and_send)
-        daemon.collect = lambda: self.collected.append(1)
+        daemon.collect = self.fake_collect
         daemon.build_and_send = self.fake_digest
 
         conn = storage.db()
@@ -70,6 +70,10 @@ class TestTick(unittest.TestCase):
         config.TG_CHAT = self._owner
         CFG.update(self.saved)
 
+    def fake_collect(self, topics=None, wire_only=False):
+        self.collected.append("wire" if wire_only else 1)
+        return {}
+
     def fake_digest(self, sub=None, **kw):
         self.digests.append(sub["chat_id"])
         return {"sent": 1}
@@ -83,9 +87,24 @@ class TestTick(unittest.TestCase):
         finally:
             conn.close()
 
+    def mark_wire(self, minutes_ago=0):
+        """Когда последний раз обходили быструю полосу (агентства)."""
+        conn = storage.db()
+        try:
+            storage.meta_set(conn, "last_wire",
+                             (datetime.now(timezone.utc)
+                              - timedelta(minutes=minutes_ago)).isoformat())
+        finally:
+            conn.close()
+
+    def quiet(self):
+        """Ни полного сбора, ни быстрой полосы пока не нужно."""
+        self.mark_collected(0)
+        self.mark_wire(0)
+
     def test_nothing_to_do_stays_quiet(self):
         CFG["send_at"] = "23:59"          # время выпуска ещё не подошло
-        self.mark_collected(0)
+        self.quiet()
         daemon.tick(self.worker)
         self.assertEqual(self.worker.names(), [])
 
@@ -93,14 +112,39 @@ class TestTick(unittest.TestCase):
         CFG["send_at"] = "23:59"
         CFG["collect_every_h"] = 4
         self.mark_collected(5)
+        self.mark_wire(0)
         daemon.tick(self.worker)
         self.assertEqual(self.worker.names(), ["collect"])
 
+    def test_fast_lane_runs_between_collections(self):
+        """Срочное не ждёт полного сбора: агентства опрашиваются отдельно."""
+        CFG["send_at"] = "23:59"
+        CFG["collect_every_h"] = 4
+        CFG["breaking_every_min"] = 15
+        self.mark_collected(1)            # полный сбор ещё не нужен
+        self.mark_wire(20)                # а быстрая полоса уже устарела
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), ["wire"])
+
+        self.worker.run_all()
+        self.assertEqual(self.collected, ["wire"])
+
+    def test_fresh_fast_lane_is_not_repeated(self):
+        CFG["send_at"] = "23:59"
+        CFG["collect_every_h"] = 4
+        CFG["breaking_every_min"] = 15
+        self.mark_collected(1)
+        self.mark_wire(5)
+        daemon.tick(self.worker)
+        self.assertEqual(self.worker.names(), [])
+
     def test_due_subscriber_gets_collect_then_digest(self):
         CFG["send_at"] = "00:01"          # время уже прошло
-        self.mark_collected(0)
+        self.quiet()
         daemon.tick(self.worker)
-        self.assertEqual(self.worker.names(), ["collect", "digest:%s" % self.OWNER])
+        # срочное проверяется и в час выпуска: раньше здесь стоял ранний выход
+        self.assertEqual(self.worker.names(),
+                         ["collect", "digest:%s" % self.OWNER, "breaking"])
 
         self.worker.run_all()
         self.assertEqual(self.collected, [1])
@@ -133,7 +177,7 @@ class TestTick(unittest.TestCase):
     def test_second_digest_of_the_day_is_queued_again(self):
         """Выпуск дважды в сутки: утренняя метка вечерний выпуск не закрывает."""
         CFG["send_at"], CFG["per_day"] = "00:00", 2      # слоты 00:00 и 12:00
-        self.mark_collected(0)
+        self.quiet()
         conn = storage.db()
         try:
             sub = subscribers.get(conn, self.OWNER)

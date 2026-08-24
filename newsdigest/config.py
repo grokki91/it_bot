@@ -152,9 +152,22 @@ CFG = {
                                   # иначе в спорте и кино, где tier-1 нет ни
                                   # одного, срочное было бы невозможно в принципе
     "breaking_social":    0.9,    # либо ~270+ баллов Hacker News в одиночку
-    "breaking_min_score": 8.0,    # и оценка модели не ниже (1-10)
-    "breaking_max_per_day": 2,    # больше двух срочных в сутки — это уже лента
+    # Срочность оценивается ОТДЕЛЬНЫМ промптом (llm.BREAKING_SYSTEM) по шкале
+    # мировых агентств: это про масштаб события, а не про вкусы читателя.
+    # Уровней два, и ведут они себя по-разному:
+    "breaking_flash_score": 9.0,  # ⚡ молния: уходит сразу, отдельным сообщением
+    "breaking_alert_score": 7.5,  # 🔔 важное: копится и уходит сводкой
+    "breaking_max_per_day": 2,    # молний в сутки — больше это уже лента
+    "alert_max_per_day":  3,      # и важного
+    "breaking_alert_every_h": 4,  # как часто отдавать накопленное важное
+    "breaking_every_min": 15,     # как часто опрашивать быструю полосу
+                                  # (агентства и службы оповещения) и проверять
+                                  # срочное. Полный обход всех источников
+                                  # остаётся раз в collect_every_h
     "breaking_quiet":     "23:00-08:00",  # в эти часы молчим (ваше время)
+    "flash_override_quiet": True, # ...кроме молнии мирового масштаба: ради
+                                  # землетрясения M7 человека будят и ночью.
+                                  # Важное за ночь копится и уходит утром
 
     # --- обратная связь ------------------------------------------------------
     "feedback_buttons": True,      # [env ND_FEEDBACK] кнопки 👍/👎/🔖 под выпуском
@@ -230,6 +243,7 @@ ENV_MAP = {
                     lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
+    "ND_BREAKING_EVERY": ("breaking_every_min", int),
     "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),
     "ND_SIGNUP": ("signup", str),
     "ND_WEB": ("web", lambda v: str(v).lower() in ("1", "true", "yes")),
