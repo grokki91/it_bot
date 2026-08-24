@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Тесты страницы: доступ по паролю, лента, уведомления, настройки, кнопки.
+"""Тесты страницы: гость и владелец, лента, уведомления, настройки, кнопки.
 
 Страница только показывает: команд, строки ввода и истории их запусков на
-ней нет — это проверяется отдельно. Сеть не трогается: сервер поднимается
-на 127.0.0.1 со случайным портом.
+ней нет — это проверяется отдельно. Новости открыты всем без пароля, всё
+служебное — только владельцу; за это отвечает `TestGuest`. Сеть не
+трогается: сервер поднимается на 127.0.0.1 со случайным портом.
 """
 import json
 import logging
@@ -148,8 +149,8 @@ class TestAuth(WebCase):
         self.assertEqual(code, 200)
         self.assertIn("Дайджест", body)
 
-    def test_api_requires_password(self):
-        code, body = self.ask("/api/alerts")
+    def test_service_api_requires_password(self):
+        code, body = self.ask("/api/tools")
         self.assertEqual(code, 401)
         self.assertIn("пароль", body["error"])
 
@@ -161,10 +162,12 @@ class TestAuth(WebCase):
         self.assertIn("state", body)
 
     def test_wrong_password_refused(self):
-        code, body = self.login("не тот")
+        code, _body = self.login("не тот")
         self.assertEqual(code, 403)
         self.assertFalse(self.cookie)
-        self.assertEqual(self.ask("/api/alerts")[0], 401)
+        self.assertEqual(self.ask("/api/tools")[0], 401)
+        # не пустили — значит гость, и служебного в ответах нет
+        self.assertFalse(self.ask("/api/alerts")[1]["state"]["admin"])
 
     def test_bearer_token_works_for_scripts(self):
         CFG["web_token"] = "ascii-token-42"     # в заголовок кириллица не влезет
@@ -180,7 +183,151 @@ class TestAuth(WebCase):
         self.login()
         self.ask("/api/logout", {})
         self.cookie = web.COOKIE + "="            # браузер стёр значение
-        self.assertEqual(self.ask("/api/alerts")[0], 401)
+        self.assertEqual(self.ask("/api/tools")[0], 401)
+        self.assertFalse(self.ask("/api/alerts")[1]["state"]["admin"])
+
+
+class TestGuest(WebCase):
+    """Гость без пароля: новости читает, служебного не видит, ничего не меняет.
+
+    Проверяем не то, что страница прячет лишнее стилями, а то, что сервер
+    его не отдаёт: чего нет в ответе, того не достать и из консоли браузера.
+    """
+
+    #: всё, чем страница рассказывает о службе, — этого гостю знать незачем
+    SERVICE = ("sections", "each", "feeds", "next", "tz", "paused", "busy",
+               "owner", "chat")
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.delivered("g1", "Совет директоров собрался утром", "ria",
+                       "politics", 7.2, "Коротко о встрече.",
+                       "https://ria.ru/g1", minute=1)
+        self.delivered("g2", "Apple представила новые MacBook", "theverge",
+                       "hardware", 6.4, "Новый чип и экран.",
+                       "https://www.theverge.com/g2", minute=2)
+
+    def news(self, params=""):
+        return self.ask("/api/news" + params)[1]
+
+    # ------------------------------------------------------------ что видно
+    def test_news_come_without_a_password(self):
+        body = self.news()
+        self.assertEqual({item["hash"] for item in body["items"]}, {"g1", "g2"})
+
+    def test_sections_and_search_still_work(self):
+        """Гостю оставили ровно то, ради чего ходят на новостной сайт."""
+        self.assertEqual([i["hash"] for i in
+                          self.news("?section=hardware")["items"]], ["g2"])
+        self.assertEqual([i["hash"] for i in
+                          self.news("?q=" + urllib.parse.quote("совет"))["items"]],
+                         ["g1"])
+
+    def test_side_panels_come_along(self):
+        side = self.news()["side"]
+        self.assertTrue(side["menu"])
+        self.assertTrue(side["sources"])
+
+    def test_feed_freshness_is_still_shown(self):
+        """«Обновлено в 18:27» — это про новости, а не про службу."""
+        conn = storage.db()
+        try:
+            storage.meta_set(conn, "last_collect", now_iso())
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
+
+    # --------------------------------------------------------- чего не видно
+    def test_state_says_nothing_about_the_service(self):
+        state = self.news()["state"]
+        self.assertFalse(state["admin"])
+        for field in self.SERVICE:
+            self.assertNotIn(field, state, "гостю ушло служебное поле %s" % field)
+
+    def test_alerts_carry_no_mailings(self):
+        """Кому и когда уходит выпуск — дело служебное."""
+        self.delivered("g3", "Ушло подписчикам", "ria", "politics", 7.0,
+                       hour=10)
+        code, body = self.ask("/api/alerts")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["alerts"], [])
+        self.assertFalse(body["state"]["admin"])
+
+    def test_new_news_are_noticed_without_mailings(self):
+        """Гость узнаёт о пополнении по самой свежей новости, а не по рассылке."""
+        before = self.ask("/api/alerts")[1]["last"]
+        self.assertEqual(before, "g2")            # самая свежая на этот час
+        self.delivered("g3", "Пришло новое", "ria", "politics", 7.0, hour=10)
+        self.assertEqual(self.ask("/api/alerts")[1]["last"], "g3")
+
+    def test_settings_are_closed(self):
+        code, body = self.ask("/api/tools")
+        self.assertEqual(code, 401)
+        self.assertIn("пароль", body["error"])
+
+    def test_owner_marks_are_not_visible(self):
+        """Закладки и оценки — вкусы владельца, и в чужой ленте их нет."""
+        self.login()
+        self.ask("/api/react", {"data": "fb:up:g1"})
+        self.ask("/api/react", {"data": "fb:save:g1"})
+        self.cookie = ""                       # снова гость
+        card = [i for i in self.news()["items"] if i["hash"] == "g1"][0]
+        self.assertEqual(card["verdict"], "")
+        self.assertFalse(card["saved"])
+
+    def test_saved_view_falls_back_to_the_feed(self):
+        body = self.news("?view=saved")
+        self.assertEqual(body["view"], "news")
+        self.assertEqual(len(body["items"]), 2)
+
+    def test_liked_view_falls_back_to_the_feed(self):
+        self.assertEqual(self.news("?view=liked")["view"], "news")
+
+    def test_page_source_says_nothing_about_the_server(self):
+        """Страница приходит всем целиком — служебному в ней не место."""
+        _code, page = self.ask("/")
+        for secret in ("ND_WEB_TOKEN", ".newsdigest/env", "TELEGRAM_CHAT_ID",
+                       "VPS"):
+            self.assertNotIn(secret, page)
+
+    # --------------------------------------------------------- чего нельзя
+    def test_reaction_is_refused(self):
+        code, body = self.ask("/api/react", {"data": "fb:up:g1"})
+        self.assertEqual(code, 401)
+        self.assertIn("пароль", body["error"])
+        conn = storage.db()
+        try:
+            rows = conn.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(rows["n"], 0)
+
+    def test_bookmark_is_refused(self):
+        self.assertEqual(self.ask("/api/react", {"data": "fb:save:g1"})[0], 401)
+        conn = storage.db()
+        try:
+            rows = conn.execute("SELECT COUNT(*) AS n FROM saved").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(rows["n"], 0)
+
+    def test_logout_is_refused(self):
+        self.assertEqual(self.ask("/api/logout", {})[0], 401)
+
+    def test_unknown_post_is_refused_before_the_route(self):
+        """Ошибки маршрута гостю не рассказывают: сначала пароль."""
+        code, body = self.ask("/api/command", {"text": "/digest"})
+        self.assertEqual(code, 401)
+        self.assertIn("пароль", body["error"])
+
+    # ------------------------------------------------------------- владелец
+    def test_owner_sees_everything_again(self):
+        self.login()
+        state = self.news()["state"]
+        self.assertTrue(state["admin"])
+        for field in self.SERVICE:
+            self.assertIn(field, state)
 
 
 class TestAlerts(WebCase):
@@ -475,10 +622,11 @@ class TestNews(WebCase):
     def news(self, params=""):
         return self.ask("/api/news" + params)[1]
 
-    def test_news_needs_password(self):
+    def test_news_opens_without_password(self):
+        """Лента — это и есть сайт: за ней приходят без пароля."""
         code, body = self.ask("/api/news")
-        self.assertEqual(code, 401)
-        self.assertIn("пароль", body["error"])
+        self.assertEqual(code, 200)
+        self.assertEqual(len(body["items"]), 4)
 
     def test_cards_carry_section_source_and_score(self):
         self.login()

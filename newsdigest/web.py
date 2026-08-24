@@ -6,13 +6,21 @@
 строки ввода, ни истории их запусков здесь нет и быть не должно: с чужого
 браузера чужими руками ничего не собирается и не тратится.
 
-Что есть: лента новостей (`newsfeed`), уведомления о рассылках, настройки
-приложения с подписчиками — всё для чтения — и кнопки 👍/👎/🔖 под карточками:
-это не команда, а вкусы читателя, и они те же, что в чате.
+Читателей у страницы двое, и видят они разное.
+
+Гость заходит без пароля и видит новостной сайт: лента, разделы, поиск,
+популярные источники и темы. Ничего служебного ему не показывают и не
+отдают — ни расписания рассылок, ни подписчиков, ни настроек приложения, ни
+того, занят ли бот сейчас делом. Менять он тоже ничего не может: POST для
+него закрыт весь, кроме входа.
+
+Владелец вводит пароль и получает то же самое плюс служебное: уведомления о
+рассылках, подписчиков, значения настроек — всё для чтения — и кнопки
+👍/👎/🔖 под карточками: это не команда, а вкусы читателя, и они те же, что
+в чате.
 
 Сервер — из стандартной библиотеки, поднимается нитью внутри демона.
-Страница закрыта паролем: она слушает IP VPS, а за ней вся ваша лента.
-Пароль (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
+Пароль владельца (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
 """
 from __future__ import annotations
 
@@ -87,6 +95,26 @@ def chat_id() -> str:
     return str(config.TG_CHAT or "web")
 
 
+def collected_at() -> str:
+    """Когда последний раз читали источники — «Обновлено в 18:27» в шапке."""
+    conn = db()
+    try:
+        return clock(meta_get(conn, "last_collect", ""))
+    finally:
+        conn.close()
+
+
+def public_state() -> dict:
+    """Состояние для гостя: свежесть ленты и ничего больше.
+
+    Всё остальное из `state` — расписание выпусков, число источников, пауза,
+    занятость бота, чат владельца — это про сервис, а не про новости, и
+    гостю не отдаётся даже полем в JSON: чего нет в ответе, того не увидят
+    ни на странице, ни в консоли браузера.
+    """
+    return {"admin": False, "collected": collected_at()}
+
+
 def state(worker) -> dict:
     conn = db()
     try:
@@ -107,6 +135,7 @@ def state(worker) -> dict:
         "busy": worker.busy() if worker is not None else "",
         "owner": bool(config.TG_CHAT),
         "chat": chat_id(),
+        "admin": True,
     }
 
 
@@ -146,7 +175,7 @@ def to_int(raw, default=0) -> int:
         return default
 
 
-def news(query, worker=None) -> dict:
+def news(query, worker=None, admin=True) -> dict:
     """Лента новостей: карточки, а вместе с первой страницей — панели вокруг.
 
     Меню разделов, популярные источники и темы считаются только на первой
@@ -156,10 +185,13 @@ def news(query, worker=None) -> dict:
     Фильтры (`sections`) — это набор разделов, закреплённый читателем на
     странице: «только наука и спорт». Открытый раздел (`section`) их
     перебивает: раз уж читатель зашёл в «Космос», показываем «Космос».
+
+    Гостю достаётся только общая лента: «Сохранённые» и «Избранное» — это
+    отметки владельца, и карточки к нему приходят без них.
     """
     chat = chat_id()
     view = str((query.get("view") or ["news"])[0])
-    if view not in newsfeed.VIEWS:
+    if view not in newsfeed.VIEWS or not admin:
         view = "news"
     section = sections.resolve((query.get("section") or [""])[0])
     picked, _unknown = sections.parse((query.get("sections") or [""])[0])
@@ -169,11 +201,12 @@ def news(query, worker=None) -> dict:
 
     conn = db()
     try:
-        subscribers.ensure_owner(conn)
+        if admin:
+            subscribers.ensure_owner(conn)
         sub = subscribers.get(conn, chat)
         rows, more = newsfeed.page(conn, chat, view, section or picked,
                                    search, offset)
-        verdicts, saved = press_state(conn, chat)
+        verdicts, saved = press_state(conn, chat) if admin else ({}, set())
         payload = {"view": view, "section": section, "sections": picked,
                    "q": search, "offset": offset, "more": more,
                    "items": newsfeed.cards(conn, rows, verdicts, saved, chat)}
@@ -186,17 +219,27 @@ def news(query, worker=None) -> dict:
     finally:
         conn.close()
     if not offset:
-        payload["state"] = state(worker)
+        payload["state"] = state(worker) if admin else public_state()
     return payload
 
 
-def alerts(worker=None) -> dict:
+def alerts(worker=None, admin=True) -> dict:
     """Уведомления: сводка последних рассылок плюс состояние бота.
 
-    Этим же запросом страница проверяет пароль при заходе и раз в несколько
-    секунд узнаёт, не пришёл ли новый выпуск.
+    Этим же запросом страница узнаёт при заходе, кто пришёл, и раз в
+    несколько секунд — не появилось ли чего нового. Гостю рассылки не
+    положены (кому и когда уходит выпуск — дело служебное), поэтому список у
+    него пуст, а «не пришло ли нового» решается по самой свежей новости —
+    она и так первой лежит в его ленте.
     """
     chat = chat_id()
+    if not admin:
+        conn = db()
+        try:
+            fresh = newsfeed.latest(conn, chat)
+        finally:
+            conn.close()
+        return {"alerts": [], "last": fresh, "state": public_state()}
     conn = db()
     try:
         subscribers.ensure_owner(conn)
@@ -340,14 +383,16 @@ class Site(BaseHTTPRequestHandler):
             if path == "/favicon.ico":
                 self._reply(204, b"", "image/svg+xml")
                 return
-            if not self._authed():
-                self._json({"error": "нужен пароль"}, 401)
-                return
+            admin = self._authed()
+            # лента открыта всем: это и есть сайт. Служебное — только по паролю
             if path == "/api/alerts":
-                self._json(alerts(self.server.worker))
+                self._json(alerts(self.server.worker, admin))
                 return
             if path == "/api/news":
-                self._json(news(query, self.server.worker))
+                self._json(news(query, self.server.worker, admin))
+                return
+            if not admin:
+                self._json({"error": "нужен пароль"}, 401)
                 return
             if path == "/api/tools":
                 self._json(tools(self.server.worker))
@@ -364,6 +409,8 @@ class Site(BaseHTTPRequestHandler):
             if path == "/api/login":
                 self._login(data)
                 return
+            # менять на странице что-либо вправе только владелец: гость её
+            # читает, а его POST не доходит ни до базы, ни до бота
             if not self._authed():
                 self._json({"error": "нужен пароль"}, 401)
                 return
@@ -401,7 +448,8 @@ def build(worker=None, host=None, port=None) -> Server:
 def announce(server) -> None:
     host, port = server.server_address[0], server.server_address[1]
     shown = "localhost" if host in ("127.0.0.1", "::1") else "<ip-вашего-vps>"
-    log.info("Страница открыта: http://%s:%d/ — пароль в %s (ND_WEB_TOKEN)",
+    log.info("Страница открыта: http://%s:%d/ — новости видны всем без пароля, "
+             "служебное только владельцу: пароль в %s (ND_WEB_TOKEN)",
              shown, port, ENV_FILE)
 
 

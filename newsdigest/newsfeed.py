@@ -510,6 +510,19 @@ def mailing(group, smap, now) -> dict:
             "links": [link_of(row, smap) for row in best[:MAILING_LINKS]]}
 
 
+def latest(conn, chat_id) -> str:
+    """Самая свежая новость ленты. По ней страница и замечает пополнение.
+
+    Владельцу для этого хватает последней рассылки, а гость про рассылки не
+    знает вовсе — ему нужна примета попроще, и лучше самой новой новости
+    ничего нет: она и так лежит первой карточкой в ленте.
+    """
+    row = conn.execute("SELECT url_hash FROM sent WHERE chat_id = ? "
+                       "ORDER BY sent_at DESC LIMIT 1",
+                       (str(chat_id),)).fetchone()
+    return row["url_hash"] if row else ""
+
+
 def mailings(conn, chat_id, limit=MAILINGS) -> list:
     """Уведомления: краткая сводка последних рассылок, свежая сверху.
 

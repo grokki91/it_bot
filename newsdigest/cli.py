@@ -167,7 +167,8 @@ def cmd_doctor(_args):
           % (CFG["per_section"], CFG["per_section"] * len(plan), CFG["min_score"]))
     print("Модели       :", CFG["model_rank"], "/", CFG["model_summary"])
     if CFG["web"]:
-        print("Страница     : http://%s:%s/ (пароль в %s, ND_WEB_TOKEN)"
+        print("Страница     : http://%s:%s/ (новости всем, служебное по "
+              "паролю: %s, ND_WEB_TOKEN)"
               % ("<ip-вашего-vps>" if CFG["web_host"] == "0.0.0.0"
                  else CFG["web_host"], CFG["web_port"], ENV_FILE))
     else:

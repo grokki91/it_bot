@@ -32,6 +32,14 @@
 Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
 командуют на самом VPS, а страница — читалка.
 
+Страница открыта всем, а служебное на ней — только владельцу. Гость видит
+новостной сайт: лента, разделы, поиск, популярные источники и темы. Ни
+уведомлений о рассылках, ни подписчиков, ни настроек, ни справки о выпуске
+справа, ни кнопок 👍/👎/🔖 под карточками у него нет — и не потому, что они
+спрятаны стилями: `web.py` этих данных ему не отдаёт, а всякий POST, кроме
+входа, ему закрыт. Владелец нажимает 🔑 в шапке, вводит пароль — и страница
+становится прежней: рассылки, подписчики, настройки, отметки.
+
 Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
 речь, а ходить за этим на сайт источника читатель не нанимался. Текст занимает
 три строки и разворачивается нажатием: так карточки одного роста и на экране
@@ -481,6 +489,9 @@ header {
 .folk .about { color: var(--dim); font-size: 13px; }
 
 /* ------------------------------------------------------- нижняя навигация */
+/* Гостю ходить некуда, кроме ленты: панель из одной кнопки — не навигация,
+   а полоса поперёк экрана. Разделы у него в шапке строкой рубрик. */
+body.guest .tabs { display: none; }
 .tabs {
   display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
   background: var(--card); border-top: 1px solid var(--line);
@@ -528,6 +539,8 @@ header {
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
            gap: 0; }
   .side { display: none; }
+  /* без нижней панели незачем и место под неё */
+  body.guest .shell { padding-bottom: 20px; }
   /* «Избранное» на телефоне живёт в нижней панели — в шапке звезда только
      теснила бы поиск */
   #star { display: none; }
@@ -562,11 +575,11 @@ header {
 <div id="login">
   <form onsubmit="return login(event)">
     <h1>📡 Дайджест</h1>
-    <p>Личная страница бота. Введите пароль&nbsp;— он лежит в
-       <code>~/.newsdigest/env</code>, строка&nbsp;<code>ND_WEB_TOKEN</code>.</p>
+    <p>Вход для владельца. Читать новости можно и без него.</p>
     <input type="password" id="pass" placeholder="Пароль"
-           autocomplete="current-password" autofocus>
+           autocomplete="current-password">
     <button class="primary" type="submit">Войти</button>
+    <button class="ghost wide" type="button" onclick="hideLogin()">К новостям</button>
     <div class="err" id="loginErr"></div>
   </form>
 </div>
@@ -596,7 +609,7 @@ header {
                 title="Избранное">⭐</button>
         <button class="icon" id="bell" onclick="go('alerts')"
                 title="Уведомления">🔔</button>
-        <button class="icon" id="who" onclick="go('tools')"
+        <button class="icon" id="who" onclick="whoTap()"
                 title="Настройки">👤</button>
       </div>
     </div>
@@ -653,19 +666,27 @@ header {
    какую рассылку читатель видел последней. */
 var S = {
   view: 'news', section: '', q: '', offset: 0, more: false, finding: false,
-  seen: '', unread: 0, hot: false, hello: true, started: false,
+  seen: '', last: '', unread: 0, hot: false, hello: true, started: false,
+  admin: false,
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
   filters: [], pick: []
 };
 
+/* Владелец ли смотрит, решает не страница, а ответ сервера: свои экраны она
+   рисует по `state.admin`, а данные для них всё равно приходят только по
+   паролю. Соврать себе `S.admin = true` в консоли можно — увидеть от этого
+   нечего: сервер отдаст 401. */
 var TABS = [
   { id: 'news',   icon: '🏠', name: 'Главная' },
-  { id: 'saved',  icon: '🔖', name: 'Сохранённые' },
-  { id: 'liked',  icon: '⭐', name: 'Избранное' },
-  { id: 'alerts', icon: '🔔', name: 'Уведомления' },
-  { id: 'tools',  icon: '⚙',  name: 'Настройки' }
+  { id: 'saved',  icon: '🔖', name: 'Сохранённые', admin: true },
+  { id: 'liked',  icon: '⭐', name: 'Избранное', admin: true },
+  { id: 'alerts', icon: '🔔', name: 'Уведомления', admin: true },
+  { id: 'tools',  icon: '⚙',  name: 'Настройки', admin: true }
 ];
+
+/* Гостю доступна одна лента: остальное — про рассылки и настройки бота. */
+function allowed(view) { return S.admin || view === 'news'; }
 
 var NAMES = { news: 'Главное', saved: 'Сохранённые', liked: 'Избранное',
               alerts: 'Уведомления', tools: 'Настройки' };
@@ -677,7 +698,7 @@ function call(path, body) {
   var opts = { headers: { 'Content-Type': 'application/json' } };
   if (body) { opts.method = 'POST'; opts.body = JSON.stringify(body); }
   return fetch(path, opts).then(function (res) {
-    if (res.status === 401) { showLogin(); return Promise.reject('auth'); }
+    if (res.status === 401) { dropAdmin(); return Promise.reject('auth'); }
     return res.json().then(function (data) {
       if (!res.ok) { return Promise.reject(data.error || 'ошибка ' + res.status); }
       return data;
@@ -685,13 +706,27 @@ function call(path, body) {
   });
 }
 
-function showLogin() {
+/* Вход — это отдельный экран поверх сайта, а не ворота перед ним: страница
+   и без пароля показывает новости, поэтому из формы всегда есть дорога
+   обратно в ленту. */
+function openLogin() {
   stopTimer();
-  S.started = false;
+  $('loginErr').textContent = '';
   $('app').className = '';
   $('login').className = 'on';
-  var pass = $('pass');
-  if (pass) { pass.focus(); }
+  $('pass').focus();
+}
+
+function hideLogin() {
+  $('pass').value = '';
+  $('login').className = '';
+  $('app').className = 'on';
+  startTimer();
+}
+
+/* Кнопка в шапке: владельцу — настройки, гостю — вход. */
+function whoTap() {
+  if (S.admin) { go('tools'); } else { openLogin(); }
 }
 
 function login(event) {
@@ -699,10 +734,11 @@ function login(event) {
   var err = $('loginErr');
   err.textContent = '';
   call('/api/login', { token: $('pass').value }).then(function () {
-    $('pass').value = '';
-    $('login').className = '';
-    $('app').className = 'on';
-    start();
+    hideLogin();
+    S.admin = true;
+    S.view = 'news';
+    S.section = '';
+    reboot();
   }).catch(function (reason) {
     err.textContent = typeof reason === 'string' ? reason : 'не пускает';
   });
@@ -710,7 +746,31 @@ function login(event) {
 }
 
 function logout() {
-  call('/api/logout', {}).then(showLogin).catch(showLogin);
+  call('/api/logout', {}).then(dropAdmin).catch(dropAdmin);
+}
+
+/* Вышли сами или кончился вход — страница не гаснет, а становится тем, чем
+   она открыта всякому: новостями. Служебное со всеми его данными уходит. */
+function dropAdmin() {
+  if (!S.admin) { return; }            /* и так гость — перерисовывать нечего */
+  S.admin = false;
+  S.tools = null;
+  if (!allowed(S.view)) { S.view = 'news'; S.section = ''; }
+  reboot();
+}
+
+/* Сменилась роль — всё, что страница помнит, принадлежит другому читателю:
+   выбрасываем и перечитываем с нуля. */
+function reboot() {
+  S.state = null;
+  S.alerts = [];
+  S.last = '';
+  S.unread = 0;
+  S.hot = false;
+  S.hello = true;
+  paint();
+  refresh(false);
+  loadNews(true);
 }
 
 /* --------------------------------------------------------------- мелочи */
@@ -823,6 +883,7 @@ function dropFilter(id) {
 
 /* ------------------------------------------------------------ навигация */
 function go(view, section) {
+  if (!allowed(view)) { view = 'news'; }
   S.view = view;
   S.section = view === 'news' ? (section || '') : '';
   if (view === 'alerts') { seen(); }
@@ -850,9 +911,7 @@ function paint() {
   $('alerts').className = S.view === 'alerts' ? '' : 'hide';
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
-  $('star').className = 'icon' + (S.view === 'liked' ? ' on' : '');
-  $('bell').className = 'icon' + (S.view === 'alerts' ? ' on' : '');
-  $('who').className = 'icon' + (S.view === 'tools' ? ' on' : '');
+  drawIcons();
   $('tune').textContent = S.filters.length
     ? '⚙ Фильтры · ' + S.filters.length : '⚙ Фильтры';
   markSearch();
@@ -865,6 +924,21 @@ function paint() {
   if (S.view === 'tools') { drawPanel(); }
 }
 
+/* Значки в шапке. У гостя от них остаётся один: 🔑 — вход для владельца.
+   «Избранное» и «Уведомления» ему не показываем — там отметки и рассылки
+   владельца, и сервер их всё равно не отдаст. */
+function drawIcons() {
+  document.body.className = S.admin ? '' : 'guest';
+  $('star').className = 'icon' + (S.admin ? '' : ' hide')
+                      + (S.view === 'liked' ? ' on' : '');
+  $('bell').className = 'icon' + (S.admin ? '' : ' hide')
+                      + (S.view === 'alerts' ? ' on' : '');
+  var who = $('who');
+  who.className = 'icon' + (S.view === 'tools' ? ' on' : '');
+  who.textContent = S.admin ? '👤' : '🔑';
+  who.title = S.admin ? 'Настройки' : 'Войти';
+}
+
 function sectionName(id) {
   var entry = menuEntry(id);
   return entry ? entry.title : id;
@@ -875,9 +949,16 @@ function drawMeta() {
   if (!st) { $('meta').textContent = ''; return; }
   if (S.q) { bits.push('Поиск: «' + esc(S.q) + '»'); }
   if (st.collected) { bits.push('🕘 Обновлено в ' + esc(st.collected)); }
-  bits.push(st.feeds + ' ' + plural(st.feeds, 'источник', 'источника', 'источников'));
-  if (st.paused) { bits.push('<b class="warn">⏸ рассылка на паузе</b>'); }
-  if (st.busy) { bits.push('<b class="warn">выполняется: ' + esc(st.busy) + '</b>'); }
+  /* сколько у бота источников, стоит ли рассылка на паузе и чем он занят —
+     это про службу, а не про новости: такое видит только владелец */
+  if (S.admin) {
+    bits.push(st.feeds + ' ' +
+              plural(st.feeds, 'источник', 'источника', 'источников'));
+    if (st.paused) { bits.push('<b class="warn">⏸ рассылка на паузе</b>'); }
+    if (st.busy) {
+      bits.push('<b class="warn">выполняется: ' + esc(st.busy) + '</b>');
+    }
+  }
   $('meta').innerHTML = bits.join(' · ');
 }
 
@@ -985,6 +1066,7 @@ function drawTabs() {
   var box = $('tabs');
   box.innerHTML = '';
   TABS.forEach(function (tab) {
+    if (tab.admin && !S.admin) { return; }
     var on = S.view === tab.id && (tab.id !== 'news' || !S.section);
     var button = el('button', on ? 'on' : '');
     button.type = 'button';
@@ -998,7 +1080,7 @@ function drawTabs() {
   });
   var bell = $('bell');
   bell.innerHTML = '🔔';
-  if (S.unread) { bell.appendChild(alertBadge()); }
+  if (S.admin && S.unread) { bell.appendChild(alertBadge()); }
 }
 
 /* Значок непрочитанного. Обычно это счётчик рассылок, но если среди них есть
@@ -1101,7 +1183,7 @@ function loadNews(reset) {
            + '&q=' + encodeURIComponent(S.q)
            + '&offset=' + S.offset;
   return call(path).then(function (data) {
-    if (data.state) { S.state = data.state; }
+    keepState(data.state);
     if (data.side) {
       S.side = data.side;
       S.menu = data.side.menu || [];
@@ -1160,9 +1242,9 @@ function drawEmpty() {
     return box;
   }
   box.appendChild(el('b', null, 'Здесь пока пусто'));
-  box.appendChild(el('div', null, S.state && S.state.next
+  box.appendChild(el('div', null, S.admin && S.state && S.state.next
     ? 'Выпуск ещё не приходил. Ближайший — ' + S.state.next + '.'
-    : 'Выпуск ещё не приходил.'));
+    : 'Новостей пока нет — загляните позже.'));
   return box;
 }
 
@@ -1203,9 +1285,13 @@ function drawCard(item) {
   if (item.summary) { text.appendChild(drawSummary(item.summary)); }
 
   var foot = el('div', 'foot');
-  foot.appendChild(actButton('🔖', 'save', item.saved, item));
-  foot.appendChild(actButton('👍', 'up', item.verdict === 'up', item));
-  foot.appendChild(actButton('👎', 'down', item.verdict === 'down', item));
+  /* 👍/👎/🔖 — это вкусы владельца, они уходят боту и меняют выпуск. Гостю
+     кнопки не рисуем: нажать ему всё равно нечего — POST для него закрыт */
+  if (S.admin) {
+    foot.appendChild(actButton('🔖', 'save', item.saved, item));
+    foot.appendChild(actButton('👍', 'up', item.verdict === 'up', item));
+    foot.appendChild(actButton('👎', 'down', item.verdict === 'down', item));
+  }
   var src = el('span', 'src');
   if (item.url) {
     var out = el('a', null, item.source);
@@ -1268,10 +1354,13 @@ function drawRail() {
   drawTopicsBox();
 }
 
+/* Справка о выпуске — расписание, источники, пауза — целиком служебная,
+   и гостю правой колонки с ней не полагается. */
 function drawDigestBox() {
   var box = $('boxDigest'), st = S.state;
+  box.className = 'box' + (S.admin ? '' : ' hide');
   box.innerHTML = '';
-  if (!st) { return; }
+  if (!st || !S.admin) { return; }
   var who = el('div', 'who');
   who.appendChild(el('span', null, '📡'));
   who.appendChild(el('span', null, 'Дайджест'));
@@ -1287,7 +1376,7 @@ function drawDigestBox() {
     plural(st.each, 'новости', 'новости', 'новостей') + ' на раздел'));
   if (st.paused) { facts.appendChild(el('div', 'warn', '⏸ рассылка на паузе')); }
   if (!st.owner) {
-    facts.appendChild(el('div', 'warn', 'TELEGRAM_CHAT_ID не задан'));
+    facts.appendChild(el('div', 'warn', 'чат владельца не задан'));
   }
   box.appendChild(facts);
 
@@ -1488,8 +1577,9 @@ function drawLink(link, mark) {
 }
 
 /* ------------------------------------------------------- панель настроек */
-/* Только чтение: подписчики и настройки приложения. Меняются они на самом
-   VPS, в ~/.newsdigest/env, — страница про них просто рассказывает. */
+/* Только чтение: подписчики и настройки приложения. Правят их на самой
+   машине бота — страница про них просто рассказывает. Экран этот
+   владельцу и виден: гостю сюда не попасть, а данные к нему не приедут. */
 function drawPanel() {
   var box = $('panel'), data = S.tools;
   box.innerHTML = '';
@@ -1542,9 +1632,27 @@ function drawOption(opt) {
 }
 
 /* --------------------------------------------------------------- действия */
+/* Состояние приходит с каждым ответом, и вместе с ним — кто мы сегодня.
+   Один этот признак и решает, что страница рисует. */
+function keepState(st) {
+  if (!st) { return; }
+  S.state = st;
+  if (!!st.admin === S.admin) { return; }
+  /* вошли или вышли — меняется вся страница разом, а не одна панель */
+  S.admin = !!st.admin;
+  if (!allowed(S.view)) { S.view = 'news'; S.section = ''; }
+  paint();
+}
+
+/* По чему видно, что лента пополнилась. У владельца это последняя рассылка,
+   у гостя рассылок нет — там самая свежая новость. Считает признак сервер,
+   странице довольно того, что он изменился. */
+function feedMark() { return S.last; }
+
 function applyAlerts(data) {
-  if (data.state) { S.state = data.state; }
+  keepState(data.state);
   S.alerts = data.alerts || [];
+  S.last = data.last || '';
   /* непрочитанное — это рассылки, пришедшие после последней увиденной.
      При заходе считать нечего: всё, что уже лежит, читатель видел раньше */
   S.unread = 0;
@@ -1602,7 +1710,7 @@ function react(data) {
 function loadTools() {
   return call('/api/tools').then(function (data) {
     S.tools = data;
-    if (data.state) { S.state = data.state; }
+    keepState(data.state);
     if (S.view === 'tools') { drawPanel(); }
     drawMeta();
     drawDigestBox();
@@ -1612,12 +1720,13 @@ function loadTools() {
 }
 
 function refresh(manual) {
-  var before = S.alerts.length ? S.alerts[0].id : '';
+  /* пока состояния нет, сравнивать не с чем: первый ответ — не «пришло
+     новое», а просто первый ответ, и ленту за ним перечитывать незачем */
+  var known = !!S.state, before = feedMark();
   return call('/api/alerts').then(function (data) {
     applyAlerts(data);
     /* пришёл выпуск — значит в ленте появились новости, перечитываем её */
-    var now = S.alerts.length ? S.alerts[0].id : '';
-    if (now !== before && isNews(S.view)) { loadNews(true); }
+    if (known && feedMark() !== before && isNews(S.view)) { loadNews(true); }
     if (manual) { toast('Обновлено'); }
   }).catch(function (reason) {
     if (manual && reason !== 'auth') { toast('Не отвечает: ' + reason); }
@@ -1634,13 +1743,14 @@ function startTimer() {
   }, 8000);
 }
 
+/* Страница открывается сразу лентой: пароля для новостей не спрашивают, а
+   владельца сервер узнает по cookie — и тогда в ответе придёт `admin`. */
 function start() {
   if (S.started) { return; }
   S.started = true;
-  S.hello = true;
-  refresh(false);
-  loadNews(true);
-  paint();
+  $('login').className = '';
+  $('app').className = 'on';
+  reboot();
   startTimer();
 }
 
@@ -1649,21 +1759,15 @@ document.addEventListener('visibilitychange', function () {
 });
 
 document.addEventListener('keydown', function (event) {
-  if (event.key === 'Escape') { closeFilters(); }
+  if (event.key !== 'Escape') { return; }
+  closeFilters();
+  if ($('login').className === 'on') { hideLogin(); }
 });
 
 /* повернули телефон, растянули окно — в три строки помещается уже другое */
 window.addEventListener('resize', markClamped);
 
-call('/api/alerts').then(function (data) {
-  $('login').className = '';
-  $('app').className = 'on';
-  S.started = true;
-  applyAlerts(data);
-  loadNews(true);
-  paint();
-  startTimer();
-}).catch(function () { /* 401 уже показал форму входа */ });
+start();
 </script>
 </body>
 </html>
