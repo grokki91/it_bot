@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, subscribers, translate, trust
+from . import config, sections, signals, subscribers, translate, trust
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .feedparse import parse_date
@@ -392,21 +392,36 @@ def check_group(topics, readers) -> int:
         shortlist = shared_shortlist(pools, hot)
 
         persona = group_persona(conn, topics, ready)
+        kev = signals.kev_ids(conn)
         try:
             ranking, usage = rate_urgency(shortlist, persona)
         except LLMError as exc:
-            # без оценки модели срочное не отправляем: слишком легко ошибиться
-            log.warning("Срочное не проверить (%s) — подождёт выпуска", exc)
-            for chat_id, _sub in ready:
-                log_run(conn, "breaking", "llm-failed",
-                        {"candidates": len(pools[chat_id]), "sent": 0,
-                         "cost": 0.0, "best": 0.0})
-            return 0
+            # Без оценки модели срочное обычно не отправляем: слишком легко
+            # разбудить человека ради пересказа чужой новости. Но событие с
+            # твёрдым числом в её мнении не нуждается — магнитуда 7.4 остаётся
+            # магнитудой 7.4, что бы там ни ответил DeepSeek
+            rated = signals.raise_floors({}, shortlist, kev)
+            if not rated:
+                log.warning("Срочное не проверить (%s) — подождёт выпуска", exc)
+                for chat_id, _sub in ready:
+                    log_run(conn, "breaking", "llm-failed",
+                            {"candidates": len(pools[chat_id]), "sent": 0,
+                             "cost": 0.0, "best": 0.0})
+                return 0
+            log.warning("Модель недоступна (%s), но числа говорят сами за себя",
+                        exc)
+            sent = 0
+            for chat_id, sub in ready:
+                with subscribers.overlay(sub):
+                    sent += deliver(conn, chat_id, pools[chat_id], rated,
+                                    persona, {}, 0.0)
+            return sent
 
         # общий запрос делим на всех: иначе в `status` расход одного читателя
         # выглядел бы как расход целой группы
         cost = llm_cost(usage) / len(ready)
-        rated = rated_by_group(ranking, shortlist)
+        rated = signals.raise_floors(rated_by_group(ranking, shortlist),
+                                     shortlist, kev)
 
         sent, cards = 0, {}
         for chat_id, sub in ready:

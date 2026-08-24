@@ -13,10 +13,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, sections, subscribers, userprofiles
+from . import candidates, config, sections, subscribers, userprofiles
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
+from .feedparse import parse_date
 from .llm import llm_cost, llm_json
 from .net import post_json
 from .pipeline import build_and_send, build_section
@@ -229,13 +230,97 @@ def cmd_doctor(_args):
     return 0 if good else 1
 
 
-def cmd_feeds(_args):
-    feeds = all_feeds()
+def cmd_feeds(args):
+    """Проверка источников. С --url — одной ссылки, ещё не добавленной никуда."""
+    if getattr(args, "url", ""):
+        return check_one_feed(args.url)
+    if getattr(args, "candidates", False):
+        return check_candidates(getattr(args, "adopt", False))
+    feeds = all_feeds(wire_only=getattr(args, "wire", False))
     print("Проверяю %d источников...\n" % len(feeds))
+    silent = []
     with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
         for src, items, err in pool.map(fetch_source, feeds):
             mark = "ok  " if not err else "FAIL"
-            print("  [%s] %-20s %3d свежих  %s" % (mark, src[0], len(items), err[:60]))
+            if not err and not items:
+                mark, _ = "ПУСТО", silent.append(src[0])
+            print("  [%-4s] %-20s %3d свежих  %s"
+                  % (mark, src[0], len(items), err[:60]))
+    if silent:
+        # 200 и ноль записей — не ошибка, но и не работа: так выглядит лента,
+        # у которой сменился адрес или сломался поисковый синтаксис
+        print("\nОтвечают, но ничего не отдают: %s" % ", ".join(silent))
+        print("Возможно, у ленты просто нет свежего за %d ч — но если это"
+              " повторяется, проверьте адрес." % CFG["window_hours"])
+    return 0
+
+
+def check_candidates(adopt=False):
+    """Проверяет источники-кандидаты и, если попросили, добавляет живых.
+
+    Список фидов стареет сам: ленты переезжают, издания закрываются, у части
+    сайтов пропадает публичный RSS. Поэтому кандидат сначала должен ответить —
+    и только потом попадает в подборку.
+    """
+    rows = candidates.all_candidates()
+    known = {feed[0] for feed in all_feeds(topics=list(PROFILES))}
+    todo = [row for row in rows if row[1] not in known]
+    print("Кандидатов: %d (уже добавлено раньше: %d)\n"
+          % (len(todo), len(rows) - len(todo)))
+
+    def check(row):
+        topic, source_id, url, tier, category, why = row
+        _src, items, err = fetch_source((source_id, url, tier, category))
+        return row, items, err
+
+    alive, dead = [], []
+    with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
+        for row, items, err in pool.map(check, todo):
+            topic, source_id, url, _tier, _category, why = row
+            if err or not items:
+                dead.append((row, err or "ответил, но записей нет"))
+                print("  [FAIL] %-11s %-20s %s" % (topic, source_id,
+                                                   (err or "пусто")[:44]))
+            else:
+                alive.append(row)
+                print("  [ ok ] %-11s %-20s %3d свежих — %s"
+                      % (topic, source_id, len(items), why[:44]))
+
+    print("\nОтветили: %d, не ответили: %d" % (len(alive), len(dead)))
+    if not alive:
+        return 1
+    if not adopt:
+        print("Добавить ответивших: %s feeds --candidates --adopt" % PROG)
+        return 0
+
+    added = 0
+    for topic, source_id, url, tier, category, _why in alive:
+        try:
+            userprofiles.add_feed(topic, url, tier=tier, category=category,
+                                  source_id=source_id)
+            added += 1
+        except ValueError as exc:
+            print("  пропускаю %s: %s" % (source_id, exc))
+    print("\nДобавлено в %s: %d источник(ов)." % (PROFILES_FILE, added))
+    print("Перезапустите демон, чтобы он их увидел.")
+    return 0
+
+
+def check_one_feed(url):
+    """Годится ли эта ссылка в источники. Печатает первые заголовки."""
+    src = ("проверка", url, 2, "media")
+    _src, items, err = fetch_source(src)
+    if err:
+        print("FAIL  %s\n  %s" % (url, err))
+        return 1
+    print("ok    %s\n  свежих за %d ч: %d" % (url, CFG["window_hours"], len(items)))
+    if not items:
+        print("  Записей нет. Либо лента давно не обновлялась, либо адрес не тот.")
+        return 1
+    for row in items[:5]:
+        print("  · %s" % row["title"][:90])
+    print("\nДобавить: %s руками — раздел, tier и категорию выбираете вы."
+          % PROFILES_FILE)
     return 0
 
 
@@ -355,6 +440,22 @@ def cmd_status(_args):
         print("  %-22s сбоев подряд: %-3d %s"
               % (row["source_id"], row["fails"], (row["err"] or "")[:55]))
 
+    # Фид, который отвечает 200 и отдаёт ноль записей, ошибкой не считается —
+    # и раньше выпадал из выпуска молча. Такой источник надо увидеть глазами
+    quiet = list(conn.execute(
+        "SELECT source_id, empty, empty_at FROM health "
+        "WHERE empty >= ? ORDER BY empty DESC LIMIT 15", (CFG["quiet_after_empty"],)))
+    if quiet:
+        print("\n=== Молчащие источники (отвечают, но ничего не отдают) ===")
+        for row in quiet:
+            since = parse_date(row["empty_at"] or "")
+            days = ((datetime.now(timezone.utc) - since).days
+                    if since else None)
+            when = "%d дн." % days if days is not None else "?"
+            print("  %-22s пустых обходов подряд: %-4d молчит: %s"
+                  % (row["source_id"], row["empty"], when))
+        print("  Проверьте адрес: %s feeds --url <ссылка>" % PROG)
+
     size = DB_FILE.stat().st_size / 1e6 if DB_FILE.exists() else 0
     print("\nРазмер базы: %.1f МБ   каталог: %s" % (size, HOME))
     conn.close()
@@ -468,7 +569,16 @@ def build_parser():
         func=cmd_chatid)
     sub.add_parser("doctor", help="проверить Telegram, DeepSeek, базу").set_defaults(
         func=cmd_doctor)
-    sub.add_parser("feeds", help="проверить каждый источник").set_defaults(func=cmd_feeds)
+    feeds = sub.add_parser("feeds", help="проверить каждый источник")
+    feeds.add_argument("--url", default="",
+                       help="проверить одну ссылку, ещё никуда не добавленную")
+    feeds.add_argument("--wire", action="store_true",
+                       help="только быструю полосу: агентства и службы оповещения")
+    feeds.add_argument("--candidates", action="store_true",
+                       help="проверить источники-кандидаты, которых ещё нет")
+    feeds.add_argument("--adopt", action="store_true",
+                       help="с --candidates: добавить в профили тех, кто ответил")
+    feeds.set_defaults(func=cmd_feeds)
     sub.add_parser("topics", help="разделы и их источники").set_defaults(
         func=cmd_topics)
     sub.add_parser("sections", help="то же, что topics").set_defaults(

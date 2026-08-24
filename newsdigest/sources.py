@@ -103,11 +103,27 @@ def is_muted(conn, source_id) -> bool:
 
 
 def mark_health(conn, source_id, ok, err="", count=0):
-    if ok:
+    """Отметка о состоянии источника.
+
+    «ok» — это не только «HTTP 200»: фид, который отвечает двухсоткой и отдаёт
+    ноль записей, тоже сломан, просто молча. Так ведёт себя витрина Google
+    News, когда перестаёт работать поисковый синтаксис, и лента, у которой
+    сменился адрес. Поэтому пустые ответы считаются отдельно и видны
+    в `digest.py status`.
+    """
+    if ok and not count:
+        conn.execute(
+            "INSERT INTO health(source_id, ok_at, fails, last_count, empty, empty_at) "
+            "VALUES (?,?,0,0,1,?) ON CONFLICT(source_id) DO UPDATE SET "
+            "ok_at=excluded.ok_at, fails=0, last_count=0, empty=health.empty+1, "
+            "empty_at=COALESCE(NULLIF(health.empty_at,''), excluded.empty_at)",
+            (source_id, now_iso(), now_iso()))
+    elif ok:
         conn.execute(
             "INSERT INTO health(source_id, ok_at, fails, last_count) VALUES (?,?,0,?) "
             "ON CONFLICT(source_id) DO UPDATE SET ok_at=excluded.ok_at, fails=0, "
-            "last_count=excluded.last_count", (source_id, now_iso(), count))
+            "last_count=excluded.last_count, empty=0, empty_at=NULL",
+            (source_id, now_iso(), count))
     else:
         conn.execute(
             "INSERT INTO health(source_id, err, err_at, fails) VALUES (?,?,?,1) "

@@ -91,7 +91,13 @@ CREATE TABLE IF NOT EXISTS health (
     err        TEXT,
     err_at     TEXT,
     fails      INTEGER NOT NULL DEFAULT 0,
-    last_count INTEGER NOT NULL DEFAULT 0
+    last_count INTEGER NOT NULL DEFAULT 0,
+    -- Сколько обходов подряд источник отвечает 200 и ноль записей. Фид,
+    -- который молча перестал что-либо отдавать (сменился адрес, сломался
+    -- поисковый синтаксис у витрины Google News), раньше считался здоровым:
+    -- HTTP-ошибки нет — значит всё в порядке. Так теряются источники.
+    empty      INTEGER NOT NULL DEFAULT 0,
+    empty_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -254,6 +260,19 @@ def upgrade(conn) -> None:
     add_news_card(conn)
     add_breaking_mark(conn)
     add_item_section(conn)
+    add_empty_feed_counter(conn)
+
+
+def add_empty_feed_counter(conn) -> None:
+    """Счётчик пустых ответов фида (3.7, здоровье источников).
+
+    Раньше «ok» значило только «HTTP 200». Фид, который отвечает двухсоткой и
+    отдаёт ноль записей, считался здоровым и молча выпадал из выпуска.
+    """
+    if not table_exists(conn, "health"):
+        return                      # новая база: колонки придут из SCHEMA
+    ensure_column(conn, "health", "empty", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "health", "empty_at", "TEXT")
 
 
 def add_item_section(conn) -> None:

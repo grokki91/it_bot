@@ -149,5 +149,45 @@ class TestConsensus(unittest.TestCase):
         self.assertFalse(breaking.is_hot(group))
 
 
+
+class TestRegistry(unittest.TestCase):
+    """Реестр и подборка не должны разъезжаться."""
+
+    def test_every_builtin_source_is_classified(self):
+        """Встроенный источник без записи в реестре молча падает в 'other'."""
+        from newsdigest.profiles import BUILTIN
+        unknown = sorted({feed[0] for body in BUILTIN.values()
+                          for feed in body["feeds"]}
+                         - set(trust.SOURCE_META))
+        self.assertEqual(unknown, [], "нет записи в SOURCE_META: %s" % unknown)
+
+    def test_every_candidate_is_classified(self):
+        """Кандидат должен попасть в нужную весовую категорию сразу при добавлении."""
+        from newsdigest import candidates
+        unknown = sorted({row[1] for row in candidates.all_candidates()}
+                         - set(trust.SOURCE_META))
+        self.assertEqual(unknown, [], "нет записи в SOURCE_META: %s" % unknown)
+
+    def test_candidates_do_not_duplicate_existing_feeds(self):
+        from newsdigest import candidates
+        from newsdigest.profiles import BUILTIN
+        have = {feed[1] for body in BUILTIN.values() for feed in body["feeds"]}
+        clash = [row[1] for row in candidates.all_candidates() if row[2] in have]
+        self.assertEqual(clash, [], "такие ленты уже есть: %s" % clash)
+
+    def test_every_section_has_a_fast_lane_or_a_reason(self):
+        """Без tier-1 и без агентств срочное в разделе невозможно в принципе."""
+        from newsdigest.profiles import BUILTIN, DEFAULT_SECTIONS
+        from newsdigest import candidates
+        planned = {row[0] for row in candidates.all_candidates()}
+        blind = []
+        for topic in DEFAULT_SECTIONS:
+            feeds = BUILTIN[topic]["feeds"]
+            if any(f[2] == 1 for f in feeds) or topic in planned:
+                continue
+            blind.append(topic)
+        self.assertEqual(blind, [],
+                         "нет ни первоисточника, ни кандидата в него: %s" % blind)
+
 if __name__ == "__main__":
     unittest.main()

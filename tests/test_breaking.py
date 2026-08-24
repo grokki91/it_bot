@@ -47,6 +47,7 @@ class BreakingCase(unittest.TestCase):
 
         self.sent = []
         self.saved_cfg = {k: CFG[k] for k in CFG}
+        CFG["use_kev"] = False        # тесты в сеть не ходят
         self._real = (breaking.tg_send, breaking.rate_urgency, breaking.summarize,
                       breaking.local_now)
         breaking.tg_send = lambda chat, text, keyboard=None, silent=None: \

@@ -66,7 +66,15 @@ CFG = {
                                    # больше сотни, а упираются они в сеть, а не в CPU
     "max_per_feed":     30,        # сколько записей брать из одного фида
     "mute_after_fails": 5,         # после N сбоев подряд источник молчит сутки
+    "quiet_after_empty": 6,        # после стольких пустых обходов подряд фид
+                                   # попадает в «молчащие» в `status`. Ошибки
+                                   # нет — он отвечает 200 и ноль записей, — но
+                                   # из выпуска выпал, и это надо увидеть
     "use_hackernews":   True,      # добавлять топ Hacker News (без ключа, бесплатно)
+    "use_kev":          True,      # каталог CISA KEV: уязвимости, которые
+                                   # эксплуатируются прямо сейчас. Один запрос
+                                   # в сутки, без ключа. Нужен срочным новостям
+                                   # (newsdigest/signals.py)
     "hn_min_points":    80,     # порог баллов HN. Ниже = больше шума с форума
     "hn_tier":          3,      # 3 = агрегатор: если ту же новость дал реальный
                                 # сайт, ссылка ведёт на него, а не на тред HN
@@ -244,6 +252,7 @@ ENV_MAP = {
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
     "ND_BREAKING_EVERY": ("breaking_every_min", int),
+    "ND_KEV": ("use_kev", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_FEEDBACK_WEIGHT": ("feedback_weight", float),
     "ND_SIGNUP": ("signup", str),
     "ND_WEB": ("web", lambda v: str(v).lower() in ("1", "true", "yes")),
