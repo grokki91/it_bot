@@ -21,9 +21,22 @@ CREATE TABLE IF NOT EXISTS items (
     fetched_at   TEXT NOT NULL,
     sig          TEXT NOT NULL DEFAULT '',
     social       REAL NOT NULL DEFAULT 0,
-    state        TEXT NOT NULL DEFAULT 'new'
+    state        TEXT NOT NULL DEFAULT 'new',
+    -- раздел, определённый по содержанию (classify.route_all), и уверенность
+    -- в нём. Пусто = решить не удалось, раздел доберётся по источнику
+    section      TEXT NOT NULL DEFAULT '',
+    route_conf   REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_items_section ON items(section);
+
+-- Кэш маршрутизации: во что модель разложила материал с такой сигнатурой.
+-- Одну и ту же новость, приехавшую вторым проходом, второй раз не оплачиваем.
+CREATE TABLE IF NOT EXISTS routes (
+    sig     TEXT PRIMARY KEY,
+    section TEXT NOT NULL DEFAULT '',
+    at      TEXT NOT NULL
+);
 
 -- История отправленного персональна: у каждого подписчика свой дедуп.
 -- Здесь же лежит и сама карточка — раздел, заголовок, суть и оценка модели.
@@ -218,6 +231,24 @@ def upgrade(conn) -> None:
     add_digest_slot(conn)
     add_news_card(conn)
     add_breaking_mark(conn)
+    add_item_section(conn)
+
+
+def add_item_section(conn) -> None:
+    """Раздел прямо у материала (3.7, маршрутизация по содержанию).
+
+    Раньше раздел вычислялся на лету по source_id, и у широкой ленты вроде
+    Reuters он всегда получался один и тот же. Теперь раздел определяется по
+    содержанию и хранится рядом с материалом.
+
+    Уже накопленные материалы остаются без раздела — и это нормально:
+    `pipeline.for_topic` разложит их по источнику, как делал всегда, а через
+    `keep_items_days` они и так уйдут.
+    """
+    if not table_exists(conn, "items"):
+        return                      # новая база: колонки придут из SCHEMA
+    ensure_column(conn, "items", "section", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "items", "route_conf", "REAL NOT NULL DEFAULT 0")
 
 
 def add_news_card(conn) -> None:

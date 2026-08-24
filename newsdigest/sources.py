@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+from . import classify
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
@@ -144,13 +145,18 @@ def collect(topics=None) -> dict:
         rows.extend(fetch_hackernews(keywords_for(topics)))
 
     stats["fetched"] = len(rows)
+    # раздел определяем ЗДЕСЬ, один раз на материал: дальше он лежит в базе, и
+    # ни выпуску, ни ленте на странице не приходится гадать по источнику.
+    # Разделы для маршрутизации — те, что кто-то читает: уводить новость туда,
+    # куда никто не подписан, значит её потерять
+    stats["cost"] = classify.route_all(conn, rows, topics_in_use(conn))
     before = conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
     for row in rows:
         conn.execute(
             "INSERT INTO items(url_hash,url,source_id,tier,category,title,summary,"
-            "published_at,fetched_at,sig,social) "
+            "published_at,fetched_at,sig,social,section,route_conf) "
             "VALUES (:url_hash,:url,:source_id,:tier,:category,:title,:summary,"
-            ":published_at,:fetched_at,:sig,:social) "
+            ":published_at,:fetched_at,:sig,:social,:section,:route_conf) "
             "ON CONFLICT(url_hash) DO UPDATE SET social=MAX(items.social, excluded.social)",
             dict(row, fetched_at=now_iso()))
     conn.commit()
@@ -160,8 +166,11 @@ def collect(topics=None) -> dict:
                 - timedelta(days=CFG["keep_items_days"])).isoformat()
     cutoff_s = (datetime.now(timezone.utc)
                 - timedelta(days=CFG["keep_sent_days"])).isoformat()
+    cutoff_r = (datetime.now(timezone.utc)
+                - timedelta(days=CFG["keep_routes_days"])).isoformat()
     conn.execute("DELETE FROM items WHERE fetched_at < ? AND state != 'sent'", (cutoff_i,))
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
+    conn.execute("DELETE FROM routes WHERE at < ?", (cutoff_r,))
     # перевод новости живёт ровно столько, сколько сама новость: заголовок
     # двухмесячной давности второй раз уже не понадобится
     conn.execute("DELETE FROM translations WHERE at < ?", (cutoff_s,))

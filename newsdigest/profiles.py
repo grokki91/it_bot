@@ -77,6 +77,44 @@ BUILTIN = {
         ],
     },
 
+    "dev": {
+        "title": "Софт и разработка",
+        "emoji": "🧑‍💻",
+        "aliases": ("софт", "разработка", "dev", "программирование", "software",
+                    "код", "опенсорс"),
+        "persona": (
+            "практикующий разработчик. Интересны: релизы языков, рантаймов и "
+            "баз данных с тем, что в них реально изменилось, важные изменения "
+            "в ядре Linux и системном софте, инструменты, которые экономят "
+            "время, разборы инцидентов и производительности, лицензии и "
+            "судьба open-source проектов, уязвимости в том, чем он пользуется. "
+            "НЕ интересны: «10 библиотек, которые изменят вашу жизнь», "
+            "туториалы уровня hello world, вакансии и карьерные советы, "
+            "холивары о языках, анонсы конференций."
+        ),
+        "keywords": ["linux", "kernel", "open source", "python", "rust", "golang",
+                     "javascript", "typescript", "kubernetes", "docker",
+                     "postgres", "sqlite", "database", "compiler", "webassembly",
+                     "git", "api", "framework"],
+        "feeds": [
+            # --- независимая техническая пресса ---
+            ("lwn",            "https://lwn.net/headlines/newrss",            1, "media"),
+            ("theregister-dev","https://www.theregister.com/software/headlines.atom", 2, "media"),
+            ("infoworld",      "https://www.infoworld.com/index.rss",         2, "media"),
+            # --- первоисточники релизов ---
+            ("kernel-org",     "https://www.kernel.org/feeds/kdist.xml",      1, "opensource"),
+            ("rust-blog",      "https://blog.rust-lang.org/feed.xml",         1, "opensource"),
+            ("go-blog",        "https://go.dev/blog/feed.atom",               1, "opensource"),
+            ("python-insider", "https://blog.python.org/feeds/posts/default",  1, "opensource"),
+            ("postgresql",     "https://www.postgresql.org/news.rss",         1, "opensource"),
+            ("kubernetes",     "https://kubernetes.io/feed.xml",              1, "opensource"),
+            ("github-blog",    "https://github.blog/feed/",                   1, "labs"),
+            # --- сообщество ---
+            ("hn-front",       "https://hnrss.org/frontpage?points=150",      3, "community"),
+            ("stackoverflow",  "https://stackoverflow.blog/feed/",            2, "community"),
+        ],
+    },
+
     "hardware": {
         "title": "Компьютерное железо",
         "emoji": "🖥",
@@ -501,16 +539,29 @@ BUILTIN = {
 }
 
 #: разделы выпуска по умолчанию и порядок, в котором они идут.
-#: Крипта, инфобез и «свой» остаются доступными, но в подборку не лезут:
+#: Крипта и «свой» остаются доступными, но в подборку не лезут:
 #: их включают вручную — /sections add crypto.
 #:
-#: Климат идёт ПЕРЕД наукой намеренно: одно событие показывается один раз, в
-#: разделе, который стоит раньше, — иначе климатические новости так и остались
-#: бы в «Науке», ради чего раздел и выделяли.
+#: Порядок задаёт и вид выпуска, и то, под какой вывеской показывается
+#: материал, у которого раздел определить не удалось (`sections.source_map`).
 DEFAULT_SECTIONS = [
-    "ai", "hardware", "robots", "space", "climate", "science", "medicine",
-    "health", "politics", "economy", "sports", "incidents", "cinema", "games",
+    "ai", "dev", "cybersec", "hardware", "robots", "space", "climate",
+    "science", "medicine", "health", "politics", "economy", "sports",
+    "incidents", "cinema", "games",
 ]
+
+#: Сколько места раздел занимает в выпуске: доля от `per_section`.
+#: Шестнадцать разделов по две новости — это тридцать две штуки дважды в день,
+#: и «Игры» с «Кино» съедали бы в выпуске столько же, сколько «Политика».
+#: Раздел с весом 0.5 при обычной настройке получает одну новость вместо двух.
+#: Раздел, которого здесь нет, весит 1.0. На `/news <раздел>` вес не влияет:
+#: там читатель просит конкретное число.
+SECTION_WEIGHT = {
+    "sports": 0.5,
+    "cinema": 0.5,
+    "games":  0.5,
+    "health": 0.5,
+}
 
 #: то, чем пользуется остальной код. Наполняется встроенными разделами, а
 #: поверх них — пользовательскими из ~/.newsdigest/profiles.json (userprofiles).
@@ -537,3 +588,17 @@ def emoji(topic: str) -> str:
 def label(topic: str) -> str:
     """«🩺 Медицина» — то, что видно в списках и заголовках выпуска."""
     return "%s %s" % (emoji(topic), title(topic))
+
+
+def weight(topic: str) -> float:
+    """Доля выпуска, которую занимает раздел. По умолчанию 1.0.
+
+    Профиль может задать свой вес (в том числе пользовательский из
+    profiles.json), иначе берётся встроенный SECTION_WEIGHT.
+    """
+    body = PROFILES.get(topic) or {}
+    try:
+        value = float(body.get("weight", SECTION_WEIGHT.get(topic, 1.0)))
+    except (TypeError, ValueError):
+        return 1.0
+    return value if value > 0 else 1.0

@@ -356,7 +356,8 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
     stats["sent"] = 1
 
     # раздел у срочного свой не считается: кандидаты берутся сразу по всем
-    # разделам читателя, поэтому вывеску определяем по источнику
+    # разделам читателя, поэтому берём тот, что проставили при сборе, а для
+    # записей, накопленных до маршрутизации, — по источнику, как было раньше.
     # breaking=1 — единственное, чем эта запись отличается от плановой.
     # По ней страница и рисует срочное иначе: обводка у карточки, молния в
     # уведомлениях. В самом сообщении пометка есть (`render.breaking_card`),
@@ -367,7 +368,7 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
         (chat_id, main["url_hash"], main["sig"], main["title"], main["url"],
          local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"], category,
-         sections.by_source(main["source_id"]),
+         (main.get("section") or "") or sections.by_source(main["source_id"]),
          str(card.get("headline") or "")[:300],
          str(card.get("what") or "")[:500], float(best_score)))
     for row in best:

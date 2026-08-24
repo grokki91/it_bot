@@ -1,0 +1,99 @@
+{
+  "_comment": [
+    "Эталонный набор для маршрутизации: заголовок, лид и раздел, в который",
+    "новость должна попасть. Проверяется ТОЛЬКО словарь правил (classify.by_rules),",
+    "без сети и без модели — поэтому набор и живёт в репозитории.",
+    "",
+    "section: \"\" означает «правила решить не должны»: новость честно",
+    "неоднозначна, и её место — у модели, а не у словаря. Угадывание здесь",
+    "хуже отказа: раздел проставится в базу и переопределить его будет нечем.",
+    "",
+    "Пополняйте набор реальными заголовками, которые бот разложил неправильно:",
+    "это и регрессионный тест, и способ ответить на вопрос «правильно ли",
+    "поделено на разделы», не гадая."
+  ],
+  "cases": [
+    {"title": "OpenAI releases GPT-6 with 2M context window", "lead": "The model tops reasoning benchmarks", "section": "ai"},
+    {"title": "Anthropic publishes interpretability results for Claude", "lead": "Researchers traced features inside the network", "section": "ai"},
+    {"title": "Google DeepMind's new model solves olympiad geometry", "lead": "The system was trained on synthetic proofs", "section": "ai"},
+    {"title": "Нейросеть научилась восстанавливать древние тексты", "lead": "Языковая модель обучена на корпусе надписей", "section": "ai"},
+    {"title": "Mistral открыла веса новой модели", "lead": "Компания выложила чекпоинты под лицензией Apache", "section": "ai"},
+
+    {"title": "Linux kernel 7.2 released with rewritten scheduler", "lead": "Open source contributors landed the patches", "section": "dev"},
+    {"title": "PostgreSQL 19 speeds up vacuum by 40%", "lead": "The database release notes list the changes", "section": "dev"},
+    {"title": "Rust 1.95 stabilises async closures", "lead": "The compiler team announced the release", "section": "dev"},
+    {"title": "Kubernetes deprecates in-tree cloud providers", "lead": "Cluster operators must migrate", "section": "dev"},
+    {"title": "Python 3.15 makes the GIL optional by default", "lead": "The interpreter change lands after years of work", "section": "dev"},
+    {"title": "GitHub переписал поиск по коду", "lead": "Разработчики рассказали об индексе", "section": "dev"},
+
+    {"title": "Ransomware gang exploits zero-day in Fortinet VPN", "lead": "CVE-2026-1234 is actively exploited in the wild", "section": "cybersec"},
+    {"title": "Крупная утечка данных: взломан подрядчик банка", "lead": "Хакеры получили доступ к базе клиентов", "section": "cybersec"},
+    {"title": "CISA warns of critical vulnerability in Ivanti gateways", "lead": "Patch immediately, the agency says", "section": "cybersec"},
+    {"title": "Новый шифровальщик атакует больницы", "lead": "Вредоносное ПО распространяется через фишинг", "section": "cybersec"},
+
+    {"title": "Intel unveils 2nm process to rival TSMC", "lead": "The new CPU line ships next year", "section": "hardware"},
+    {"title": "AMD's Ryzen refresh adds 3D cache to every model", "lead": "Benchmarks show gains in games", "section": "hardware"},
+    {"title": "Видеокарта нового поколения получила 32 ГБ памяти", "lead": "Производитель раскрыл техпроцесс и энергопотребление", "section": "hardware"},
+    {"title": "SSD makers raise NVMe prices amid NAND shortage", "lead": "Contract prices rose sharply", "section": "hardware"},
+
+    {"title": "Boston Dynamics unveils humanoid robot for warehouses", "lead": "The robot lifts 25 kg containers", "section": "robots"},
+    {"title": "Робот-хирург провёл операцию без участия человека", "lead": "Манипулятор работал автономно", "section": "robots"},
+    {"title": "Дроны доставили лекарства в отдалённые районы", "lead": "Беспилотники пролетели 200 км", "section": "robots"},
+    {"title": "ROS 2 release drops support for older distributions", "lead": "Robotics developers must upgrade", "section": "robots"},
+
+    {"title": "SpaceX launches 60 Starlink satellites into orbit", "lead": "The rocket lifted off from Florida", "section": "space"},
+    {"title": "Телескоп James Webb нашёл экзопланету с атмосферой", "lead": "Астрономы изучили спектр", "section": "space"},
+    {"title": "NASA delays Artemis III to 2029", "lead": "The lunar lander is not ready", "section": "space"},
+    {"title": "Астероид пройдёт рядом с Землёй", "lead": "Орбита рассчитана точно", "section": "space"},
+
+    {"title": "Arctic sea ice hits record low, scientists say", "lead": "Satellite data shows accelerating melt", "section": "climate"},
+    {"title": "IPCC report warns of faster sea level rise", "lead": "Emissions must fall by half", "section": "climate"},
+    {"title": "Выбросы углерода в ЕС снизились на 8%", "lead": "Энергопереход идёт быстрее плана", "section": "climate"},
+    {"title": "Drought leaves Panama Canal at record low water", "lead": "Shipping is being rationed", "section": "climate"},
+    {"title": "Ледники Гималаев тают вдвое быстрее", "lead": "Данные спутников за 20 лет", "section": "climate"},
+
+    {"title": "Physicists detect neutrino from distant galaxy", "lead": "The particle physics collaboration reported", "section": "science"},
+    {"title": "Археологи нашли гробницу возрастом 4000 лет", "lead": "Раскопки шли три сезона", "section": "science"},
+    {"title": "Quantum computer factors a 48-bit number", "lead": "The result is a milestone for the field", "section": "science"},
+    {"title": "Учёные впервые получили сверхпроводник при комнатной температуре", "lead": "Эксперимент повторили независимо", "section": "science"},
+
+    {"title": "FDA approves new Alzheimer's drug after clinical trial", "lead": "The trial showed modest slowing of decline", "section": "medicine"},
+    {"title": "Вспышка кори в трёх регионах", "lead": "Врачи рекомендуют вакцинацию", "section": "medicine"},
+    {"title": "Gene therapy restores hearing in children", "lead": "Patients in the trial regained function", "section": "medicine"},
+    {"title": "EMA отозвала регистрацию препарата", "lead": "Регулятор нашёл риски для пациентов", "section": "medicine"},
+
+    {"title": "Study finds Mediterranean diet improves sleep quality", "lead": "Nutrition researchers followed 900 adults", "section": "health"},
+    {"title": "Obesity rates plateau in high-income countries", "lead": "Diet and lifestyle trends shifted", "section": "health"},
+    {"title": "Регулярная физическая активность снижает риск деменции", "lead": "Долголетие связано с образом жизни", "section": "health"},
+
+    {"title": "Parliament passes sanctions bill", "lead": "The president is expected to sign it", "section": "politics"},
+    {"title": "Переговоры о перемирии зашли в тупик", "lead": "Дипломаты продолжат встречи", "section": "politics"},
+    {"title": "Elections in Poland deliver a hung parliament", "lead": "Coalition talks begin", "section": "politics"},
+
+    {"title": "ЦБ поднял ключевую ставку до 18% на фоне инфляции", "lead": "Решение принято на заседании совета директоров", "section": "economy"},
+    {"title": "US inflation slows to 2.4% in August", "lead": "The GDP figure was revised up", "section": "economy"},
+    {"title": "Крупный ритейлер объявил о банкротстве", "lead": "Выручка падала три квартала подряд", "section": "economy"},
+    {"title": "New tariffs hit European steel imports", "lead": "The trade measure takes effect in October", "section": "economy"},
+
+    {"title": "Сборная Франции вышла в финал чемпионата мира по футболу", "lead": "Матч закончился со счётом 2:1", "section": "sports"},
+    {"title": "Olympic committee bans athlete over doping", "lead": "The tournament result was annulled", "section": "sports"},
+    {"title": "Теннисист выиграл третий турнир подряд", "lead": "В финале он обыграл первую ракетку", "section": "sports"},
+
+    {"title": "Землетрясение магнитудой 7.1 у берегов Японии", "lead": "Объявлена эвакуация, есть пострадавшие", "section": "incidents"},
+    {"title": "Hurricane makes landfall in Florida", "lead": "Evacuation orders cover three counties", "section": "incidents"},
+    {"title": "Крупный пожар на нефтебазе потушен", "lead": "Спасатели работали двое суток", "section": "incidents"},
+    {"title": "Наводнение затопило исторический центр города", "lead": "Погибли четыре человека", "section": "incidents"},
+
+    {"title": "Netflix продлил сериал на третий сезон", "lead": "Премьера фильма состоится весной", "section": "cinema"},
+    {"title": "Film wins the Palme d'Or at Cannes", "lead": "The director thanked the cast", "section": "cinema"},
+    {"title": "Кассовые сборы фильма превысили миллиард", "lead": "Студия готовит продолжение", "section": "cinema"},
+
+    {"title": "Nintendo анонсировала новую консоль", "lead": "Видеоигра выйдет одновременно на всех платформах", "section": "games"},
+    {"title": "Valve updates Steam Deck firmware", "lead": "Gameplay performance improved in several titles", "section": "games"},
+    {"title": "Игровая студия закрылась после отмены проекта", "lead": "Разработчики видеоигр потеряли работу", "section": "games"},
+
+    {"title": "Nvidia earnings beat expectations on AI chip demand", "lead": "Quarterly revenue rose 60%", "section": ""},
+    {"title": "Компания объявила о реорганизации", "lead": "Подробности не раскрываются", "section": ""},
+    {"title": "Report says the sector faces headwinds", "lead": "Analysts disagree on the outlook", "section": ""}
+  ]
+}

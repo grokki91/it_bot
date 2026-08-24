@@ -24,7 +24,7 @@ from . import config, issueview, sections, subscribers, translate
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
-from .profiles import PROFILES, title
+from .profiles import PROFILES, title, weight
 from .rank import SentIndex, cluster, primary_of, select
 from .render import feedback_keyboard, fit_blocks, issue_info
 from .sources import sources_for
@@ -44,14 +44,24 @@ def fresh_rows(conn):
 def for_topic(rows, topic):
     """Материалы, относящиеся к этому разделу.
 
-    Собирается сразу по всем разделам всех подписчиков, поэтому чужие
-    источники надо отсечь. Hacker News общий для всех — его записи
-    проверяем по ключевым словам раздела.
+    Раздел проставлен при сборе по СОДЕРЖАНИЮ (`classify.route_all`) — берём
+    его. Материал без раздела раскладываем по-старому, по источнику: так
+    ведут себя записи, накопленные до маршрутизации, и те, где решить не
+    удалось. Hacker News в старом пути проверяется по ключевым словам раздела.
+
+    Материал, у которого раздел проставлен и он ЧУЖОЙ, сюда не попадает даже
+    если его лента приписана к этой теме: ровно ради этого всё и затевалось —
+    новость про GPT-6 от Reuters идёт в «ИИ», а не в «Политику».
     """
     allowed = sources_for(topic)
     keywords = [k.lower() for k in PROFILES.get(topic, {}).get("keywords", [])]
     out = []
     for row in rows:
+        section = (row.get("section") or "").strip()
+        if section:
+            if section == topic:
+                out.append(row)
+            continue
         if row["source_id"] in allowed:
             out.append(row)
         elif row["source_id"] == "hackernews" and any(
@@ -95,6 +105,19 @@ def limits_for(count):
     """
     return {"limit": count, "min_items": count,
             "per_source": max(1, count // 2), "per_category": max(2, count)}
+
+
+def count_for(topic, count, scaled=True):
+    """Сколько новостей взять в этот раздел.
+
+    Разделов теперь шестнадцать, и «Игры» с «Кино» занимали бы в выпуске
+    столько же места, сколько «Политика». Вес раздела (`profiles.weight`)
+    это выравнивает. На запрос конкретного раздела вес не влияет: там
+    читатель сам сказал, сколько ему нужно.
+    """
+    if not scaled:
+        return count
+    return max(1, int(round(count * weight(topic))))
 
 
 def leftover_rows(ranking, shortlist, picked):
@@ -197,9 +220,12 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     rankings = rank_all(shortlists, hint, stats)
 
     blocks, spare = [], []
-    limits = limits_for(count)
+    # вес раздела применяем только к плановому выпуску: единственный раздел
+    # приходит по запросу, и урезать его было бы странно
+    scaled = len(plan) > 1
     for topic, shortlist in shortlists:
         ranking = rankings.get(topic) or []
+        limits = limits_for(count_for(topic, count, scaled))
         picked = select(usable(ranking, shortlist, index), shortlist, **limits)
         for group, _score, _cat in picked:
             index.remember(group)

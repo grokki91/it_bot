@@ -105,6 +105,20 @@ SOURCE_META = {
     "gh-pytorch":         {"kind": "primary", "strict": True},
     "r-localllama":       {"kind": "community", "trust": 0.35, "strict": True},
 
+    # --- софт и разработка ---
+    "lwn":                {"kind": "independent", "strict": True},
+    "theregister-dev":    {"kind": "trade", "strict": True},
+    "infoworld":          {"kind": "trade", "strict": True},
+    "kernel-org":         {"kind": "primary", "strict": True},
+    "rust-blog":          {"kind": "primary", "strict": True},
+    "go-blog":            {"kind": "primary", "strict": True},
+    "python-insider":     {"kind": "primary", "strict": True},
+    "postgresql":         {"kind": "primary", "strict": True},
+    "kubernetes":         {"kind": "primary", "strict": True},
+    "github-blog":        {"kind": "pr", "strict": True},
+    "hn-front":           {"kind": "community", "trust": 0.4},
+    "stackoverflow":      {"kind": "community", "strict": True},
+
     # --- железо ---
     "tomshardware":       {"kind": "trade", "strict": True},
     "techpowerup":        {"kind": "trade", "strict": True},
