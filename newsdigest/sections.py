@@ -9,6 +9,10 @@
 Имя раздела можно писать как удобно: `medicine`, `медицина`, `мед` —
 всё это один и тот же раздел. Поэтому команды принимают человеческий ввод
 с телефона, а не только латинские идентификаторы.
+
+У читателя есть ещё и личный топ (`favorites`): до пяти разделов, которые он
+хочет видеть первыми. Список разделов отвечает на вопрос «что приходит»,
+топ — на вопрос «в каком порядке»; `order()` сводит их вместе.
 """
 from __future__ import annotations
 
@@ -18,6 +22,11 @@ from .profiles import DEFAULT_SECTIONS, PROFILES, label, title
 #: сколько разделов имеет смысл держать в выпуске. Это не запрет,
 #: а защита от «включил всё и получил простыню на 60 новостей».
 MAX_SECTIONS = 20
+
+#: сколько разделов можно поднять в начало выпуска. Пять — это ровно тот
+#: размер, который читается с первого экрана; если «первым делом» идёт
+#: половина выпуска, то никакого «первым делом» уже нет.
+MAX_FAVORITES = 5
 
 
 def known() -> list:
@@ -102,14 +111,19 @@ def defaults() -> list:
     return topics
 
 
+def field(sub, name) -> str:
+    """Строковое поле подписчика. Пусто, если подписчика нет или база старее."""
+    if sub is None:
+        return ""
+    try:
+        return (sub[name] or "").strip()
+    except (IndexError, KeyError):       # база ещё не знает про колонку
+        return ""
+
+
 def for_sub(sub=None) -> list:
     """Разделы конкретного подписчика: личные, а если их нет — общие."""
-    personal = ""
-    if sub is not None:
-        try:
-            personal = (sub["sections"] or "").strip()
-        except (IndexError, KeyError):       # база ещё не знает про колонку
-            personal = ""
+    personal = field(sub, "sections")
     if personal:
         topics, _unknown = parse(personal)
         if topics:
@@ -117,10 +131,34 @@ def for_sub(sub=None) -> list:
     return defaults()
 
 
+def favorites(sub=None) -> list:
+    """Личный топ разделов: они идут в выпуске первыми.
+
+    Свой топ подписчика, а если он ничего не отметил — общий из CFG. Порядок
+    внутри топа тот, в котором разделы отмечали: первым отмеченный идёт первым.
+    """
+    topics, _unknown = parse(field(sub, "favorites") or CFG.get("favorites") or "")
+    return topics[:MAX_FAVORITES]
+
+
+def order(topics, sub=None) -> list:
+    """Избранные разделы — вперёд, остальные — в прежнем порядке.
+
+    Избранное, которого в списке разделов нет, не выбрасывается, а добавляется:
+    отметив ⭐ Крипту (её нет в подборке по умолчанию), читатель ждёт её в
+    выпуске, а не молчания. Порядок здесь решает не только вид выпуска: разделы
+    разбираются по очереди, и новость, попавшая сразу в два раздела, достаётся
+    тому, что стоит выше (`pipeline.usable`). Поэтому «моя тема» получает её
+    первой — ровно этого от избранного и ждут.
+    """
+    top = [t for t in favorites(sub) if t in PROFILES]
+    return top + [t for t in topics if t not in top]
+
+
 def plan(sub=None) -> list:
-    """Что попадёт в плановый выпуск. Пустой список разделов = старое
-    поведение: один выпуск по основной теме (CFG['topic'])."""
-    topics = for_sub(sub)
+    """Что попадёт в плановый выпуск и в каком порядке. Пустой список разделов =
+    старое поведение: один выпуск по основной теме (CFG['topic'])."""
+    topics = order(for_sub(sub), sub)
     if not topics:
         return [CFG["topic"]] if CFG["topic"] in PROFILES else []
     return topics[:MAX_SECTIONS]

@@ -202,6 +202,10 @@ def hub_keyboard(issue, ident, shown, wide=False) -> list:
     elif wide and len(blocks) > SECTIONS_SHOWN:
         rows.append([{"text": "⬆️ Свернуть разделы",
                       "callback_data": route(ident, HOME)}])
+    # порядок разделов читатель правит отсюда: в чате команд нет, а место,
+    # где на этот порядок смотрят, — ровно это оглавление
+    from .prefsview import entry              # prefsview знает про нас — тут
+    rows.append(entry(ident))
     return rows
 
 

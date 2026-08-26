@@ -115,6 +115,16 @@ class TestUpgradeFrom20(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_subscribers_get_the_favorites_column(self):
+        """Личный топ разделов — новая колонка, и она приезжает пустой."""
+        conn = storage.db()
+        try:
+            owner = subscribers.ensure_owner(conn)
+            self.assertEqual(owner["favorites"], "")
+            self.assertIn("favorites", subscribers.PERSONAL)
+        finally:
+            conn.close()
+
     def test_migration_is_idempotent(self):
         storage.db().close()
         conn = storage.db()

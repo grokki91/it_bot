@@ -22,8 +22,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import (config, feedback, issueview, sections, settings, subscribers,
-               translate, userprofiles)
+from . import (config, feedback, issueview, prefsview, sections, settings,
+               subscribers, translate, userprofiles)
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
@@ -744,6 +744,10 @@ def schedule_note(sub=None) -> str:
                 esc(subscribers.left_human(sub, now)))]
     if sub is not None and sub["paused"]:
         lines.append("⏸ Сейчас рассылка на паузе.")
+    top = sections.favorites(sub)
+    lines.append("⭐ Первыми идут: %s"
+                 % esc(sections.describe(top) if top
+                       else "ничего не отмечено — кнопка ниже"))
     return "\n".join(lines)
 
 
@@ -765,7 +769,10 @@ def answer_schedule(chat_id) -> None:
         sub = subscribers.get(conn, chat_id)
     finally:
         conn.close()
-    tg_send(chat_id, schedule_note(sub), silent=True)
+    # единственная кнопка в ответе: экран «Мои темы» должен открываться и
+    # тогда, когда свежего выпуска под рукой нет
+    tg_send(chat_id, schedule_note(sub), keyboard=[prefsview.entry()],
+            silent=True)
 
 
 def handle_message(msg) -> None:
@@ -891,6 +898,42 @@ def handle_nav_callback(cb, chat_id, message, data) -> None:
     tg_answer_callback(cb.get("id"))
 
 
+def handle_prefs_callback(cb, chat_id, message, data) -> None:
+    """Экран «Мои темы»: отметить раздел, снять отметку, сбросить топ.
+
+    Пишем через `settings.apply_for` — тем же путём, что и /set: владелец
+    правит порядок для всех, подписчик только свой, и проверки не приходится
+    повторять здесь второй раз.
+    """
+    action, topic, ident = prefsview.parse(data)
+    conn = db()
+    try:
+        sub = subscribers.get(conn, chat_id)
+        toast = ""
+        if action == prefsview.FAV and topic:
+            chosen, toast = prefsview.toggle(sections.favorites(sub), topic)
+            if chosen != sections.favorites(sub):
+                settings.apply_for(conn, chat_id, is_owner(chat_id), "top",
+                                   prefsview.store(chosen))
+                sub = subscribers.get(conn, chat_id)
+        elif action == prefsview.CLEAR and sections.favorites(sub):
+            settings.apply_for(conn, chat_id, is_owner(chat_id), "top", "сброс")
+            sub = subscribers.get(conn, chat_id)
+            toast = "Топ сброшен — обычный порядок"
+        text, keyboard = prefsview.screen(sub, ident)
+    except settings.Invalid as exc:
+        tg_answer_callback(cb.get("id"), str(exc))
+        return
+    finally:
+        conn.close()
+
+    tg_answer_callback(cb.get("id"), toast)
+    try:
+        tg_edit_text(chat_id, message.get("message_id"), text, keyboard)
+    except RuntimeError as exc:
+        log.debug("Экран «Мои темы» не открылся: %s", exc)
+
+
 def handle_callback(cb, worker) -> None:
     """Нажатие кнопки: переход по выпуску, оценка новости или ответ по заявке."""
     message = cb.get("message") or {}
@@ -904,6 +947,9 @@ def handle_callback(cb, worker) -> None:
         return
     if data.startswith(issueview.NAV + ":"):
         handle_nav_callback(cb, chat_id, message, data)
+        return
+    if data.startswith(prefsview.PREF + ":"):
+        handle_prefs_callback(cb, chat_id, message, data)
         return
     if not data.startswith("fb:") or data.count(":") < 2:
         tg_answer_callback(cb.get("id"))

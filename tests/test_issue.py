@@ -104,12 +104,14 @@ class TestHub(unittest.TestCase):
         keyboard = issueview.hub_screen(snapshot, 1)[1]
         sections = [r for r in keyboard if r[0]["callback_data"].startswith("nav:1:sec:")]
         self.assertEqual(len(sections), issueview.SECTIONS_SHOWN)
-        self.assertIn("Остальные 2 раздела", keyboard[-1][0]["text"])
+        # последняя строка оглавления — «Мои темы», «остальные разделы» перед ней
+        self.assertEqual(keyboard[-1][0]["callback_data"], "pref:open::1")
+        self.assertIn("Остальные 2 раздела", keyboard[-2][0]["text"])
         # «остальные» показывает все разделы и умеет свернуться обратно
         wide = issueview.hub_screen(snapshot, 1, issueview.SECS)[1]
         self.assertEqual(len([r for r in wide
                               if r[0]["callback_data"].startswith("nav:1:sec:")]), 8)
-        self.assertEqual(wide[-1][0]["callback_data"], "nav:1:home")
+        self.assertEqual(wide[-2][0]["callback_data"], "nav:1:home")
         self.assertTrue(text)
         self.assertTrue(shown)
 

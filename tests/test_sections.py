@@ -151,6 +151,71 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(sections.persona(["ai"]), PROFILES["ai"]["persona"])
 
 
+class TestFavorites(unittest.TestCase):
+    """Личный топ: до пяти разделов, которые идут в выпуске первыми."""
+
+    def setUp(self):
+        self.saved = {"sections": CFG["sections"], "favorites": CFG["favorites"],
+                      "topic": CFG["topic"]}
+        CFG["sections"], CFG["favorites"] = "", ""
+
+    def tearDown(self):
+        CFG.update(self.saved)
+
+    def sub(self, chat_id, **fields):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, chat_id, role="member")
+            for field, value in fields.items():
+                subscribers.set_field(conn, chat_id, field, value)
+            return subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
+
+    def test_order_lifts_the_chosen_and_keeps_the_rest(self):
+        sub = self.sub("fav-1", favorites="спорт,космос")
+        plan = sections.plan(sub)
+        self.assertEqual(plan[:2], ["sports", "space"])
+        # остальные идут в прежнем порядке и никуда не деваются
+        rest = [t for t in DEFAULT_SECTIONS if t not in ("sports", "space")]
+        self.assertEqual(plan[2:], rest)
+        self.assertEqual(sorted(plan), sorted(DEFAULT_SECTIONS))
+
+    def test_favorite_outside_the_list_joins_the_digest(self):
+        """Отметив раздел, которого в подборке нет, читатель ждёт его в выпуске."""
+        sub = self.sub("fav-2", sections="медицина,кино", favorites="крипта")
+        self.assertEqual(sections.plan(sub), ["crypto", "medicine", "cinema"])
+
+    def test_no_favorites_means_the_usual_order(self):
+        self.assertEqual(sections.plan(self.sub("fav-3")), DEFAULT_SECTIONS)
+        self.assertEqual(sections.favorites(None), [])
+
+    def test_personal_top_wins_over_the_common_one(self):
+        CFG["favorites"] = "кино"
+        self.assertEqual(sections.plan()[0], "cinema")           # общий топ
+        sub = self.sub("fav-4", favorites="медицина")
+        self.assertEqual(sections.favorites(sub), ["medicine"])
+        self.assertEqual(sections.plan(sub)[0], "medicine")
+
+    def test_more_than_five_is_cut_and_junk_is_ignored(self):
+        sub = self.sub("fav-5",
+                       favorites="спорт,космос,кино,игры,медицина,политика")
+        self.assertEqual(len(sections.favorites(sub)), sections.MAX_FAVORITES)
+        self.assertNotIn("politics", sections.favorites(sub))
+        self.assertEqual(sections.favorites(self.sub("fav-6", favorites="погода")),
+                         [])
+
+    def test_top_survives_the_cut_to_max_sections(self):
+        """Срез длинного списка режет хвост, а топ стоит в голове."""
+        every = sections.known()
+        last = every[-1]
+        sub = self.sub("fav-7", sections=sections.store(every), favorites=last)
+        plan = sections.plan(sub)
+        self.assertEqual(plan[0], last)
+        self.assertEqual(plan, sections.order(every, sub)[:sections.MAX_SECTIONS])
+        self.assertLessEqual(len(plan), sections.MAX_SECTIONS)
+
+
 class DigestCase(unittest.TestCase):
     """Общая обвязка: подменённая модель и материалы прямо в базе."""
 
@@ -289,6 +354,45 @@ class TestMorningDigest(DigestCase):
         titles = [r["title"] for r in self.sent_rows()]
         self.assertEqual(titles.count(same), 1)
         self.assertEqual(len(titles), len(set(titles)))
+
+    def test_favorite_section_opens_the_issue(self):
+        """Отмеченный раздел идёт первым — и в оглавлении, и в разборе."""
+        for topic in self.PLAN:
+            self.fill(topic)
+        conn = storage.db()
+        try:
+            subscribers.add(conn, self.CHAT, role="member")
+            subscribers.set_field(conn, self.CHAT, "favorites", "cybersec")
+            sub = subscribers.get(conn, self.CHAT)
+        finally:
+            conn.close()
+        self.assertEqual(sections.plan(sub)[0], "cybersec")
+        pipeline.build_and_send(chat_id=self.CHAT, sub=sub)
+        labels = self.buttons()                 # кнопки разделов в оглавлении
+        self.assertLess(labels.index(title("cybersec")), labels.index(title("ai")))
+
+    def test_favorite_section_gets_the_shared_story(self):
+        """Новость, попавшая в два раздела, достаётся отмеченному.
+
+        Разделы разбираются по очереди, и занятое соседом пропускается: топ
+        решает не только вид выпуска, но и кому событие достанется.
+        """
+        same = "Взлом биржи оставил инженеров без сна"
+        self.fill("crypto", [same] + self.TITLES["crypto"][:2])
+        self.fill("cybersec", [same] + self.TITLES["cybersec"][:2], offset=50)
+        conn = storage.db()
+        try:
+            subscribers.add(conn, self.CHAT, role="member")
+            subscribers.set_field(conn, self.CHAT, "favorites", "cybersec")
+            sub = subscribers.get(conn, self.CHAT)
+        finally:
+            conn.close()
+        pipeline.build_and_send(chat_id=self.CHAT, sub=sub)
+        rows = [r for r in self.sent_rows() if r["title"] == same]
+        self.assertEqual(len(rows), 1)
+        # без топа событие досталось бы «Крипте»: она стоит в списке выше
+        self.assertLess(self.PLAN.index("crypto"), self.PLAN.index("cybersec"))
+        self.assertEqual(rows[0]["section"], "cybersec")
 
     def test_empty_sections_are_named(self):
         """Пустые разделы названы, но не в шапке выпуска.
@@ -524,6 +628,22 @@ class TestUpgradeFrom31(unittest.TestCase):
             self.assertEqual(subscribers.get(conn, "1")["sections"], "")
             self.assertEqual(sections.plan(subscribers.get(conn, "1")),
                              sections.defaults())
+        finally:
+            conn.close()
+
+    def test_top_appears_empty_and_nothing_reshuffles(self):
+        """Колонка топа приезжает пустой: порядок разделов не должен
+        переставиться у тех, кто ни о каком топе не просил."""
+        conn = storage.db()
+        try:
+            owner = subscribers.get(conn, "1")
+            self.assertEqual(owner["favorites"], "")
+            self.assertEqual(sections.favorites(owner), [])
+            self.assertEqual(sections.plan(owner), sections.defaults())
+            # и колонка сразу пригодна для записи
+            subscribers.set_field(conn, "1", "favorites", "sports")
+            self.assertEqual(sections.plan(subscribers.get(conn, "1"))[0],
+                             "sports")
         finally:
             conn.close()
 
