@@ -16,7 +16,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, storage, subscribers, translate  # noqa: E402
+from newsdigest import bot, config, prefsview, sections  # noqa: E402
+from newsdigest import storage, subscribers, translate  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
@@ -219,6 +220,108 @@ class TestTelegramIsSendOnly(BotCase):
             "id": "c", "data": "fb:up:hash1",
             "message": {"message_id": 1, "chat": {"id": self.OWNER}}}})
         self.assertIn("👍", answers[0])
+
+
+class TestMyTopics(BotCase):
+    """Экран «Мои темы»: кнопками, потому что команд в чате нет."""
+
+    MEMBER = "77"
+
+    def setUp(self):
+        super().setUp()
+        self.saved_top = CFG["favorites"]
+        CFG["favorites"] = ""
+        conn = storage.db()
+        try:
+            subscribers.add(conn, self.MEMBER, role="member")
+        finally:
+            conn.close()
+        self.answers = []
+        self.edits = []
+        self._real_answer = bot.tg_answer_callback
+        self._real_edit = bot.tg_edit_text
+        bot.tg_answer_callback = \
+            lambda cb, text="", alert=False: self.answers.append(text)
+        bot.tg_edit_text = lambda chat, mid, text, keyboard=None: \
+            self.edits.append((text, keyboard or []))
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        bot.tg_answer_callback = self._real_answer
+        bot.tg_edit_text = self._real_edit
+        CFG["favorites"] = self.saved_top
+
+    def press(self, data, chat_id=None):
+        bot.handle_update({"update_id": 1, "callback_query": {
+            "id": "c", "data": data,
+            "message": {"message_id": 1,
+                        "chat": {"id": chat_id or self.MEMBER}}}})
+        return self.edits[-1] if self.edits else ("", [])
+
+    def top(self, chat_id=None):
+        return sections.favorites(self.sub(chat_id or self.MEMBER))
+
+    def test_screen_lists_every_section_and_fits_the_callback_limit(self):
+        _text, keyboard = self.press(prefsview.route(prefsview.OPEN, "", 12))
+        data = [row[0]["callback_data"] for row in keyboard]
+        self.assertIn("pref:fav:medicine:12", data)
+        self.assertIn("nav:12:home", data)      # возврат в выпуск
+        for row in keyboard:
+            for button in row:
+                self.assertLessEqual(len(button["callback_data"].encode()), 64)
+
+    def test_marking_and_unmarking_a_section(self):
+        text, _kb = self.press("pref:fav:sports:0")
+        self.assertEqual(self.top(), ["sports"])
+        self.assertIn("№1", self.answers[-1])
+        self.assertIn("1. ", text)
+        self.press("pref:fav:space:0")
+        self.assertEqual(self.top(), ["sports", "space"])
+        # повторное нажатие снимает отметку, соседи не разъезжаются
+        self.press("pref:fav:sports:0")
+        self.assertEqual(self.top(), ["space"])
+        self.assertIn("Убрал", self.answers[-1])
+
+    def test_marked_sections_lead_the_digest(self):
+        self.press("pref:fav:sports:0")
+        self.assertEqual(sections.plan(self.sub(self.MEMBER))[0], "sports")
+
+    def test_sixth_section_is_refused_out_loud(self):
+        for name in ("sports", "space", "cinema", "games", "medicine"):
+            self.press("pref:fav:%s:0" % name)
+        self.press("pref:fav:politics:0")
+        self.assertEqual(len(self.top()), sections.MAX_FAVORITES)
+        self.assertNotIn("politics", self.top())
+        self.assertIn("Уже %d" % sections.MAX_FAVORITES, self.answers[-1])
+
+    def test_reset_returns_the_usual_order(self):
+        self.press("pref:fav:sports:0")
+        text, keyboard = self.press("pref:clear::0")
+        self.assertEqual(self.top(), [])
+        self.assertIn("обычным порядком", text)
+        self.assertNotIn("♻️ Сбросить", [row[0]["text"] for row in keyboard])
+
+    def test_member_top_does_not_touch_anyone_else(self):
+        self.press("pref:fav:sports:0")
+        self.assertEqual(CFG["favorites"], "")
+        self.assertEqual(self.top(self.OWNER), [])
+
+    def test_owner_sets_the_common_order(self):
+        self.press("pref:fav:cinema:0", chat_id=self.OWNER)
+        self.assertEqual(CFG["favorites"], "cinema")
+        self.assertEqual(self.top(self.MEMBER), ["cinema"])   # общий по умолчанию
+
+    def test_stranger_cannot_open_it(self):
+        self.press("pref:open::0", chat_id="999")
+        self.assertEqual(self.edits, [])
+        self.assertIn("личный бот", self.answers[-1])
+
+    def test_schedule_answer_carries_the_button(self):
+        keys = []
+        bot.tg_send = lambda chat, text, keyboard=None, silent=None: \
+            keys.append(keyboard)
+        bot.answer_schedule(self.MEMBER)
+        self.assertEqual(keys[0][0][0]["callback_data"], "pref:open::0")
 
 
 class TestCommands(BotCase):

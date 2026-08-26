@@ -26,6 +26,9 @@ CFG = {
                                    # через запятую. Пусто = подборка по умолчанию
                                    # (profiles.DEFAULT_SECTIONS). Список всех
                                    # разделов — команда /sections
+    "favorites":        "",        # [env ND_FAVORITES] до пяти разделов, которые
+                                   # идут в выпуске первыми. Пусто = обычный
+                                   # порядок. У подписчика может быть свой топ
     "language":         "русский", # [env ND_LANGUAGE] язык дайджеста
     "translate":        True,      # [env ND_TRANSLATE] доводить выпуск до языка
                                    # дайджеста. Источники международные, и это
@@ -228,6 +231,7 @@ LAUNCHER = Path(__file__).resolve().parent.parent / "digest.py"
 ENV_MAP = {
     "ND_TOPIC": ("topic", str),
     "ND_SECTIONS": ("sections", str),
+    "ND_FAVORITES": ("favorites", str),
     "ND_PER_SECTION": ("per_section", int),
     "ND_LANGUAGE": ("language", str),
     "ND_TRANSLATE": ("translate", lambda v: str(v).lower() in ("1", "true", "yes")),

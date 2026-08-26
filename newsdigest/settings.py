@@ -117,6 +117,33 @@ def as_sections(raw):
     return sections.store(topics)
 
 
+def as_favorites(raw):
+    """Личный топ разделов: до пяти штук, порядок как ввели."""
+    value = raw.strip().lower()
+    if value in ("по умолчанию", "умолчание", "default", "сброс", "reset", "-",
+                 "нет", "off"):
+        return ""
+    topics, unknown = sections.parse(raw)
+    if unknown:
+        raise Invalid("не знаю раздел(ы): %s. Список — /sections"
+                      % ", ".join(unknown))
+    if not topics:
+        raise Invalid("не выбрано ни одного раздела. Список — /sections")
+    if len(topics) > sections.MAX_FAVORITES:
+        raise Invalid("в топ помещается %d разделов, а названо %d: "
+                      "первым делом — значит первым делом"
+                      % (sections.MAX_FAVORITES, len(topics)))
+    return sections.store(topics)
+
+
+def show_favorites(value):
+    topics, _unknown = sections.parse(value or "")
+    if not topics:
+        return "не задан (обычный порядок)"
+    return " · ".join("%d. %s" % (at, title(topic))
+                      for at, topic in enumerate(topics, 1))
+
+
 def show_sections(value):
     topics, _unknown = sections.parse(value or "")
     if not topics:
@@ -198,6 +225,10 @@ SPEC = {
     "sections": Setting("sections", "ND_SECTIONS", as_sections,
                         "разделы планового выпуска через запятую "
                         "(«все», «по умолчанию»)", show_sections),
+    "top": Setting("favorites", "ND_FAVORITES", as_favorites,
+                   "до %d разделов, которые идут в выпуске первыми "
+                   "(«сброс» — обычный порядок)" % sections.MAX_FAVORITES,
+                   show_favorites),
     "each": Setting("per_section", "ND_PER_SECTION", as_int(1, 5),
                     "сколько новостей на раздел в плановом выпуске"),
     "time": Setting("send_at", "ND_SEND_AT", as_time,
@@ -254,6 +285,8 @@ ALIASES = {
     "tg_view": "view", "вид": "view", "выпуск": "view", "экраны": "view",
     "feedback_weight": "taste", "вкусы": "taste", "звук": "silent",
     "разделы": "sections", "темы": "sections", "topics": "sections",
+    "favorites": "top", "избранное": "top", "любимые": "top",
+    "мои_темы": "top", "топ": "top", "первыми": "top",
     "per_section": "each", "на_раздел": "each", "поразделу": "each",
 }
 
@@ -300,9 +333,10 @@ def overview():
 
 # ---------------------------------------------------- личные настройки чата
 #: что подписчик волен менять у себя; остальное — только владелец
-PERSONAL = {"topic": "topic", "sections": "sections", "each": "per_section",
-            "time": "send_at", "tz": "tz", "language": "language",
-            "max": "max_items", "score": "min_score", "silent": "silent"}
+PERSONAL = {"topic": "topic", "sections": "sections", "top": "favorites",
+            "each": "per_section", "time": "send_at", "tz": "tz",
+            "language": "language", "max": "max_items", "score": "min_score",
+            "silent": "silent"}
 
 
 def personal_view(sub) -> dict:

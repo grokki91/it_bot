@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, settings, storage, subscribers  # noqa: E402
+from newsdigest import bot, config, sections, settings  # noqa: E402
+from newsdigest import storage, subscribers  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
@@ -66,6 +67,34 @@ class TestParsers(unittest.TestCase):
     def test_unknown_timezone(self):
         with self.assertRaises(settings.Invalid):
             settings.as_tz("Средиземье/Шир")
+
+
+class TestFavoritesSetting(unittest.TestCase):
+    """Топ разделов: разбор значения и то, как он показывается."""
+
+    def test_names_are_kept_in_the_order_they_were_given(self):
+        self.assertEqual(settings.as_favorites("спорт, космос"), "sports,space")
+        self.assertEqual(settings.as_favorites("space,sports"), "space,sports")
+
+    def test_reset_words_mean_the_usual_order(self):
+        for word in ("сброс", "по умолчанию", "reset", "-", "нет"):
+            self.assertEqual(settings.as_favorites(word), "", word)
+
+    def test_more_than_five_is_refused(self):
+        with self.assertRaises(settings.Invalid) as caught:
+            settings.as_favorites("спорт,космос,кино,игры,медицина,политика")
+        self.assertIn(str(sections.MAX_FAVORITES), str(caught.exception))
+
+    def test_unknown_section_is_named(self):
+        with self.assertRaises(settings.Invalid) as caught:
+            settings.as_favorites("спорт,погода")
+        self.assertIn("погода", str(caught.exception))
+
+    def test_shown_as_a_numbered_list(self):
+        shown = settings.show_favorites("sports,space")
+        self.assertIn("1. ", shown)
+        self.assertIn("2. ", shown)
+        self.assertIn("не задан", settings.show_favorites(""))
 
 
 class TestApply(SettingsCase):
@@ -269,6 +298,28 @@ class TestPersonalSettings(SettingsCase):
         with self.assertRaises(settings.Invalid):
             settings.apply_for(self.conn, self.MEMBER, False, "topic", "ерунда")
         self.assertEqual(self.member()["topic"], "")
+
+    def test_member_keeps_a_private_top(self):
+        """Топ подписчика — его собственный: общий порядок он не трогает."""
+        _key, shown, scope = settings.apply_for(self.conn, self.MEMBER, False,
+                                                "top", "спорт,космос")
+        self.assertEqual(scope, "personal")
+        self.assertIn("1. ", shown)
+        self.assertEqual(self.member()["favorites"], "sports,space")
+        self.assertEqual(CFG["favorites"], "")
+        self.assertEqual(sections.plan(self.member())[:2], ["sports", "space"])
+
+        settings.apply_for(self.conn, self.MEMBER, False, "top", "сброс")
+        self.assertEqual(self.member()["favorites"], "")
+
+    def test_owner_top_is_the_default_for_everyone(self):
+        settings.apply_for(self.conn, self.OWNER, True, "top", "кино")
+        self.assertEqual(CFG["favorites"], "cinema")
+        self.assertEqual(sections.favorites(self.member()), ["cinema"])
+
+    def test_top_is_reachable_by_its_russian_name(self):
+        settings.apply_for(self.conn, self.MEMBER, False, "избранное", "игры")
+        self.assertEqual(self.member()["favorites"], "games")
 
     def test_global_change_during_overlay_is_not_lost(self):
         """Правка настроек во время чужого выпуска не должна откатиться."""

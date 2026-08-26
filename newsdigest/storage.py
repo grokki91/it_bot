@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS subscribers (
     role        TEXT NOT NULL DEFAULT 'member',
     topic       TEXT NOT NULL DEFAULT '',
     sections    TEXT NOT NULL DEFAULT '',
+    -- до пяти разделов, которые идут в выпуске первыми. Это не второй список
+    -- разделов, а порядок внутри своего: остальные приходят следом.
+    favorites   TEXT NOT NULL DEFAULT '',
     per_section INTEGER NOT NULL DEFAULT 0,
     send_at     TEXT NOT NULL DEFAULT '',
     tz          TEXT NOT NULL DEFAULT '',
@@ -260,6 +263,7 @@ def upgrade(conn) -> None:
     add_news_card(conn)
     add_breaking_mark(conn)
     add_item_section(conn)
+    add_favorites(conn)
     add_empty_feed_counter(conn)
 
 
@@ -375,6 +379,17 @@ def add_sections(conn) -> None:
     if cur.rowcount:
         log.info("Личная тема %d подписчика(ов) стала их списком разделов",
                  cur.rowcount)
+
+
+def add_favorites(conn) -> None:
+    """Личный топ разделов (3.6): что подписчик хочет видеть первым.
+
+    Пустая колонка значит «как у всех» — порядок остаётся прежним, поэтому
+    после обновления ни у кого выпуск не переставится сам по себе.
+    """
+    if not table_exists(conn, "subscribers"):
+        return                      # новая база: колонка придёт из SCHEMA
+    ensure_column(conn, "subscribers", "favorites", "TEXT NOT NULL DEFAULT ''")
 
 
 def split_sent_by_chat(conn) -> None:

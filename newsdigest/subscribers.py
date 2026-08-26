@@ -20,12 +20,13 @@ from . import config
 from .config import CFG, local_now, log, now_iso
 
 #: настройки, которые подписчик может держать своими
-PERSONAL = ("topic", "sections", "per_section", "send_at", "tz", "language",
-            "max_items", "min_score", "silent")
+PERSONAL = ("topic", "sections", "favorites", "per_section", "send_at", "tz",
+            "language", "max_items", "min_score", "silent")
 
 #: как «пусто» выглядит для каждого поля
-BLANK = {"topic": "", "sections": "", "per_section": 0, "send_at": "", "tz": "",
-         "language": "", "max_items": 0, "min_score": 0.0, "silent": -1}
+BLANK = {"topic": "", "sections": "", "favorites": "", "per_section": 0,
+         "send_at": "", "tz": "", "language": "", "max_items": 0,
+         "min_score": 0.0, "silent": -1}
 
 ROLES = ("owner", "member", "pending")
 
