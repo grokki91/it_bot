@@ -8,7 +8,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-from .config import CFG
+from .config import CFG, log
 
 
 class _Redirect308(urllib.request.HTTPRedirectHandler):
@@ -47,7 +47,12 @@ def _open(url: str, data=None, headers=None, timeout=30, method=None):
 
 
 def http_get(url: str, timeout=None, ua=None):
-    """Возвращает (status, bytes). Исключения сети наружу не выпускает."""
+    """Возвращает (status, bytes). Исключения сети наружу не выпускает.
+
+    Сетевой сбой — таймаут, DNS, TLS — это status 0 с пустым телом: вызывающему
+    незачем отличать «сервер ответил плохо» от «до сервера не дошли», он в обоих
+    случаях пропускает источник. Причину пишем в debug, чтобы не потерять.
+    """
     headers = {"User-Agent": ua} if ua else None
     try:
         return _open(url, headers=headers, timeout=timeout or CFG["http_timeout"])
@@ -57,6 +62,9 @@ def http_get(url: str, timeout=None, ua=None):
         except Exception:  # noqa: BLE001
             body = b""
         return exc.code, body
+    except Exception as exc:  # noqa: BLE001 — таймауты, DNS, TLS
+        log.debug("Не достучались до %s: %s: %s", url, type(exc).__name__, exc)
+        return 0, b""
 
 
 def post_json(url: str, payload: dict, headers=None, timeout=60):
