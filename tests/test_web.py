@@ -880,6 +880,176 @@ class TestNews(WebCase):
         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
 
 
+class TestSearchIndex(WebCase):
+    """Поиск идёт через FTS5, а без него — перебором, и ответ один и тот же.
+
+    Один и тот же набор запросов прогоняется дважды: с индексом и без него.
+    Разойдись они — читатель заметил бы это раньше нас.
+    """
+
+    #: запрос -> что должно найтись. Падежи, регистр, два слова подряд,
+    #: текст материала, источник и домен — всё, за чем ходят в поиск
+    CASES = (
+        ("иран", ["s1", "s2"]),
+        ("Иране", ["s1", "s2"]),
+        ("ИРАНА", ["s1", "s2"]),
+        ("ормузский", ["s1"]),
+        ("Тегеран", ["s1"]),
+        ("иран нефть", ["s2"]),
+        ("процессор", ["s3"]),
+        ("interfax", ["s2"]),
+        ("ria.ru", ["s1"]),
+        ("криптовалюты", []),
+    )
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.delivered("s1", "В Иране заявили о проходе через Ормузский пролив",
+                       "ria", "incidents", 8.4, "Тегеран ответил на заявление "
+                       "США.", "https://ria.ru/one", minute=1)
+        self.delivered("s2", "Нефть подорожала из-за Ирана", "interfax",
+                       "economy", 7.1, "Баррель прибавил три процента.",
+                       "https://www.interfax.ru/two", minute=2)
+        # запись до 3.5: сути в истории нет, текст карточки лежит в материале
+        self.delivered("s3", "Apple представила новые MacBook", "theverge",
+                       "hardware", 0.0, "", "https://www.theverge.com/three",
+                       minute=3, headline="")
+        self.material("s3", "Apple представила новые MacBook",
+                      "Ноутбуки получили процессор M6.")
+
+    def found(self, query, params=""):
+        body = self.ask("/api/news?q=" + urllib.parse.quote(query) + params)[1]
+        return sorted(item["hash"] for item in body["items"])
+
+    def indexed(self):
+        conn = storage.db()
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) c FROM sent_fts").fetchone()["c"]
+        finally:
+            conn.close()
+
+    # -------------------------------------------------------------- с индексом
+    def test_index_is_available_and_filled(self):
+        conn = storage.db()
+        try:
+            self.assertTrue(storage.searchable(conn))
+        finally:
+            conn.close()
+        self.assertEqual(self.indexed(), 3)
+
+    def test_search_goes_through_the_index(self):
+        for query, expected in self.CASES:
+            with self.subTest(query=query):
+                self.assertEqual(self.found(query), expected)
+
+    def test_index_does_not_read_the_whole_history(self):
+        """Ради чего всё затевалось: поиск больше не перебирает историю.
+
+        Строк в истории больше, чем поиск согласен прочитать перебором, —
+        и всё равно находится ровно то, что нужно.
+        """
+        saved = newsfeed.SEARCH_ROWS
+        newsfeed.SEARCH_ROWS = 1                  # перебор нашёл бы одну строку
+        try:
+            self.assertEqual(self.found("иран"), ["s1", "s2"])
+        finally:
+            newsfeed.SEARCH_ROWS = saved
+
+    def test_index_follows_the_history(self):
+        """Новость пришла, ушла, поменялась — индекс идёт следом."""
+        self.delivered("s4", "Ормузский пролив снова закрыт", "ria",
+                       "incidents", 8.0, "Судоходство остановлено.", minute=4)
+        self.assertEqual(self.found("ормузский"), ["s1", "s4"])
+
+        conn = storage.db()
+        try:
+            newsfeed.remember(conn, OWNER, [{"hash": "s4",
+                                             "title": "Пролив снова закрыт",
+                                             "summary": "Танкеры ждут."}])
+        finally:
+            conn.close()
+        self.assertEqual(self.found("судоходство"), [])   # прежней сути нет
+        self.assertEqual(self.found("танкеры"), ["s4"])
+
+        conn = storage.db()
+        try:
+            conn.execute("DELETE FROM sent WHERE url_hash='s4'")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.found("танкеры"), [])
+        self.assertEqual(self.indexed(), 3)
+
+    def test_index_follows_the_material(self):
+        """Текст материала — часть карточки, значит, и часть индекса."""
+        self.material("s3", "Apple представила новые MacBook",
+                      "Ноутбуки получили экран mini-LED.")
+        self.assertEqual(self.found("процессор"), [])
+        self.assertEqual(self.found("экран"), ["s3"])
+        conn = storage.db()
+        try:
+            conn.execute("DELETE FROM items WHERE url_hash='s3'")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.found("экран"), [])
+        self.assertEqual(self.found("MacBook"), ["s3"])
+
+    def test_filters_and_paging_still_belong_to_the_database(self):
+        for number in range(25):
+            self.delivered("p%d" % number, "Иран: новость номер %d" % number,
+                           "rbc", "economy", 6.0, minute=10 + number)
+        first = self.ask("/api/news?q=" + urllib.parse.quote("иран"))[1]
+        self.assertEqual(len(first["items"]), 20)
+        self.assertTrue(first["more"])
+        second = self.ask("/api/news?offset=20&q=" +
+                          urllib.parse.quote("иран"))[1]
+        self.assertEqual(len(second["items"]), 7)     # 25 плюс s1 и s2
+        self.assertFalse(second["more"])
+        self.assertFalse({i["hash"] for i in first["items"]} &
+                         {i["hash"] for i in second["items"]})
+        self.assertEqual(self.found("иран", "&sections=incidents"), ["s1"])
+
+    #: запросы, в которых для FTS5 есть синтаксис, а для читателя — буквы
+    TRICKY = ("???", 'иран "', "ria.ru", "AND")
+
+    def test_punctuation_in_a_query_is_not_an_error(self):
+        """Кавычки и скобки для FTS5 — синтаксис, а читатель набирает что
+        придётся. Ответ должен получиться тот же, что и без индекса."""
+        with_index = {query: self.found(query) for query in self.TRICKY}
+        self.without_fts5()
+        self.assertEqual({query: self.found(query) for query in self.TRICKY},
+                         with_index)
+
+    # --------------------------------------------------------------- без него
+    def test_without_the_index_the_answers_are_the_same(self):
+        """FTS5 в сборке нет — поиск остаётся прежним, перебором."""
+        self.without_fts5()
+        conn = storage.db()
+        try:
+            self.assertFalse(storage.searchable(conn))
+        finally:
+            conn.close()
+        for query, expected in self.CASES:
+            with self.subTest(query=query):
+                self.assertEqual(self.found(query), expected)
+
+    def test_without_the_index_the_history_is_still_written(self):
+        self.without_fts5()
+        self.delivered("s5", "Ормузский пролив снова закрыт", "ria",
+                       "incidents", 8.0, "Судоходство остановлено.", minute=5)
+        self.assertEqual(self.found("ормузский"), ["s1", "s5"])
+
+    def without_fts5(self):
+        """Сборка SQLite без FTS5: индекс не заводится, триггеры снимаются."""
+        saved = storage.SEARCH_SCHEMA
+        storage.SEARCH_SCHEMA = ("CREATE VIRTUAL TABLE IF NOT EXISTS "
+                                 "нет_такого USING fts_которого_нет(text);")
+        self.addCleanup(setattr, storage, "SEARCH_SCHEMA", saved)
+        storage.db().close()
+
+
 class TestUrgent(WebCase):
     """Срочное в ленте: карточка должна отличаться от плановой новости."""
 

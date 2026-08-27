@@ -33,11 +33,12 @@ Telegram этого всего не касается: там по-прежнем
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 import urllib.parse
 
 from . import sections, translate
-from .config import CFG, local_now, to_local
+from .config import CFG, local_now, log, to_local
 from .feedparse import clean_title, parse_date
 from .profiles import emoji as topic_emoji
 from .profiles import title as topic_title
@@ -47,8 +48,9 @@ from .textutil import STOPWORDS
 #: сколько карточек отдаём за один запрос страницы
 PAGE = 20
 
-#: сколько строк истории просматриваем при поиске. Больше в `sent` и не
-#: бывает: она живёт keep_sent_days и подрезается при каждом сборе
+#: сколько строк истории просматриваем при поиске перебором. Больше в `sent`
+#: и не бывает: она живёт keep_sent_days и подрезается при каждом сборе.
+#: Общая лента ходит этим путём, только когда индекса нет (см. `matching`)
 SEARCH_ROWS = 3000
 
 #: столько последних заголовков разбираем на популярные темы
@@ -273,8 +275,13 @@ def _sections_filter(topics) -> tuple:
 
 
 def _hit(row, words) -> bool:
-    """Поиск идёт в Python: LOWER() в SQLite знает только латиницу, а
-    искать «Ормузский» и «ормузский» читатель должен одинаково."""
+    """Запасной поиск — перебором в Python.
+
+    LOWER() в SQLite знает только латиницу, а искать «Ормузский» и
+    «ормузский» читатель должен одинаково: регистр приходится сворачивать
+    самим. Так лента искала всегда, и так она ищет до сих пор в закладках, в
+    избранном и везде, где нет индекса (см. `matching`).
+    """
     blob = " ".join(str(column(row, key)) for key in
                     ("title", "headline", "summary", "lead", "source_id",
                      "url")).lower()
@@ -292,14 +299,62 @@ def needle(query: str) -> list:
     return [stem(word) for word in str(query or "").lower().split() if word]
 
 
+#: Слово, в котором есть хоть один знак, — из такого FTS5 выделит токен.
+#: Запрос из одних скобок и точек индексу сказать нечего, и разбирать его
+#: идёт перебор: там «...» — это просто подстрока.
+WORDY = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def match_query(words) -> str:
+    """Слова запроса -> выражение MATCH для FTS5. Пусто — индекс не поможет.
+
+    Каждое слово ищется префиксом: в `words` лежат основы (см. `needle`), а
+    основа — это начало слова, и «иран*» находит и «Иран», и «в Иране».
+    Слова соединяются через AND: запрос «иран нефть» сужает ответ, а не
+    расширяет его, — ровно как у `_hit`.
+
+    Слово берётся в кавычки: в нём может оказаться точка («ria.ru») или
+    дефис, а для FTS5 это синтаксис, а не буквы. В кавычках это фраза —
+    подряд идущие слова, что для «ria.ru» и требуется.
+    """
+    if not all(WORDY.search(word) for word in words):
+        return ""
+    return " AND ".join('"%s"*' % word.replace('"', '""') for word in words)
+
+
+def matching(conn, view, chat_id, words) -> tuple:
+    """Условие «эта новость нашлась поиском» для SQL — или пусто.
+
+    Пусто значит «индексом не обойтись, ищи перебором»: FTS5 в сборке нет,
+    индекс ещё не собран или запрос ему не по зубам.
+
+    Индекс стоит над историей (`sent`) — по ней и идёт общая лента. Закладки
+    и оценки живут в своих таблицах, и новость, чью запись в истории уже
+    подрезал `keep_sent_days`, в индексе не значится: там поиск остаётся
+    перебором. Строк там немного — это отметки одного читателя, а не вся
+    история, — и найтись в закладках должно всё, что в них лежит.
+    """
+    from . import storage
+
+    if view != "news" or not storage.searchable(conn):
+        return "", []
+    expr = match_query(words)
+    if not expr:
+        return "", []
+    return ("url_hash IN (SELECT n.url_hash FROM sent n WHERE n.chat_id = ?"
+            " AND n.rowid IN (SELECT rowid FROM %s WHERE %s MATCH ?))"
+            % (storage.SEARCH_TABLE, storage.SEARCH_TABLE)), [str(chat_id), expr]
+
+
 def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE):
     """Карточки одной страницы ленты и признак «есть ещё».
 
     `section` — раздел или их набор: читатель на странице может закрепить
     несколько разделов сразу, и тогда лента идёт по ним всем.
 
-    Без поиска пагинация делается базой. С поиском — по прочитанным строкам:
-    отбор идёт по словам в Python (см. `_hit`), и SQL про него не знает.
+    Пагинацию делает база — и без поиска, и с поиском по индексу. Только
+    там, где индекса нет (см. `matching`), отбор идёт по словам в Python
+    (`_hit`), SQL про него не знает, и страница нарезается из прочитанного.
     """
     base = SOURCES.get(view) or SOURCES["news"]
     args, offset, limit = [str(chat_id)], max(int(offset), 0), max(int(limit), 1)
@@ -310,6 +365,20 @@ def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE)
         args += params
 
     words = needle(query)
+    clause, params = matching(conn, view, chat_id, words) if words else ("", [])
+    if clause:
+        indexed = "SELECT * FROM (%s) WHERE %s" % (base, clause)
+        try:
+            rows = list(conn.execute(
+                indexed + " ORDER BY at DESC LIMIT ? OFFSET ?",
+                args + params + [limit + 1, offset]))
+        except sqlite3.OperationalError as exc:
+            # индекс не разобрал запрос — не повод отдать читателю ошибку:
+            # ниже лежит перебор, он разберёт что угодно
+            log.warning("Поиск «%s» мимо индекса: %s", query, exc)
+        else:
+            return rows[:limit], len(rows) > limit
+
     if not words:
         rows = list(conn.execute(base + " ORDER BY at DESC LIMIT ? OFFSET ?",
                                  args + [limit + 1, offset]))
