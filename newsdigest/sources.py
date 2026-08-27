@@ -190,9 +190,12 @@ def collect(topics=None, wire_only=False) -> dict:
                 - timedelta(days=CFG["keep_sent_days"])).isoformat()
     cutoff_r = (datetime.now(timezone.utc)
                 - timedelta(days=CFG["keep_routes_days"])).isoformat()
+    cutoff_d = (datetime.now(timezone.utc)
+                - timedelta(days=CFG["keep_dupes_days"])).isoformat()
     conn.execute("DELETE FROM items WHERE fetched_at < ? AND state != 'sent'", (cutoff_i,))
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
     conn.execute("DELETE FROM routes WHERE at < ?", (cutoff_r,))
+    conn.execute("DELETE FROM dupes WHERE at < ?", (cutoff_d,))
     # перевод новости живёт ровно столько, сколько сама новость: заголовок
     # двухмесячной давности второй раз уже не понадобится
     conn.execute("DELETE FROM translations WHERE at < ?", (cutoff_s,))

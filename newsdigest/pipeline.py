@@ -6,6 +6,8 @@
 
     1) материалы за окно читаются из базы ОДИН раз на весь выпуск;
     2) каждый раздел кластеризует свои материалы и отбирает кандидатов;
+    2а) спорные пары — те, что слова не свели, а событие у них одно, —
+       разбирает модель одним запросом на весь выпуск (dedup.py);
     3) модель ранжирует кандидаты каждого раздела своим портретом читателя
        (разделы идут параллельно — иначе выпуск из полутора десятков разделов
        собирался бы минуты);
@@ -20,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, issueview, sections, subscribers, translate
+from . import config, dedup, issueview, sections, subscribers, translate
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
@@ -210,6 +212,11 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     shortlists = [(topic, shortlist_for(rows, topic, index, ordering,
                                         CFG["section_candidates"]))
                   for topic in plan]
+    # слова развели кандидатов по кластерам, но одно событие всё ещё может
+    # стоять в выпуске дважды — под разными заголовками или следом за вчерашним
+    # выпуском. Спорное разбирается здесь, ДО ранжирования: платить за оценку
+    # повтора незачем
+    stats["cost"] += dedup.prune(conn, index, shortlists)
     stats["clusters"] = sum(len(s) for _topic, s in shortlists)
     if not stats["clusters"]:
         log.warning("После дедупликации новых новостей не осталось")
