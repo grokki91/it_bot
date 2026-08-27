@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, sections, signals, subscribers, translate, trust
+from . import config, dedup, sections, signals, subscribers, translate, trust
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .feedparse import parse_date
@@ -187,15 +187,23 @@ def hot_clusters(conn, topics=None):
     return sorted(hot, key=prescore, reverse=True)
 
 
-def unseen(hot, index):
+def unseen(hot, index, conn=None):
     """Кандидаты конкретного читателя: из общего списка убираем то,
-    что ему уже уходило."""
-    return [g for g in hot if not index.seen(g, CFG["similarity"])][:MAX_CANDIDATES]
+    что ему уже уходило. Возвращает (кандидаты, стоимость проверки).
+
+    Слова ловят пересказ, но не смену угла: «умер N» и «коллеги прощаются с N»
+    по словам не сходятся, а событие одно, и приходить срочным оно второй раз
+    не должно. Спорное разбирает `dedup` — там же, где и в плановом выпуске.
+    """
+    fresh = [g for g in hot if not index.seen(g, CFG["similarity"])][:MAX_CANDIDATES]
+    if conn is None or not fresh:
+        return fresh, 0.0
+    return dedup.confirm_new(conn, index, fresh)
 
 
 def candidates(conn, chat_id="", topics=None):
     """Свежие неотправленные кластеры одного читателя, лучшие — первыми."""
-    return unseen(hot_clusters(conn, topics), SentIndex(conn, chat_id))
+    return unseen(hot_clusters(conn, topics), SentIndex(conn, chat_id), conn)[0]
 
 
 # ------------------------------------------------------ сводка важного (🔔)
@@ -382,8 +390,10 @@ def check_group(topics, readers) -> int:
             return 0
 
         hot = hot_clusters(conn, list(topics))
-        pools = {chat_id: unseen(hot, SentIndex(conn, chat_id))
-                 for chat_id, _sub in ready}
+        pools, checked = {}, 0.0
+        for chat_id, _sub in ready:
+            pools[chat_id], spent = unseen(hot, SentIndex(conn, chat_id), conn)
+            checked += spent
         # у кого своих кандидатов не осталось, тот в общем запросе не участвует
         # и его долю за него не платит
         ready = [(chat_id, sub) for chat_id, sub in ready if pools[chat_id]]
@@ -406,7 +416,7 @@ def check_group(topics, readers) -> int:
                 for chat_id, _sub in ready:
                     log_run(conn, "breaking", "llm-failed",
                             {"candidates": len(pools[chat_id]), "sent": 0,
-                             "cost": 0.0, "best": 0.0})
+                             "cost": checked / len(ready), "best": 0.0})
                 return 0
             log.warning("Модель недоступна (%s), но числа говорят сами за себя",
                         exc)
@@ -414,12 +424,12 @@ def check_group(topics, readers) -> int:
             for chat_id, sub in ready:
                 with subscribers.overlay(sub):
                     sent += deliver(conn, chat_id, pools[chat_id], rated,
-                                    persona, {}, 0.0)
+                                    persona, {}, checked / len(ready))
             return sent
 
         # общий запрос делим на всех: иначе в `status` расход одного читателя
         # выглядел бы как расход целой группы
-        cost = llm_cost(usage) / len(ready)
+        cost = (llm_cost(usage) + checked) / len(ready)
         rated = signals.raise_floors(rated_by_group(ranking, shortlist),
                                      shortlist, kev)
 

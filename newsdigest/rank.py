@@ -7,7 +7,7 @@ import urllib.parse
 from datetime import datetime, timezone
 
 from . import trust
-from .config import CFG, WEIGHTS
+from .config import CFG, WEIGHTS, now_iso
 from .feedparse import parse_date
 from .textutil import sim_sets
 
@@ -126,6 +126,15 @@ def select(ranking, shortlist, limit=None, min_score=None, min_items=None,
     return picked
 
 
+def story(title, lead="") -> str:
+    """Новость одной строкой — так её увидит модель, когда будет решать,
+    об одном ли событии речь. Заголовка обычно мало: «Коллеги прощаются» без
+    первого абзаца не говорит даже, с кем прощаются."""
+    title = str(title or "").strip()
+    lead = " ".join(str(lead or "").split())[:180].strip()
+    return "%s. %s" % (title, lead) if lead else title
+
+
 class SentIndex:
     """История отправленного этому читателю — прочитанная один раз.
 
@@ -137,26 +146,78 @@ class SentIndex:
     def __init__(self, conn=None, chat_id=""):
         self.hashes = set()
         self.words = []
+        self.sigs = []
+        self.texts = []
+        self.at = []
+        # приговоры модели (newsdigest/dedup.py). `dupes` — сигнатуры, про
+        # которые уже известно, что это повтор; `links` — пары «одно и то же»,
+        # где ни один ещё не показан: второй отпадёт, когда возьмут первого
+        self.dupes = set()
+        self.links = {}
         if conn is None:
             return
         for row in conn.execute(
-                "SELECT url_hash, sig FROM sent WHERE chat_id=?", (str(chat_id),)):
+                "SELECT url_hash, sig, title, headline, summary, sent_at FROM sent "
+                "WHERE chat_id=?", (str(chat_id),)):
             self.hashes.add(row["url_hash"])
-            self.words.append(set((row["sig"] or "").split()))
+            self._add(row["sig"] or "",
+                      story(row["headline"] or row["title"], row["summary"]),
+                      row["sent_at"] or "")
+
+    def _add(self, sig, text, at="") -> None:
+        self.words.append(set(sig.split()))
+        self.sigs.append(sig)
+        self.texts.append(text)
+        self.at.append(at)
 
     def seen(self, group, threshold) -> bool:
         """Уходило ли это событие читателю раньше — по ссылке или по смыслу."""
         if any(item["url_hash"] in self.hashes for item in group):
             return True
-        tokens = set(primary_of(group)["sig"].split())
+        sig = primary_of(group)["sig"]
+        if sig in self.dupes:
+            return True
+        tokens = set(sig.split())
         return any(sim_sets(tokens, other) >= threshold for other in self.words)
+
+    def mark(self, sig) -> None:
+        """«Это повтор» — приговор, вынесенный не по словам."""
+        if sig:
+            self.dupes.add(sig)
+
+    def link(self, sig_a, sig_b) -> None:
+        """Две новости выпуска об одном событии. Кого показывать — решит отбор:
+        как только одну возьмут, вторая станет повтором (см. `remember`)."""
+        if sig_a and sig_b and sig_a != sig_b:
+            self.links.setdefault(sig_a, set()).add(sig_b)
+            self.links.setdefault(sig_b, set()).add(sig_a)
+
+    def near(self, group):
+        """Ближайшее из истории: (совпадение 0..1, сигнатура, текст, когда ушло).
+
+        Сравнивает не только «лицо» кластера, как `seen`, а все его материалы:
+        заметка, попавшая в кластер вторым источником, знает о событии не
+        меньше первой, а слова у неё другие. Так дороже — поэтому и зовётся
+        не на каждый кластер, а на те немногие, что дожили до отбора.
+        """
+        tokens = [set(item["sig"].split()) for item in group]
+        best, at = 0.0, -1
+        for index, other in enumerate(self.words):
+            score = max(sim_sets(one, other) for one in tokens)
+            if score > best:
+                best, at = score, index
+        if at < 0:
+            return 0.0, "", "", ""
+        return best, self.sigs[at], self.texts[at], self.at[at]
 
     def remember(self, group) -> None:
         """Отмечает кластер как использованный — чтобы соседний раздел
         не выдал ту же новость под другим соусом."""
         for item in group:
             self.hashes.add(item["url_hash"])
-        self.words.append(set(primary_of(group)["sig"].split()))
+        main = primary_of(group)
+        self._add(main["sig"], story(main["title"], main.get("summary")), now_iso())
+        self.dupes.update(self.links.get(main["sig"], ()))
 
 
 def already_sent(conn, group, threshold, chat_id="") -> bool:
