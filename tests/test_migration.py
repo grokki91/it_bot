@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import config, storage, subscribers  # noqa: E402
+from newsdigest import config, newsfeed, storage, subscribers  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
 logging.getLogger("nd").propagate = False
@@ -122,6 +122,102 @@ class TestUpgradeFrom20(unittest.TestCase):
             owner = subscribers.ensure_owner(conn)
             self.assertEqual(owner["favorites"], "")
             self.assertIn("favorites", subscribers.PERSONAL)
+        finally:
+            conn.close()
+
+    def test_history_gets_into_the_search_index(self):
+        """Индекс новый, история старая: её надо переиндексировать один раз.
+
+        Триггеры наполняют индекс с этого дня, а накопленное за два месяца
+        они не видели — без переиндексации поиск потерял бы всю историю.
+        """
+        conn = storage.db()
+        try:
+            self.assertTrue(storage.searchable(conn))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) c FROM sent_fts").fetchone()["c"], 7)
+            rows, _more = newsfeed.page(conn, self.OWNER, query="новость",
+                                        limit=50)
+            self.assertEqual(len(rows), 7)
+            rows, _more = newsfeed.page(conn, self.OWNER, query="старая новость 3")
+            self.assertEqual([r["url_hash"] for r in rows], ["h3"])
+        finally:
+            conn.close()
+
+    def test_index_is_rebuilt_when_its_contents_change(self):
+        """Поменялся состав индексируемого текста — индекс собирается заново."""
+        storage.db().close()
+        conn = storage.db()
+        try:
+            conn.execute("DELETE FROM sent_fts")
+            conn.commit()
+            storage.meta_set(conn, "search_index", "прошлая версия")
+        finally:
+            conn.close()
+        conn = storage.db()
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) c FROM sent_fts").fetchone()["c"], 7)
+            self.assertEqual(storage.meta_get(conn, "search_index"),
+                             storage.SEARCH_VERSION)
+        finally:
+            conn.close()
+
+    def test_index_is_not_rebuilt_on_every_open(self):
+        """Переиндексация — дело разовое: она читает всю историю целиком."""
+        storage.db().close()
+        conn = storage.db()
+        try:
+            conn.execute("INSERT INTO sent_fts(rowid, text) "
+                         "VALUES (777, 'метка того, что индекс не пересобрали')")
+            conn.commit()
+        finally:
+            conn.close()
+        conn = storage.db()
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) c FROM sent_fts").fetchone()["c"], 8)
+        finally:
+            conn.close()
+
+    def test_history_stays_writable_without_fts5(self):
+        """FTS5 пропал из сборки — триггеры снимаются, а история пишется.
+
+        Триггер ссылается на таблицу, которой SQLite без FTS5 не понимает:
+        останься он на месте, упала бы вся запись истории, а не поиск.
+        """
+        storage.db().close()
+        saved = storage.SEARCH_SCHEMA
+        storage.SEARCH_SCHEMA = ("CREATE VIRTUAL TABLE IF NOT EXISTS "
+                                 "нет_такого USING fts_которого_нет(text);")
+        try:
+            conn = storage.db()
+            try:
+                self.assertFalse([r for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' "
+                    "AND sql LIKE '%sent_fts%'")])
+                conn.execute("INSERT INTO sent(chat_id,url_hash,title,"
+                             "digest_date,sent_at) VALUES (?,'новый','Свежая "
+                             "новость','2026-08-02','2026-08-02T09:00:00+00:00')",
+                             (self.OWNER,))
+                conn.commit()
+                rows, _more = newsfeed.page(conn, self.OWNER, query="свежая")
+                self.assertEqual([r["url_hash"] for r in rows], ["новый"])
+            finally:
+                conn.close()
+        finally:
+            storage.SEARCH_SCHEMA = saved
+
+    def test_index_returns_with_fts5(self):
+        """FTS5 вернулся — индекс собирается заново вместе с триггерами."""
+        self.test_history_stays_writable_without_fts5()
+        conn = storage.db()
+        try:
+            self.assertTrue(storage.searchable(conn))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) c FROM sent_fts").fetchone()["c"], 8)
+            rows, _more = newsfeed.page(conn, self.OWNER, query="свежая")
+            self.assertEqual([r["url_hash"] for r in rows], ["новый"])
         finally:
             conn.close()
 

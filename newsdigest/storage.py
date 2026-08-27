@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS sent (
 );
 CREATE INDEX IF NOT EXISTS idx_sent_at ON sent(sent_at);
 CREATE INDEX IF NOT EXISTS idx_sent_chat ON sent(chat_id, sent_at);
+-- Одна новость лежит в истории у каждого, кому уходила. По одному хэшу её
+-- ищут и поисковый индекс (см. SEARCH_SCHEMA), и `item_facts`, а ключ у
+-- таблицы составной и с хэша не начинается.
+CREATE INDEX IF NOT EXISTS idx_sent_hash ON sent(url_hash);
 
 -- Очередь «важного» (🔔): событие прошло порог alert, но будить ради него
 -- человека незачем. Копится и уходит одной короткой сводкой раз в
@@ -257,6 +261,175 @@ def ensure_column(conn, table: str, column: str, decl: str) -> bool:
         return False
     conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
     conn.commit()
+    return True
+
+
+# ------------------------------------------------- поиск по ленте (FTS5)
+#: Виртуальная таблица полнотекстового поиска над историей отправленного.
+#:
+#: Раньше поиск на странице читал из `sent` три тысячи строк и перебирал их
+#: в Python (`newsfeed._hit`): SQLite-функция LOWER() знает только латиницу,
+#: а «Ормузский» читатель ищет запросом «ормузский». Токенизатор unicode61
+#: сворачивает регистр по всему Unicode — значит, и по-русски, — и отбор
+#: наконец делает база, а не цикл по всей истории.
+#:
+#: Морфологию даёт не индекс, а запрос: `newsfeed.needle` режет окончания,
+#: и основа ищется префиксом («иран*» находит и «Иран», и «в Иране»).
+#: Поэтому в индексе лежат целые слова: одна и та же таблица годится и для
+#: точного слова, и для любой его формы.
+SEARCH_TABLE = "sent_fts"
+
+#: Поля истории, по которым идёт поиск, — ровно те же, что читает `_hit`.
+SEARCH_FIELDS = ("title", "headline", "summary", "source_id", "url")
+
+#: Версия содержимого индекса. Меняется вместе с SEARCH_FIELDS: старый индекс
+#: тогда собирается заново, а не остаётся с половиной полей.
+SEARCH_VERSION = "1"
+
+
+def search_text(alias: str) -> str:
+    """SQL-выражение «весь текст новости одной строкой» для строки истории.
+
+    К полям самой истории добавляется текст материала (`items.summary`):
+    карточка показывает его у записей, где сути нет (до версии 3.5 её не
+    сохраняли), — значит, и находиться по нему новость должна.
+
+    `alias` — имя строки в запросе: таблица (`n`) или `new`/`old` в триггере.
+    """
+    parts = ["COALESCE(%s.%s, '')" % (alias, name) for name in SEARCH_FIELDS]
+    parts.append("COALESCE((SELECT summary FROM items "
+                 "WHERE url_hash = %s.url_hash), '')" % alias)
+    return " || ' ' || ".join(parts)
+
+
+def _refresh(alias: str) -> str:
+    """Тело триггера «пересобрать индекс у всех записей с этим хэшем».
+
+    Одна новость лежит в истории у каждого, кому уходила, а материал в
+    `items` один на всех — поэтому правка материала трогает несколько строк
+    индекса сразу.
+    """
+    return ("DELETE FROM {t} WHERE rowid IN "
+            "(SELECT rowid FROM sent WHERE url_hash = {a}.url_hash);\n"
+            "    INSERT INTO {t}(rowid, text) SELECT n.rowid, {text} "
+            "FROM sent n WHERE n.url_hash = {a}.url_hash;").format(
+                t=SEARCH_TABLE, a=alias, text=search_text("n"))
+
+
+#: Индекс и триггеры, которые его наполняют. Триггеры, а не запись из Python:
+#: в `sent` пишут три места (`pipeline`, `breaking` и `newsfeed.remember` —
+#: последний правит заголовок и суть задним числом, когда лента доводит
+#: карточку до русского), историю подрезает `sources.collect`, а материалы
+#: приходят и уходят сами по себе. Забыть одно из этих мест — значит тихо
+#: разойтись с лентой; база не забывает.
+SEARCH_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS {t} USING fts5(text, tokenize = 'unicode61');
+
+CREATE TRIGGER IF NOT EXISTS {t}_sent_ins AFTER INSERT ON sent BEGIN
+    INSERT INTO {t}(rowid, text) VALUES (new.rowid, {new});
+END;
+
+CREATE TRIGGER IF NOT EXISTS {t}_sent_del AFTER DELETE ON sent BEGIN
+    DELETE FROM {t} WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS {t}_sent_upd AFTER UPDATE ON sent BEGIN
+    DELETE FROM {t} WHERE rowid = old.rowid;
+    INSERT INTO {t}(rowid, text) VALUES (new.rowid, {new});
+END;
+
+CREATE TRIGGER IF NOT EXISTS {t}_item_ins AFTER INSERT ON items BEGIN
+    {by_new}
+END;
+
+CREATE TRIGGER IF NOT EXISTS {t}_item_upd AFTER UPDATE OF summary ON items BEGIN
+    {by_new}
+END;
+
+CREATE TRIGGER IF NOT EXISTS {t}_item_del AFTER DELETE ON items BEGIN
+    {by_old}
+END;
+""".format(t=SEARCH_TABLE, new=search_text("new"),
+           by_new=_refresh("new"), by_old=_refresh("old"))
+
+
+def searchable(conn) -> bool:
+    """Годен ли индекс: и таблица на месте, и триггеры, которые её наполняют.
+
+    Одной таблицы мало. Без триггеров индекс отстаёт от истории с первой же
+    новости, и искать по нему хуже, чем перебором: свежего в ответе не будет
+    вовсе. Нет чего-то из двух — поиск идёт перебором, как раньше.
+    """
+    kinds = {row["type"] for row in conn.execute(
+        "SELECT type FROM sqlite_master WHERE (type='table' AND name=?)"
+        " OR (type='trigger' AND tbl_name='sent' AND sql LIKE ?)",
+        (SEARCH_TABLE, "%" + SEARCH_TABLE + "%"))}
+    return {"table", "trigger"} <= kinds
+
+
+def drop_search_index(conn) -> None:
+    """Снимает триггеры индекса. Без FTS5 они не дают писать даже в `sent`.
+
+    Так бывает, если базу завели на сборке с FTS5, а открыли на сборке без
+    него: триггер ссылается на таблицу, которую SQLite больше не понимает, и
+    вместе с ней падает вся запись истории. Остаться без индекса можно,
+    остаться без истории — нет.
+
+    Сама виртуальная таблица остаётся: удалить её нечем, модуля-то нет.
+    Поиск на неё всё равно не пойдёт — запрос к ней не выполнится, а `page`
+    на этот случай держит перебор.
+    """
+    triggers = [row["name"] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE ?",
+        ("%" + SEARCH_TABLE + "%",))]
+    for name in triggers:
+        conn.execute("DROP TRIGGER IF EXISTS %s" % name)
+    if triggers:
+        conn.commit()
+        log.info("Триггеры поискового индекса сняты: FTS5 недоступен")
+
+
+def reindex_search(conn) -> None:
+    """Собирает индекс заново по всей истории.
+
+    Нужно ровно дважды: когда индекса ещё не было (база с прошлой версии —
+    триггеры-то новые, а история уже накоплена) и когда поменялся состав
+    индексируемого текста.
+    """
+    conn.execute("DELETE FROM %s" % SEARCH_TABLE)
+    conn.execute("INSERT INTO {t}(rowid, text) SELECT n.rowid, {text} "
+                 "FROM sent n".format(t=SEARCH_TABLE, text=search_text("n")))
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM %s" % SEARCH_TABLE).fetchone()["c"]
+    conn.commit()
+    meta_set(conn, "search_index", SEARCH_VERSION)
+    if rows:
+        log.info("Поисковый индекс ленты собран заново: %d запись(ей)", rows)
+
+
+def add_search_index(conn) -> bool:
+    """Заводит индекс поиска. False — FTS5 в сборке нет, и это не беда.
+
+    Вызывается ПОСЛЕ создания схемы: индекс и триггеры стоят над `sent` и
+    `items`, и без них создаваться им не над чем.
+
+    FTS5 собран в SQLite почти везде, но не везде: если его нет, CREATE
+    VIRTUAL TABLE упадёт, индекса не будет и поиск останется прежним —
+    перебором по `newsfeed._hit`. Это медленно, но работает, и лучше так,
+    чем не запуститься вовсе.
+    """
+    fresh = not searchable(conn)
+    try:
+        conn.executescript(SEARCH_SCHEMA)
+        # индекс мог остаться от сборки, где FTS5 был: тогда CREATE ... IF NOT
+        # EXISTS промолчит, а первое же обращение к таблице скажет правду
+        conn.execute("SELECT rowid FROM %s LIMIT 1" % SEARCH_TABLE).fetchone()
+    except sqlite3.OperationalError as exc:
+        log.info("FTS5 недоступен (%s) — поиск по ленте идёт перебором", exc)
+        drop_search_index(conn)
+        return False
+    if fresh or meta_get(conn, "search_index") != SEARCH_VERSION:
+        reindex_search(conn)
     return True
 
 
@@ -575,8 +748,12 @@ def db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
+    # INSERT OR REPLACE в `sent` без этого не снимает с индекса старую строку:
+    # без рекурсии REPLACE молча пропускает триггеры удаления
+    conn.execute("PRAGMA recursive_triggers=ON")
     upgrade(conn)                 # сначала чиним старое, потом досоздаём новое
     conn.executescript(SCHEMA)
+    add_search_index(conn)        # индекс стоит над схемой — значит, после неё
     return conn
 
 
