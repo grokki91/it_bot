@@ -26,12 +26,28 @@ die() { say "$*"; exit 1; }
 # для приватного репозитория лежит в ~/.ssh владельца, не в /root.
 OWNER=$(ls -ld "$REPO" | awk '{print $3}')
 if [ "$(id -u)" = 0 ] && [ "$OWNER" != root ]; then
-    git() { runuser -u "$OWNER" -- git -C "$REPO" "$@"; }
-    asowner() { runuser -u "$OWNER" -- "$@"; }
+    OWNER_UID=$(id -u "$OWNER")
+    OWNER_GID=$(id -g "$OWNER")
+    OWNER_HOME=$(getent passwd "$OWNER" | cut -d: -f6)
+    [ -n "$OWNER_HOME" ] || die "не нашёл домашний каталог пользователя $OWNER"
+    # setpriv понижает права без PAM: в отличие от runuser он не открывает
+    # сессию и не пишет по паре строк в journal на каждый тик таймера.
+    # HOME задаём сами — иначе git не найдёт ~/.ssh и ~/.gitconfig владельца.
+    if command -v setpriv >/dev/null 2>&1 &&
+       setpriv --reuid=0 --regid=0 --init-groups true >/dev/null 2>&1; then
+        asowner() {
+            env HOME="$OWNER_HOME" USER="$OWNER" LOGNAME="$OWNER" \
+                setpriv --reuid="$OWNER_UID" --regid="$OWNER_GID" \
+                        --init-groups -- "$@"
+        }
+    else
+        asowner() { runuser -u "$OWNER" -- "$@"; }   # setpriv старый или его нет
+    fi
 else
-    git() { command git -C "$REPO" "$@"; }
-    asowner() { "$@"; }
+    asowner() { command "$@"; }
 fi
+
+git() { asowner git -C "$REPO" "$@"; }
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 [ "$branch" = "$BRANCH" ] || die "на сервере ветка $branch, а не $BRANCH — не трогаю"
