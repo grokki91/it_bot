@@ -220,6 +220,73 @@ class TestAgainstHistory(DedupCase):
         self.assertEqual(len(self.asked[0]), 1)
 
 
+class TestBatching(DedupCase):
+    """Вопросы уходят пачками: обрыв одной не должен стоить всех вердиктов.
+
+    Лимит вопросов поднят до сотни, а сотня пар одним куском упирается в
+    потолок ответа модели — ровно та беда, ради которой пачками пишутся и
+    карточки выпуска (`llm.summarize`).
+    """
+
+    def pairs(self, count):
+        """count пар «повтор истории», про каждую придётся спросить отдельно.
+
+        Номера двузначные не для красоты: `textutil.signature` выбрасывает
+        односимвольные токены, и с «номер 0» против «номер 1» у всех пар
+        совпали бы и сигнатуры, и ключ — а значит, и вердикт на всех один.
+        """
+        out = []
+        for at in range(count):
+            title = "Актёр номер %d ушёл из жизни в 80 лет" % (10 + at)
+            self.send(title, "hollywoodreporter")
+            out.append(self.group("Коллеги прощаются с актёром номер %d" % (10 + at),
+                                  "indiewire"))
+        return out
+
+    def test_questions_are_split_into_batches(self):
+        CFG["dup_batch"] = 2
+        shortlists = [("cinema", self.pairs(5))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(sorted(len(batch) for batch in self.asked), [1, 2, 2])
+        self.assertEqual(shortlists[0][1], [])          # и все пятеро сняты
+
+    def test_a_broken_batch_costs_only_itself(self):
+        """Первая пачка не ответила — вердикты остальных всё равно в силе."""
+        CFG["dup_batch"] = 2
+        calls = []
+
+        def flaky(pairs):
+            calls.append(list(pairs))
+            if len(calls) == 1:
+                raise LLMError("оборвался ответ")
+            return ({i: True for i in range(len(pairs))}, {"in": 5, "out": 5})
+        dedup.judge_duplicates = flaky
+
+        shortlists = [("cinema", self.pairs(4))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        # четыре пары, пачки по две: одна пачка потеряна, вторая сработала
+        self.assertEqual(len(shortlists[0][1]), 2)
+
+    def test_a_broken_batch_is_not_cached_as_a_verdict(self):
+        """Про пары из потерянной пачки спросим ещё раз, а не запомним «разные»."""
+        CFG["dup_batch"] = 2
+
+        def fail(pairs):
+            raise LLMError("нет связи")
+        dedup.judge_duplicates = fail
+        shortlists = [("cinema", self.pairs(2))]
+        self.assertEqual(dedup.prune(self.conn, self.index(), shortlists), 0.0)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM dupes").fetchone()["c"], 0)
+
+    def test_the_limit_holds_across_batches(self):
+        CFG["dup_batch"], CFG["dup_llm_max"] = 2, 3
+        # история наполняется здесь, и `index()` должен читать её уже полной
+        shortlists = [("cinema", self.pairs(5))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(sum(len(batch) for batch in self.asked), 3)
+
+
 class TestInsideOneSection(DedupCase):
     """Два кандидата ОДНОГО раздела об одном событии — их склеивают.
 

@@ -29,9 +29,11 @@
     * в истории смотрим назад на `dup_window_h` — дальше это уже не повтор,
       а возвращение к теме;
     * пары выстраиваем в очередь и спрашиваем не больше `dup_llm_max` за
-      прогон. Сначала те, что дадут дубль прямо сейчас (`NOW`), внутри
-      очереди — по редкости общих слов (`weigh`): «карри» и «нвидиа» весят
-      много, «новый» и «компания» — почти ничего;
+      прогон, пачками по `dup_batch` (сотня пар одним куском упирается в
+      потолок ответа, и обрыв стоил бы всех вердиктов сразу). Сначала те
+      пары, что дадут дубль прямо сейчас (`NOW`), внутри очереди — по
+      редкости общих слов (`weigh`): «карри» и «нвидиа» весят много,
+      «новый» и «компания» — почти ничего;
     * вердикт оседает в таблице `dupes`. Ключ — пара сигнатур, поэтому ответ
       переживает пересборку выпуска и годится для всех подписчиков сразу.
 
@@ -64,6 +66,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from .config import CFG, log, now_iso
@@ -159,19 +162,44 @@ def ask(conn, questions):
     if not pending:
         return known, 0.0
 
-    try:
-        answers, usage = judge_duplicates([(seen, new) for _key, seen, new in pending])
-    except LLMError as exc:
-        # не беда: остаётся первый слой — ровно то, что было до этой проверки
-        log.warning("Проверка дублей не удалась (%s) — сужу по словам", exc)
-        return known, 0.0
+    size = max(1, int(CFG["dup_batch"]))
+    parts = [pending[at:at + size] for at in range(0, len(pending), size)]
 
-    fresh = {pending[idx][0]: same for idx, same in answers.items()}
+    def one(part):
+        try:
+            return part, judge_duplicates([(seen, new) for _key, seen, new in part])
+        except LLMError as exc:
+            # не беда: по этим парам остаётся первый слой — ровно то, что было
+            # до всей проверки. Остальные пачки от этого не страдают
+            log.warning("Проверка дублей не удалась (%s) — %d пар сужу по словам",
+                        exc, len(part))
+            return part, None
+
+    if len(parts) == 1:
+        results = [one(parts[0])]
+    else:
+        # пачки — это ожидание сети, и последовательно они складываются в
+        # полминуты к сборке выпуска
+        with ThreadPoolExecutor(max_workers=min(len(parts), 4)) as pool:
+            results = list(pool.map(one, parts))
+
+    fresh, cost, lost = {}, 0.0, 0
+    for part, answer in results:
+        if answer is None:
+            lost += len(part)
+            continue
+        answers, usage = answer
+        cost += llm_cost(usage)
+        fresh.update({part[idx][0]: same for idx, same in answers.items()})
+    if not fresh:
+        return known, cost
+
     remember(conn, fresh.items())
     known.update(fresh)
-    log.info("Дубли: спрошено пар %d, из них повторов %d", len(pending),
-             sum(1 for same in fresh.values() if same))
-    return known, llm_cost(usage)
+    log.info("Дубли: спрошено пар %d, из них повторов %d%s", len(pending) - lost,
+             sum(1 for same in fresh.values() if same),
+             "" if not lost else ", про %d ответа не пришло" % lost)
+    return known, cost
 
 
 #: очередь вопроса. Спорных пар в выпуске из полутора десятков разделов
