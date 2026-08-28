@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (feedback, pipeline, storage,  # noqa: E402
+from newsdigest import (dedup, feedback, pipeline, storage,  # noqa: E402
                         subscribers, translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
@@ -387,6 +387,77 @@ class TestPerSubscriber(PipelineCase):
             self.assertEqual(subscribers.due(conn), [])
         finally:
             conn.close()
+
+
+class TestOneEventTwoNotes(PipelineCase):
+    """Две заметки одного раздела об одном событии — одна карточка на двоих.
+
+    Тот самый случай с Эль-Ниньо: «Глобальное потепление усилило Эль-Ниньо —
+    кораллы Галапагосов» и «Кораллы показали усиление Эль-Ниньо из-за климата»
+    пришли в «Климат» одним выпуском, в 9:03, одна за другой. Общих слов у них
+    мало, кластеризация их не свела, а связывание внутри раздела не работает:
+    список кандидатов фильтруется один раз, ДО отбора.
+    """
+
+    FIRST = "Глобальное потепление усилило Эль-Ниньо — кораллы Галапагосов"
+    SECOND = "Кораллы показали усиление циклов из-за изменения климата"
+
+    def setUp(self):
+        PipelineCase.setUp(self)
+        conn = storage.db()
+        try:
+            # вердикты модели переживают пересборку выпуска — это их работа,
+            # но соседний тест не должен получать чужой ответ из кэша
+            conn.execute("DELETE FROM dupes")
+            conn.commit()
+        finally:
+            conn.close()
+        self.written = []
+        self._judge = dedup.judge_duplicates
+        self.same(True)
+        pipeline.summarize = self.record_summarize
+
+    def tearDown(self):
+        dedup.judge_duplicates = self._judge
+        PipelineCase.tearDown(self)
+
+    def same(self, verdict):
+        dedup.judge_duplicates = lambda pairs: (
+            {i: verdict for i in range(len(pairs))}, {"in": 5, "out": 5})
+
+    def record_summarize(self, picked, persona, language):
+        """Запоминаем, по каким источникам модель писала каждую карточку."""
+        self.written = [sorted(i["source_id"] for i in group)
+                        for group, _score, _cat in picked]
+        return self.fake_summarize(picked, persona, language)
+
+    def test_the_pair_arrives_as_one_card(self):
+        self.fill(2, titles=[self.FIRST, self.SECOND])
+        stats = pipeline.build_and_send(chat_id=CHAT)
+        self.assertEqual(stats["selected"], 1)
+
+        # и карточку эту модель писала по обеим заметкам сразу — ради этого
+        # склейка и делалась: подробностей в блоке больше, чем было в каждой
+        self.assertEqual(len(self.written), 1)
+        self.assertEqual(len(self.written[0]), 2)
+
+        conn = storage.db()
+        try:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) c FROM sent").fetchone()["c"], 1)
+            # обе заметки помечены отправленными: вторая не всплывёт завтра
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) c FROM items "
+                             "WHERE state='sent'").fetchone()["c"], 2)
+        finally:
+            conn.close()
+
+    def test_two_different_events_still_come_as_two(self):
+        """Дедупликация не должна затыкать рот новостям, которые ДРУГИЕ."""
+        self.same(False)
+        self.fill(2, titles=[self.FIRST, self.SECOND])
+        stats = pipeline.build_and_send(chat_id=CHAT)
+        self.assertEqual(stats["selected"], 2)
 
 
 if __name__ == "__main__":

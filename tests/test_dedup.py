@@ -30,6 +30,7 @@ CHAT = "77"
 DEATH = "Тим Карри, звезда «Шоу ужасов Рокки Хоррора», умер в 80 лет"
 TRIBUTE = "Коллеги, включая Кэрол Бернетт и Люка Эванса, прощаются с Тимом Карри"
 CAUSE = "Названа причина смерти Тима Карри"
+MEMORY = "Тима Карри вспоминают близкие"
 OTHER = "Nvidia представила ускоритель Rubin для дата-центров"
 
 
@@ -53,9 +54,14 @@ class DedupCase(unittest.TestCase):
 
     def answer(self, same):
         """Подменить модель: она отвечает `same` про каждую пару."""
+        self.answers(lambda _a, _b: same)
+
+    def answers(self, decide):
+        """То же, но ответ зависит от пары: decide(что видел, что просится)."""
         def fake(pairs):
             self.asked.append(list(pairs))
-            return ({i: same for i in range(len(pairs))}, {"in": 5, "out": 5})
+            return ({i: bool(decide(a, b)) for i, (a, b) in enumerate(pairs)},
+                    {"in": 5, "out": 5})
         dedup.judge_duplicates = fake
 
     def group(self, title, source="src", url=None):
@@ -214,8 +220,200 @@ class TestAgainstHistory(DedupCase):
         self.assertEqual(len(self.asked[0]), 1)
 
 
-class TestInsideOneIssue(DedupCase):
-    """Два кандидата одного выпуска об одном событии."""
+class TestBatching(DedupCase):
+    """Вопросы уходят пачками: обрыв одной не должен стоить всех вердиктов.
+
+    Лимит вопросов поднят до сотни, а сотня пар одним куском упирается в
+    потолок ответа модели — ровно та беда, ради которой пачками пишутся и
+    карточки выпуска (`llm.summarize`).
+    """
+
+    def pairs(self, count):
+        """count пар «повтор истории», про каждую придётся спросить отдельно.
+
+        Номера двузначные не для красоты: `textutil.signature` выбрасывает
+        односимвольные токены, и с «номер 0» против «номер 1» у всех пар
+        совпали бы и сигнатуры, и ключ — а значит, и вердикт на всех один.
+        """
+        out = []
+        for at in range(count):
+            title = "Актёр номер %d ушёл из жизни в 80 лет" % (10 + at)
+            self.send(title, "hollywoodreporter")
+            out.append(self.group("Коллеги прощаются с актёром номер %d" % (10 + at),
+                                  "indiewire"))
+        return out
+
+    def test_questions_are_split_into_batches(self):
+        CFG["dup_batch"] = 2
+        shortlists = [("cinema", self.pairs(5))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(sorted(len(batch) for batch in self.asked), [1, 2, 2])
+        self.assertEqual(shortlists[0][1], [])          # и все пятеро сняты
+
+    def test_a_broken_batch_costs_only_itself(self):
+        """Первая пачка не ответила — вердикты остальных всё равно в силе."""
+        CFG["dup_batch"] = 2
+        calls = []
+
+        def flaky(pairs):
+            calls.append(list(pairs))
+            if len(calls) == 1:
+                raise LLMError("оборвался ответ")
+            return ({i: True for i in range(len(pairs))}, {"in": 5, "out": 5})
+        dedup.judge_duplicates = flaky
+
+        shortlists = [("cinema", self.pairs(4))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        # четыре пары, пачки по две: одна пачка потеряна, вторая сработала
+        self.assertEqual(len(shortlists[0][1]), 2)
+
+    def test_a_broken_batch_is_not_cached_as_a_verdict(self):
+        """Про пары из потерянной пачки спросим ещё раз, а не запомним «разные»."""
+        CFG["dup_batch"] = 2
+
+        def fail(pairs):
+            raise LLMError("нет связи")
+        dedup.judge_duplicates = fail
+        shortlists = [("cinema", self.pairs(2))]
+        self.assertEqual(dedup.prune(self.conn, self.index(), shortlists), 0.0)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM dupes").fetchone()["c"], 0)
+
+    def test_the_limit_holds_across_batches(self):
+        CFG["dup_batch"], CFG["dup_llm_max"] = 2, 3
+        # история наполняется здесь, и `index()` должен читать её уже полной
+        shortlists = [("cinema", self.pairs(5))]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(sum(len(batch) for batch in self.asked), 3)
+
+
+class TestInsideOneSection(DedupCase):
+    """Два кандидата ОДНОГО раздела об одном событии — их склеивают.
+
+    Ровно случай с Эль-Ниньо: две заметки о том же исследовании кораллов
+    пришли в «Климат» одним выпуском, одна за другой. Связывания тут мало —
+    список кандидатов раздела фильтруется один раз, до отбора, и связанная
+    пара доезжала до выпуска целиком.
+    """
+
+    def test_two_candidates_become_one_cluster(self):
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertIs(shortlists[0][1][0], first)      # остаётся первый по прескорингу
+        self.assertEqual(len(first), 2)                # но материалов у него два
+
+    def test_the_card_is_written_by_both_notes(self):
+        """Смысл склейки: карточку пишет модель, и теперь ей видны обе заметки."""
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        dedup.prune(self.conn, self.index(), [("cinema", [first, second])])
+        self.assertEqual({i["source_id"] for i in rank.voices(first)},
+                         {"hollywoodreporter", "indiewire"})
+
+    def test_different_events_stay_apart(self):
+        """«Названа причина смерти» — следующая новость, склеивать нечего."""
+        self.answer(False)
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(CAUSE, "deadline")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 2)
+        self.assertEqual(len(first), 1)
+
+    def test_a_chain_of_three_collapses_into_one(self):
+        """А и Б — одно, Б и В — одно: в выпуске должен остаться один кластер,
+        и материалы всех троих должны лежать в нём, а не потеряться."""
+        first = self.group(DEATH, "hollywoodreporter")
+        second = self.group(TRIBUTE, "indiewire")
+        third = self.group("Тим Карри ушёл из жизни", "variety")
+        shortlists = [("cinema", [first, second, third])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertEqual({i["source_id"] for i in shortlists[0][1][0]},
+                         {"hollywoodreporter", "indiewire", "variety"})
+
+    def test_the_chain_closes_even_when_it_starts_in_the_middle(self):
+        """Модель развела А и Б, но признала одним А—В и Б—В. Значит, событие
+        всё-таки одно: в выпуске должен остаться один кластер, и материалы
+        всех троих — в нём.
+
+        Проверяем именно это: убирать из выпуска надо тот кластер, в котором
+        материалы уже не лежат, а не тот, кого назвали в паре, — иначе кластер
+        остаётся стоять, а его заметки к этому времени уже переехали к соседу.
+        """
+        self.answers(lambda seen, new: not ("умер" in seen and "прощаются" in new))
+        first = self.group(DEATH, "hollywoodreporter")
+        second = self.group(TRIBUTE, "indiewire")
+        third = self.group(MEMORY, "variety")
+        shortlists = [("cinema", [first, second, third])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertEqual({i["source_id"] for i in shortlists[0][1][0]},
+                         {"hollywoodreporter", "indiewire", "variety"})
+
+    def test_nothing_is_fused_into_a_candidate_that_is_leaving(self):
+        """Первого кандидата читатель уже видел — его убирают. Вливать в него
+        второго нельзя: вместе с ним ушла бы и вторая новость, про которую
+        модель прямо сказала, что она ДРУГАЯ.
+
+        «Коллеги прощаются» — повтор вечернего «умер Тим Карри»; «названа
+        причина смерти» — следующая новость, и прийти она должна.
+        """
+        self.answers(lambda seen, new: not ("умер" in seen and "причина" in new))
+        self.send(DEATH, "hollywoodreporter")
+        first, second = self.group(TRIBUTE, "indiewire"), self.group(CAUSE, "deadline")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [second])
+        self.assertEqual(len(second), 1)
+
+    def test_the_budget_goes_to_the_pairs_that_duplicate_right_now(self):
+        """Спорных пар в выпуске под сотню, а спросить можно про три десятка.
+
+        Пара внутри раздела даст два одинаковых блока сразу; пара из разных
+        разделов — только если оба кандидата пройдут отбор. Первых при этом на
+        порядок меньше, и по одному весу общих слов они вытеснялись вторыми:
+        в выпуске из шестнадцати разделов до модели доезжала одна из восьми.
+
+        Здесь у межразделной пары общее слово редкое («Нвидиа»), а у
+        внутрираздельной — частое («компания»), то есть вес против неё.
+        Спросить всё равно должны про неё.
+        """
+        CFG["dup_llm_max"] = 1
+        first = self.group("Компания открыла офис в Мюнхене", "variety")
+        second = self.group("Компания Нвидиа закрыла павильон в Лондоне", "deadline")
+        far = self.group("Нвидиа отчиталась за третий квартал", "reuters")
+        shortlists = [("cinema", [first, second]), ("ai", [far])]
+        # «компания» должна быть частым словом — иначе редкость слов ни при чём
+        for at, name in enumerate(("Астра", "Бета", "Гамма", "Дельта", "Эпсилон")):
+            shortlists.append(("pad%d" % at,
+                               [self.group("Компания %s объявила о планах" % name,
+                                           "wire%d" % at)]))
+        dedup.prune(self.conn, self.index(), shortlists)
+
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(len(self.asked[0]), 1)
+        seen, new = self.asked[0][0]
+        self.assertIn("Мюнхене", seen)
+        self.assertIn("павильон", new)
+        self.assertEqual(len(shortlists[0][1]), 1)      # и склеили их же
+
+    def test_switch_off_keeps_both(self):
+        CFG["dup_llm"] = False
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 2)
+        self.assertEqual(self.asked, [])
+
+
+class TestAcrossSections(DedupCase):
+    """Два кандидата РАЗНЫХ разделов об одном событии — их только связывают."""
 
     def test_loser_falls_only_when_the_winner_is_taken(self):
         index = self.index()
@@ -232,6 +430,16 @@ class TestInsideOneIssue(DedupCase):
 
         index.remember(first)
         self.assertTrue(index.seen(second, CFG["similarity"]))
+
+    def test_sections_are_not_fused(self):
+        """Склейка решила бы за отбор, в каком разделе новости жить: не попади
+        она в первый — из второго её уже никто бы не показал."""
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first]), ("main", [second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
 
     def test_different_events_are_not_linked(self):
         self.answer(False)
