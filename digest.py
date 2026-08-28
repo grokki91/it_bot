@@ -25,6 +25,7 @@ digest.py — ежедневный дайджест новостей в Telegram
   python3 digest.py status         прогоны, расход, здоровье источников
   python3 digest.py feeds          проверить все источники по одному
   python3 digest.py service        напечатать unit-файл systemd (по желанию)
+  python3 digest.py autoupdate     таймер: сам git pull и перезапуск демона
 """
 import os
 import sys

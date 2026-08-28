@@ -44,6 +44,36 @@ sudo systemctl daemon-reload && sudo systemctl enable --now newsdigest
 
 Или без root: `nohup python3 digest.py daemon --log-file >/dev/null 2>&1 &`
 
+### Автообновление после мержа в master
+
+Чтобы не заходить на VPS с `git pull` и `systemctl restart` после каждого
+мержа, поставьте таймер: он раз в 5 минут смотрит на `origin/main` и, если
+появились новые коммиты, подтягивает их и перезапускает демона.
+
+```bash
+python3 digest.py autoupdate          # напечатает и сохранит юнит + таймер
+sudo cp ~/.newsdigest/newsdigest-update.service \
+        ~/.newsdigest/newsdigest-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now newsdigest-update.timer
+```
+
+Работает только если код на сервере получен через `git clone`. Таймер вызывает
+`deploy/autoupdate.sh`, который:
+
+* молчит, когда новых коммитов нет — journal от него не растёт;
+* ничего не делает, если на сервере другая ветка или есть незакоммиченные
+  правки (ваши локальные изменения не будут потеряны);
+* тянет только `--ff-only`, git-командами от владельца каталога, а не от root;
+* не перезапускает демона, если изменилась одна документация.
+
+Параметры: `--branch`, `--minutes`, `--service` у команды `autoupdate`;
+`Environment=ND_SELFTEST=1` в юните — прогонять тесты перед перезапуском и
+откатываться на прежний коммит, если они упали.
+
+Проверить: `systemctl list-timers newsdigest-update --no-pager` и
+`journalctl -u newsdigest-update -n 20 --no-pager`.
+
 ---
 
 ## 📋 Команды
@@ -64,6 +94,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now newsdigest
 | `topics` | Разделы и их источники (★ — в плановом выпуске) |
 | `daemon` / `web` | Фоновый режим / только страница |
 | `service` | Вывести systemd unit-файл |
+| `autoupdate` | Юнит и таймер: сам `git pull` + перезапуск демона после мержа |
 
 Глобальные флаги: `-v` (DEBUG-логи), `--log-file` (писать в `~/.newsdigest/digest.log`).
 
