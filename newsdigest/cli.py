@@ -656,6 +656,70 @@ def cmd_service(_args):
     return 0
 
 
+UPDATE_SERVICE_TEMPLATE = """[Unit]
+Description=News digest: подтянуть код из git и перезапустить демона
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=ND_BRANCH={branch}
+Environment=ND_SERVICE={service}
+ExecStart={script}
+TimeoutStartSec=300
+SyslogIdentifier=newsdigest-update
+"""
+
+UPDATE_TIMER_TEMPLATE = """[Unit]
+Description=Проверять обновления News digest каждые {minutes} мин.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={minutes}min
+AccuracySec=30s
+Unit=newsdigest-update.service
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def cmd_autoupdate(args):
+    """Юниты для автодеплоя: git pull по таймеру + перезапуск демона."""
+    repo = LAUNCHER.parent
+    script = repo / "deploy" / "autoupdate.sh"
+    minutes = max(1, args.minutes)
+    unit = UPDATE_SERVICE_TEMPLATE.format(script=script, branch=args.branch,
+                                          service=args.service)
+    timer = UPDATE_TIMER_TEMPLATE.format(minutes=minutes)
+    HOME.mkdir(parents=True, exist_ok=True)
+    unit_path = HOME / "newsdigest-update.service"
+    timer_path = HOME / "newsdigest-update.timer"
+    unit_path.write_text(unit, encoding="utf-8")
+    timer_path.write_text(timer, encoding="utf-8")
+    print(unit)
+    print(timer)
+    if not script.exists():
+        print("ВНИМАНИЕ: не найден %s — обновите код из репозитория.\n" % script)
+    if not (repo / ".git").exists():
+        print("ВНИМАНИЕ: %s — не git-репозиторий. Автообновление работает только\n"
+              "  когда код на сервере получен через git clone.\n" % repo)
+    print("Файлы сохранены: %s, %s\n" % (unit_path, timer_path))
+    print("Установка (sudo нужен только на эти команды):")
+    print("  sudo cp %s %s /etc/systemd/system/" % (unit_path, timer_path))
+    print("  sudo systemctl daemon-reload")
+    print("  sudo systemctl enable --now newsdigest-update.timer")
+    print("\nПроверить:")
+    print("  systemctl list-timers newsdigest-update --no-pager")
+    print("  sudo systemctl start newsdigest-update   # прогнать прямо сейчас")
+    print("  journalctl -u newsdigest-update -n 20 --no-pager")
+    print("\nТеперь после мержа в %s сервер сам подтянет код и перезапустит %s."
+          % (args.branch, args.service))
+    print("Прогонять тесты перед перезапуском (и откатываться, если упали):")
+    print("  добавьте в юнит строку Environment=ND_SELFTEST=1")
+    return 0
+
+
 def build_parser():
     # Общие флаги вынесены в родителя, чтобы работали в ЛЮБОЙ позиции:
     # и `digest.py --log-file daemon`, и `digest.py daemon --log-file`.
@@ -725,6 +789,15 @@ def build_parser():
         func=cmd_status)
     sub.add_parser("service", help="напечатать unit-файл systemd").set_defaults(
         func=cmd_service)
+
+    auto = sub.add_parser("autoupdate",
+                          help="таймер systemd: сам git pull и перезапуск демона")
+    auto.add_argument("--branch", default="main", help="какую ветку тянуть (main)")
+    auto.add_argument("--minutes", type=int, default=5,
+                      help="как часто проверять обновления, минут (5)")
+    auto.add_argument("--service", default="newsdigest",
+                      help="имя юнита демона (newsdigest)")
+    auto.set_defaults(func=cmd_autoupdate)
     return parser
 
 
