@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from . import redact
+
 # =============================================================================
 #  Р А З Д Е Л   Н А С Т Р О Е К
 # =============================================================================
@@ -329,6 +331,21 @@ def load_env() -> None:
     TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     DS_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    remember_secrets()
+
+
+def remember_secrets() -> None:
+    """Показывает `redact`, какие значения сейчас живые.
+
+    После этого свой токен, ключ модели и пароль страницы не покажутся ни в
+    логе, ни в запросе к модели, даже если попадут туда кружным путём — через
+    сообщение об ошибке или адрес источника. Заодно забираем всё, что лежит в
+    окружении под говорящим именем: там же живут ключи, дописанные руками.
+    """
+    redact.remember(TG_TOKEN, DS_KEY, CFG.get("web_token"))
+    for name, value in os.environ.items():
+        if redact.secret_name(name):
+            redact.remember(value)
 
 
 def write_env(values: dict, allow_empty: bool = False) -> None:
@@ -363,6 +380,10 @@ def setup_logging(verbose: bool = False, to_file: bool = False) -> None:
         # В системный journal демон не пишет — он у вас и так разросся.
         handlers.append(RotatingFileHandler(
             str(LOG_FILE), maxBytes=2000000, backupCount=2, encoding="utf-8"))
+    # Лог читает не только автор: его вставляют в issue на гитхабе, поэтому
+    # секреты вырезаются на самом выходе, а не «там, где мы помним»
+    for handler in handlers:
+        handler.addFilter(redact.SecretFilter())
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

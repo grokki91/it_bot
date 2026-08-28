@@ -33,7 +33,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import bot, config, feedback, newsfeed, sections, settings, subscribers
+from . import (bot, config, feedback, newsfeed, redact, sections, settings,
+               subscribers)
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile
@@ -68,9 +69,12 @@ def token() -> str:
             return value
         value = secrets.token_urlsafe(15)
         CFG["web_token"] = value
+        redact.remember(value)      # в лог он больше не попадёт ни при чём
         try:
             write_env({"ND_WEB_TOKEN": value})
-            log.info("Пароль страницы создан: %s (сохранён в %s)", value, ENV_FILE)
+            # сам пароль в лог не пишем: лог показывают в issue и в поддержке.
+            # Посмотреть его — `digest.py web` или ~/.newsdigest/env
+            log.info("Пароль страницы создан и сохранён в %s", ENV_FILE)
         except OSError as exc:
             log.warning("Пароль страницы не сохранился (%s) — после перезапуска "
                         "он сменится. Задайте ND_WEB_TOKEN руками.", exc)

@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import candidates, config, sections, subscribers, trust, userprofiles
+from . import (candidates, config, redact, sections, subscribers, trust,
+               userprofiles)
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
@@ -310,10 +311,12 @@ def check_one_feed(url):
     """Годится ли эта ссылка в источники. Печатает первые заголовки."""
     src = ("проверка", url, 2, "media")
     _src, items, err = fetch_source(src)
+    # адрес печатаем без пароля и ключей: этот вывод копируют в issue
+    shown = redact.safe_url(url)
     if err:
-        print("FAIL  %s\n  %s" % (url, err))
+        print("FAIL  %s\n  %s" % (shown, err))
         return 1
-    print("ok    %s\n  свежих за %d ч: %d" % (url, CFG["window_hours"], len(items)))
+    print("ok    %s\n  свежих за %d ч: %d" % (shown, CFG["window_hours"], len(items)))
     if not items:
         print("  Записей нет. Либо лента давно не обновлялась, либо адрес не тот.")
         return 1
@@ -790,6 +793,15 @@ def build_parser():
     sub.add_parser("service", help="напечатать unit-файл systemd").set_defaults(
         func=cmd_service)
 
+    scrub = sub.add_parser("scrub", help="вычистить секреты из файла или stdin "
+                                        "(перед вставкой в issue или PR)")
+    scrub.add_argument("files", nargs="*",
+                       help="файлы; без аргументов читает stdin")
+    scrub.add_argument("--check", action="store_true",
+                       help="не печатать текст, а только проверить: код 1, "
+                            "если нашлось похожее на секрет")
+    scrub.set_defaults(func=cmd_scrub)
+
     auto = sub.add_parser("autoupdate",
                           help="таймер systemd: сам git pull и перезапуск демона")
     auto.add_argument("--branch", default="main", help="какую ветку тянуть (main)")
@@ -799,6 +811,19 @@ def build_parser():
                       help="имя юнита демона (newsdigest)")
     auto.set_defaults(func=cmd_autoupdate)
     return parser
+
+
+def cmd_scrub(args):
+    """Вычищает секреты из файла или stdin — перед вставкой в issue или PR.
+
+    Лог и вывод команд бот чистит сам, но в issue попадает и то, что человек
+    собрал руками: кусок `env`, адрес ленты, вывод чужой утилиты. Эта команда
+    — последний рубеж: `digest.py scrub ~/.newsdigest/digest.log > safe.txt`.
+    С `--check` ничего не печатает, а только говорит, есть ли в файле похожее
+    на секрет (тем же занимается проверка в CI).
+    """
+    paths = list(args.files or ["-"])
+    return redact.main((["--check"] if args.check else []) + paths)
 
 
 def cmd_topics(_args):

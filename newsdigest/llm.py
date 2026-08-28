@@ -6,7 +6,7 @@ import json
 import re
 import time
 
-from . import config
+from . import config, redact
 from .config import CFG, log
 from .net import post_json
 from .rank import primary_of, voices
@@ -17,7 +17,17 @@ class LLMError(RuntimeError):
 
 
 def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
-    """Один вызов DeepSeek в режиме JSON. Возвращает (данные, usage)."""
+    """Один вызов модели в режиме JSON. Возвращает (данные, usage).
+
+    Это единственная дверь наружу к языковой модели: и ранжирование, и
+    карточки, и перевод, и определение раздела уходят через неё. Поэтому
+    здесь же стоит и заслон от секретов (`redact.clean_messages`): текст
+    запроса собирается из портрета читателя, ссылок на источники и
+    содержимого чужих лент — то есть из мест, куда ключ может попасть
+    случайно. Чистим ПЕРЕД отправкой и по факту наличия сообщения, а не по
+    именам наших промптов: сменится провайдер или добавится новая роль —
+    защита останется на месте.
+    """
     if not config.DS_KEY:
         raise LLMError("DEEPSEEK_API_KEY не задан")
     payload = {
@@ -29,6 +39,12 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
         "stream": False,
         "response_format": {"type": "json_object"},
     }
+    hidden = redact.clean_messages(payload)
+    if hidden:
+        # что именно вырезали — не пишем даже в лог: там оно и окажется
+        log.warning("Из запроса к модели вырезаны чувствительные данные (%s). "
+                    "Проверьте profiles.json и адреса источников",
+                    ", ".join(hidden))
     if CFG["disable_thinking"]:
         payload["thinking"] = {"type": "disabled"}
 
