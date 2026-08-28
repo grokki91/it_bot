@@ -304,6 +304,37 @@ class TestInsideOneSection(DedupCase):
         self.assertEqual(shortlists[0][1], [second])
         self.assertEqual(len(second), 1)
 
+    def test_the_budget_goes_to_the_pairs_that_duplicate_right_now(self):
+        """Спорных пар в выпуске под сотню, а спросить можно про три десятка.
+
+        Пара внутри раздела даст два одинаковых блока сразу; пара из разных
+        разделов — только если оба кандидата пройдут отбор. Первых при этом на
+        порядок меньше, и по одному весу общих слов они вытеснялись вторыми:
+        в выпуске из шестнадцати разделов до модели доезжала одна из восьми.
+
+        Здесь у межразделной пары общее слово редкое («Нвидиа»), а у
+        внутрираздельной — частое («компания»), то есть вес против неё.
+        Спросить всё равно должны про неё.
+        """
+        CFG["dup_llm_max"] = 1
+        first = self.group("Компания открыла офис в Мюнхене", "variety")
+        second = self.group("Компания Нвидиа закрыла павильон в Лондоне", "deadline")
+        far = self.group("Нвидиа отчиталась за третий квартал", "reuters")
+        shortlists = [("cinema", [first, second]), ("ai", [far])]
+        # «компания» должна быть частым словом — иначе редкость слов ни при чём
+        for at, name in enumerate(("Астра", "Бета", "Гамма", "Дельта", "Эпсилон")):
+            shortlists.append(("pad%d" % at,
+                               [self.group("Компания %s объявила о планах" % name,
+                                           "wire%d" % at)]))
+        dedup.prune(self.conn, self.index(), shortlists)
+
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(len(self.asked[0]), 1)
+        seen, new = self.asked[0][0]
+        self.assertIn("Мюнхене", seen)
+        self.assertIn("павильон", new)
+        self.assertEqual(len(shortlists[0][1]), 1)      # и склеили их же
+
     def test_switch_off_keeps_both(self):
         CFG["dup_llm"] = False
         first, second = self.group(DEATH, "hollywoodreporter"), \
