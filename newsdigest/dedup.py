@@ -38,10 +38,23 @@
 
     * совпало с ИСТОРИЕЙ — кандидат выбрасывается сразу: читатель это уже
       видел, второй раз показывать нечего;
-    * совпали два КАНДИДАТА одного выпуска — никто не выбрасывается. Пара
-      просто связывается, и второй отпадёт, только если первый действительно
-      попадёт в выпуск. Иначе выброшенным оказался бы тот, кого никто не
-      показал, — а это уже потерянная новость.
+    * совпали два кандидата ОДНОГО РАЗДЕЛА — они склеиваются в один кластер
+      (`fuse`). Ничего не выбрасывается: карточку пишет модель по материалам
+      кластера, и после склейки в неё идут обе заметки сразу. Читатель получает
+      один блок, но подробностей в нём больше, чем было в каждой заметке
+      по отдельности;
+    * совпали кандидаты РАЗНЫХ РАЗДЕЛОВ — они только связываются, и второй
+      отпадёт, лишь если первый действительно попадёт в выпуск. Склеить их
+      значило бы решить за отбор, в каком разделе новости жить; не попади она
+      в первый — из второго её уже никто бы не показал.
+
+Склейка появилась не от хорошей жизни. Связывание работает только между
+разделами: внутри одного список кандидатов фильтруется один раз, ДО отбора, —
+и связанная пара доезжала до выпуска целиком. Так две заметки об усилении
+Эль-Ниньо на Галапагосах пришли в «Климат» одним выпуском, в 9:03, одна за
+другой. Причём выбросить одну из них было бы жалко: у той, что подробнее,
+ниже оценка, а у той, что с оценкой, — три строки текста. Склейка снимает
+и то, и другое разом.
 
 Модель недоступна или выключена (`ND_DUP_LLM=0`) — работает первый слой,
 ровно как работал раньше.
@@ -160,6 +173,54 @@ def ask(conn, questions):
     return known, llm_cost(usage)
 
 
+# ------------------------------------------------------------------- склейка
+def fuse(host, guest) -> None:
+    """Вливает один кластер в другой: событие остаётся одно, материалов у него
+    становится больше.
+
+    Дальше кластер живёт как обычный: `rank.primary_of` выбирает ему лицо (а
+    значит, и ссылку в карточке), `rank.voices` — по каким заметкам писать
+    текст, `llm.summarize_batch` собирает из них одну карточку. Поэтому склейка
+    и не теряет ничего: то, что было только у второй редакции, попадает в тот
+    же абзац, что и остальное.
+    """
+    known = {item["url_hash"] for item in host}
+    host.extend(item for item in guest if item["url_hash"] not in known)
+
+
+class Fusion:
+    """Кто в кого влит.
+
+    Склейки идут цепочкой: сначала выясняется, что А и Б — одно событие, потом
+    что Б и В — тоже. Вливать В надо уже в А, иначе кластер Б, которого в
+    выпуске больше нет, унесёт материал с собой.
+    """
+
+    def __init__(self):
+        self.host = {}                      # id(кластера) -> кластер-приёмник
+
+    def root(self, group):
+        """Кластер, в котором этот материал теперь лежит."""
+        while id(group) in self.host:
+            group = self.host[id(group)]
+        return group
+
+    def join(self, first, second):
+        """Склеивает два кластера. Возвращает влитый — тот, кого из выпуска
+        теперь убирают. None — эти двое уже были одним кластером.
+
+        Влитый — не всегда `second`: цепочка А—Б, потом Б—В сводит в один
+        кластер все три, и убрать из выпуска надо того, в ком материалы уже
+        не лежат, а не того, кого назвали в паре.
+        """
+        host, guest = self.root(first), self.root(second)
+        if host is guest:
+            return None
+        fuse(host, guest)
+        self.host[id(guest)] = host
+        return guest
+
+
 def words_of(group) -> set:
     """Все содержательные слова кластера — по ним и взвешиваем пару."""
     out = set()
@@ -176,26 +237,36 @@ def question(key, seen_text, group):
 
 # --------------------------------------------------------------- точка входа
 def top_of(shortlists) -> list:
-    """Верхушка каждого раздела — кандидаты, у которых есть шанс попасть в
-    выпуск. Списки уже отсортированы прескорингом, так что это просто срез."""
+    """Верхушка каждого раздела: пары (номер раздела, кандидат).
+
+    Это те кандидаты, у которых есть шанс попасть в выпуск; списки уже
+    отсортированы прескорингом, так что это просто срез. Номер раздела нужен
+    дальше: одинаковые кандидаты одного раздела склеиваются, разных —
+    связываются (см. `prune`).
+    """
     limit = max(1, int(CFG["dup_candidates"]))
-    return [group for _topic, groups in shortlists for group in groups[:limit]]
+    return [(at, group)
+            for at, (_topic, groups) in enumerate(shortlists)
+            for group in groups[:limit]]
 
 
 def prune(conn, index, shortlists) -> float:
-    """Убирает из кандидатов выпуска то, что читатель уже видел по сути.
+    """Разбирает кандидатов выпуска: виденное убирает, одинаковое склеивает.
 
     Правит списки кандидатов на месте, возвращает стоимость запроса. Зовётся
     один раз на выпуск — после того, как разделы набрали кандидатов, и до
     того, как модель начала их ранжировать: платить за ранжирование повтора
-    незачем.
+    незачем, а склеенная пара и карточку получит одну на двоих.
     """
-    flat = top_of(shortlists)
-    if not flat:
+    pairs = top_of(shortlists)
+    if not pairs:
         return 0.0
 
+    flat = [group for _at, group in pairs]
+    home = {id(group): at for at, group in pairs}   # кандидат -> его раздел
+
     since = cutoff()
-    doubles, questions, links = set(), [], {}
+    doubles, questions, couples = set(), [], []
     tokens = {id(group): words_of(group) for group in flat}
     weights = idf(list(tokens.values()) + index.words)
 
@@ -222,15 +293,15 @@ def prune(conn, index, shortlists) -> float:
                 mine, theirs = tokens[id(first)], tokens[id(second)]
                 if not gray(sim_sets(mine, theirs)):
                     continue
-                head, tail = primary_of(first), primary_of(second)
-                key = pair_key(head["sig"], tail["sig"])
-                links[key] = (head["sig"], tail["sig"])
+                head = primary_of(first)
+                key = pair_key(head["sig"], primary_of(second)["sig"])
+                couples.append((key, first, second))
                 questions.append(
                     (weigh(mine, theirs, weights),
                      question(key, story(head["title"], head.get("summary")),
                               second)))
 
-    cost = 0.0
+    cost, fused = 0.0, set()
     if questions:
         # самые весомые спрашиваем первыми: если лимит вопросов кончится,
         # кончится он на парах со случайным общим словом, а не на однофамильцах
@@ -239,18 +310,34 @@ def prune(conn, index, shortlists) -> float:
         for key, groups in seen_keys.items():
             if verdicts.get(key):
                 doubles.update(id(group) for group in groups)
-        for key, (sig_a, sig_b) in links.items():
-            if verdicts.get(key):
-                index.link(sig_a, sig_b)
 
-    if not doubles:
+        # сначала склейки внутри разделов: после них у кластера может смениться
+        # лицо, а связывать разделы надо уже по новому
+        fusion = Fusion()
+        for key, first, second in couples:
+            if not verdicts.get(key) or home[id(first)] != home[id(second)]:
+                continue
+            if id(first) in doubles or id(second) in doubles:
+                continue        # одного из двоих и так убираем — вливать некуда
+            guest = fusion.join(first, second)
+            if guest is not None:
+                fused.add(id(guest))
+        for key, first, second in couples:
+            if verdicts.get(key) and home[id(first)] != home[id(second)]:
+                index.link(primary_of(fusion.root(first))["sig"],
+                           primary_of(fusion.root(second))["sig"])
+
+    gone = doubles | fused
+    if not gone:
         return cost
-    dropped = 0
     for at, (topic, groups) in enumerate(shortlists):
-        keep = [g for g in groups if id(g) not in doubles]
-        dropped += len(groups) - len(keep)
-        shortlists[at] = (topic, keep)
-    log.info("Дедупликация: снято кандидатов %d — читатель это уже видел", dropped)
+        shortlists[at] = (topic, [g for g in groups if id(g) not in gone])
+    if doubles:
+        log.info("Дедупликация: снято кандидатов %d — читатель это уже видел",
+                 len(doubles))
+    if fused:
+        log.info("Дедупликация: склеено кандидатов %d — событие одно, "
+                 "карточка будет одна и подробнее", len(fused))
     return cost
 
 

@@ -9,7 +9,7 @@ import time
 from . import config
 from .config import CFG, log
 from .net import post_json
-from .rank import primary_of
+from .rank import primary_of, voices
 
 
 class LLMError(RuntimeError):
@@ -295,6 +295,11 @@ SUM_SYSTEM = """Ты пишешь карточки новостей для еж�
 - имена, названия компаний, продуктов и версии сохраняй в оригинальном
   написании (Nvidia, Linux 7.2, GPT-5), термины переводи;
 - пиши СВОИМИ СЛОВАМИ, не копируй фразы из источника;
+- во входном тексте может лежать несколько сообщений об ОДНОМ событии из
+  разных редакций (каждое помечено [источником]). Это одна новость, и карточка
+  у неё одна: возьми подробности из всех — то, что есть только у второй
+  редакции, должно попасть в карточку. Одно и то же дважды не пересказывай;
+  редакции противоречат друг другу — пиши то, в чём они сходятся;
 - никаких фактов и цифр, которых нет во входном тексте, не додумывай;
 - если деталей мало — пиши короче, это нормально;
 - без воды и оборотов вроде «в мире произошло знаковое событие».
@@ -388,8 +393,8 @@ def summarize_batch(picked, persona, language, offset=0):
     for idx, (group, _score, _cat) in enumerate(picked, offset):
         main = primary_of(group)
         body = " ".join("[%s] %s. %s" % (i["source_id"], i["title"], i["summary"][:350])
-                        for i in group[:3])
-        payload.append({"id": idx, "url": main["url"], "text": body[:1500]})
+                        for i in voices(group))
+        payload.append({"id": idx, "url": main["url"], "text": body[:1800]})
     data, usage = llm_json(
         SUM_SYSTEM.format(persona=persona, language=language),
         "Новости (json):\n" + json.dumps(payload, ensure_ascii=False),

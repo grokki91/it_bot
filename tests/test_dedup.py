@@ -30,6 +30,7 @@ CHAT = "77"
 DEATH = "Тим Карри, звезда «Шоу ужасов Рокки Хоррора», умер в 80 лет"
 TRIBUTE = "Коллеги, включая Кэрол Бернетт и Люка Эванса, прощаются с Тимом Карри"
 CAUSE = "Названа причина смерти Тима Карри"
+MEMORY = "Тима Карри вспоминают близкие"
 OTHER = "Nvidia представила ускоритель Rubin для дата-центров"
 
 
@@ -53,9 +54,14 @@ class DedupCase(unittest.TestCase):
 
     def answer(self, same):
         """Подменить модель: она отвечает `same` про каждую пару."""
+        self.answers(lambda _a, _b: same)
+
+    def answers(self, decide):
+        """То же, но ответ зависит от пары: decide(что видел, что просится)."""
         def fake(pairs):
             self.asked.append(list(pairs))
-            return ({i: same for i in range(len(pairs))}, {"in": 5, "out": 5})
+            return ({i: bool(decide(a, b)) for i, (a, b) in enumerate(pairs)},
+                    {"in": 5, "out": 5})
         dedup.judge_duplicates = fake
 
     def group(self, title, source="src", url=None):
@@ -214,8 +220,102 @@ class TestAgainstHistory(DedupCase):
         self.assertEqual(len(self.asked[0]), 1)
 
 
-class TestInsideOneIssue(DedupCase):
-    """Два кандидата одного выпуска об одном событии."""
+class TestInsideOneSection(DedupCase):
+    """Два кандидата ОДНОГО раздела об одном событии — их склеивают.
+
+    Ровно случай с Эль-Ниньо: две заметки о том же исследовании кораллов
+    пришли в «Климат» одним выпуском, одна за другой. Связывания тут мало —
+    список кандидатов раздела фильтруется один раз, до отбора, и связанная
+    пара доезжала до выпуска целиком.
+    """
+
+    def test_two_candidates_become_one_cluster(self):
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertIs(shortlists[0][1][0], first)      # остаётся первый по прескорингу
+        self.assertEqual(len(first), 2)                # но материалов у него два
+
+    def test_the_card_is_written_by_both_notes(self):
+        """Смысл склейки: карточку пишет модель, и теперь ей видны обе заметки."""
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        dedup.prune(self.conn, self.index(), [("cinema", [first, second])])
+        self.assertEqual({i["source_id"] for i in rank.voices(first)},
+                         {"hollywoodreporter", "indiewire"})
+
+    def test_different_events_stay_apart(self):
+        """«Названа причина смерти» — следующая новость, склеивать нечего."""
+        self.answer(False)
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(CAUSE, "deadline")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 2)
+        self.assertEqual(len(first), 1)
+
+    def test_a_chain_of_three_collapses_into_one(self):
+        """А и Б — одно, Б и В — одно: в выпуске должен остаться один кластер,
+        и материалы всех троих должны лежать в нём, а не потеряться."""
+        first = self.group(DEATH, "hollywoodreporter")
+        second = self.group(TRIBUTE, "indiewire")
+        third = self.group("Тим Карри ушёл из жизни", "variety")
+        shortlists = [("cinema", [first, second, third])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertEqual({i["source_id"] for i in shortlists[0][1][0]},
+                         {"hollywoodreporter", "indiewire", "variety"})
+
+    def test_the_chain_closes_even_when_it_starts_in_the_middle(self):
+        """Модель развела А и Б, но признала одним А—В и Б—В. Значит, событие
+        всё-таки одно: в выпуске должен остаться один кластер, и материалы
+        всех троих — в нём.
+
+        Проверяем именно это: убирать из выпуска надо тот кластер, в котором
+        материалы уже не лежат, а не тот, кого назвали в паре, — иначе кластер
+        остаётся стоять, а его заметки к этому времени уже переехали к соседу.
+        """
+        self.answers(lambda seen, new: not ("умер" in seen and "прощаются" in new))
+        first = self.group(DEATH, "hollywoodreporter")
+        second = self.group(TRIBUTE, "indiewire")
+        third = self.group(MEMORY, "variety")
+        shortlists = [("cinema", [first, second, third])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+        self.assertEqual({i["source_id"] for i in shortlists[0][1][0]},
+                         {"hollywoodreporter", "indiewire", "variety"})
+
+    def test_nothing_is_fused_into_a_candidate_that_is_leaving(self):
+        """Первого кандидата читатель уже видел — его убирают. Вливать в него
+        второго нельзя: вместе с ним ушла бы и вторая новость, про которую
+        модель прямо сказала, что она ДРУГАЯ.
+
+        «Коллеги прощаются» — повтор вечернего «умер Тим Карри»; «названа
+        причина смерти» — следующая новость, и прийти она должна.
+        """
+        self.answers(lambda seen, new: not ("умер" in seen and "причина" in new))
+        self.send(DEATH, "hollywoodreporter")
+        first, second = self.group(TRIBUTE, "indiewire"), self.group(CAUSE, "deadline")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [second])
+        self.assertEqual(len(second), 1)
+
+    def test_switch_off_keeps_both(self):
+        CFG["dup_llm"] = False
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first, second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 2)
+        self.assertEqual(self.asked, [])
+
+
+class TestAcrossSections(DedupCase):
+    """Два кандидата РАЗНЫХ разделов об одном событии — их только связывают."""
 
     def test_loser_falls_only_when_the_winner_is_taken(self):
         index = self.index()
@@ -232,6 +332,16 @@ class TestInsideOneIssue(DedupCase):
 
         index.remember(first)
         self.assertTrue(index.seen(second, CFG["similarity"]))
+
+    def test_sections_are_not_fused(self):
+        """Склейка решила бы за отбор, в каком разделе новости жить: не попади
+        она в первый — из второго её уже никто бы не показал."""
+        first, second = self.group(DEATH, "hollywoodreporter"), \
+            self.group(TRIBUTE, "indiewire")
+        shortlists = [("cinema", [first]), ("main", [second])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
 
     def test_different_events_are_not_linked(self):
         self.answer(False)

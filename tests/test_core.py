@@ -156,6 +156,40 @@ class TestCluster(unittest.TestCase):
         self.assertGreater(rank.prescore(strong), rank.prescore(weak))
 
 
+class TestVoices(unittest.TestCase):
+    """По каким заметкам кластера пишется карточка."""
+
+    def note(self, source, text, tier=2):
+        row = item("https://%s.com/1" % source, "Кораллы Галапагосов", source,
+                   tier=tier)
+        row["summary"] = text
+        return row
+
+    def test_the_face_of_the_cluster_goes_first(self):
+        """Первой модель видит ту заметку, чья ссылка стоит в карточке."""
+        group = [self.note("aggregator", "длинный пересказ " * 20, tier=3),
+                 self.note("science", "коротко", tier=1)]
+        self.assertEqual(rank.voices(group)[0]["source_id"], "science")
+
+    def test_the_most_detailed_notes_come_next(self):
+        """После склейки дублей в кластере лежат заметки разного объёма, и
+        порядок в списке случаен. Подробную нельзя терять: ради неё всё и
+        затевалось — у самой информативной новости бывает не лучшая оценка."""
+        group = [self.note("science", "коротко", tier=1),
+                 self.note("wire", "в двух словах"),
+                 self.note("insideclimate", "подробный разбор " * 20)]
+        self.assertEqual([i["source_id"] for i in rank.voices(group, limit=2)],
+                         ["science", "insideclimate"])
+
+    def test_one_note_per_source(self):
+        """Три заметки одного сайта — это не три взгляда на событие."""
+        group = [self.note("science", "первая", tier=1),
+                 self.note("science", "вторая" * 30),
+                 self.note("wire", "третья")]
+        self.assertEqual([i["source_id"] for i in rank.voices(group)],
+                         ["science", "wire"])
+
+
 class TestSelect(unittest.TestCase):
     def setUp(self):
         self.saved = {k: CFG[k] for k in
