@@ -172,7 +172,8 @@ class TestAuth(WebCase):
     def test_bearer_token_works_for_scripts(self):
         CFG["web_token"] = "ascii-token-42"     # в заголовок кириллица не влезет
         code, _body = self.ask("/api/alerts",
-                               headers={"Authorization": "Bearer ascii-token-42"})
+                               headers={"Authorization":
+                                        "Bearer ascii-token-42"})  # nd-redact: allow
         self.assertEqual(code, 200)
 
     def test_cookie_does_not_contain_the_password(self):
