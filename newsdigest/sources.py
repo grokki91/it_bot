@@ -204,6 +204,9 @@ def collect(topics=None, wire_only=False) -> dict:
                 - timedelta(days=CFG["keep_dupes_days"])).isoformat()
     conn.execute("DELETE FROM items WHERE fetched_at < ? AND state != 'sent'", (cutoff_i,))
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
+    # сюжетная связь живёт ровно столько, сколько обе её новости: ссылка на
+    # вычищенную строку истории — это «Ранее по теме» в пустоту
+    conn.execute("DELETE FROM threads WHERE at < ?", (cutoff_s,))
     conn.execute("DELETE FROM routes WHERE at < ?", (cutoff_r,))
     conn.execute("DELETE FROM dupes WHERE at < ?", (cutoff_d,))
     # приговоры фактчека и наша репутация доменов живут дольше самих новостей:

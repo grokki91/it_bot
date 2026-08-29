@@ -185,11 +185,16 @@ class SentIndex:
         self.sigs = []
         self.texts = []
         self.at = []
+        self.ids = []
         # приговоры модели (newsdigest/dedup.py). `dupes` — сигнатуры, про
         # которые уже известно, что это повтор; `links` — пары «одно и то же»,
         # где ни один ещё не показан: второй отпадёт, когда возьмут первого
         self.dupes = set()
         self.links = {}
+        # сюжетные связи, найденные при разборе дублей: url_hash кандидата ->
+        # url_hash новости, которую он продолжает. Копятся здесь, а пишутся в
+        # базу только у тех кандидатов, что дожили до выпуска
+        self.priors = {}
         if conn is None:
             return
         for row in conn.execute(
@@ -198,13 +203,14 @@ class SentIndex:
             self.hashes.add(row["url_hash"])
             self._add(row["sig"] or "",
                       story(row["headline"] or row["title"], row["summary"]),
-                      row["sent_at"] or "")
+                      row["sent_at"] or "", row["url_hash"])
 
-    def _add(self, sig, text, at="") -> None:
+    def _add(self, sig, text, at="", url_hash="") -> None:
         self.words.append(set(sig.split()))
         self.sigs.append(sig)
         self.texts.append(text)
         self.at.append(at)
+        self.ids.append(url_hash)
 
     def seen(self, group, threshold) -> bool:
         """Уходило ли это событие читателю раньше — по ссылке или по смыслу."""
@@ -220,6 +226,33 @@ class SentIndex:
         """«Это повтор» — приговор, вынесенный не по словам."""
         if sig:
             self.dupes.add(sig)
+
+    def hash_of(self, sig) -> str:
+        """url_hash истории по её сигнатуре — по нему и строится цепочка.
+
+        Сигнатура приходит из `near`, а «Ранее по теме» ссылается на строку
+        `sent`; одинаковых сигнатур в истории не бывает, а если бы и были —
+        речь об одном и том же событии, и любая из них годится.
+        """
+        for at, other in enumerate(self.sigs):
+            if other == sig and self.ids[at]:
+                return self.ids[at]
+        return ""
+
+    def follow(self, group, prior) -> None:
+        """«Эта новость продолжает ту»: приговор модели, вынесенный при
+        разборе дублей. Запоминается по всем материалам кластера — склейка
+        (`dedup.fuse`) может сменить кластеру лицо, а связь остаётся той же.
+        """
+        if not prior:
+            return
+        for item in group:
+            if item["url_hash"] != prior:      # сама себя новость не продолжает
+                self.priors[item["url_hash"]] = prior
+
+    def prior_of(self, url_hash) -> str:
+        """Что эта новость продолжает, если продолжает."""
+        return self.priors.get(url_hash, "")
 
     def link(self, sig_a, sig_b) -> None:
         """Две новости выпуска об одном событии. Кого показывать — решит отбор:
@@ -252,7 +285,8 @@ class SentIndex:
         for item in group:
             self.hashes.add(item["url_hash"])
         main = primary_of(group)
-        self._add(main["sig"], story(main["title"], main.get("summary")), now_iso())
+        self._add(main["sig"], story(main["title"], main.get("summary")),
+                  now_iso(), main["url_hash"])
         self.dupes.update(self.links.get(main["sig"], ()))
 
 

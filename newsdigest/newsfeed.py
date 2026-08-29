@@ -37,7 +37,7 @@ import sqlite3
 import time
 import urllib.parse
 
-from . import safety, sections, translate
+from . import safety, sections, threads, translate
 from .config import CFG, local_now, log, to_local
 from .feedparse import clean_title, parse_date
 from .profiles import emoji as topic_emoji
@@ -227,6 +227,33 @@ ENDINGS = ("иями", "ями", "ами", "ого", "его", "ому", "ему
            "у", "ю", "а", "я", "ы", "и", "е", "о", "ь")
 
 
+def daymark(iso: str, now=None):
+    """Дата новости для ленты: (ключ дня, как его назвать).
+
+    Ключ — местная дата: по нему лента и решает, где провести черту между
+    днями. Название человеческое: «Сегодня», «Вчера», дальше — «27 августа», а
+    у прошлогоднего ещё и год. Считается здесь, а не в браузере: часовой пояс
+    выпуска задаётся ботом, и у читателя на телефоне он бывает другим —
+    новость, пришедшая в 23:50 по времени бота, не должна уезжать на день
+    вперёд только потому, что читатель в другом городе.
+    """
+    at = parse_date(iso)
+    if at is None:
+        return "", ""
+    local = to_local(at)
+    now = now if now is not None else local_now()
+    days = (now.date() - local.date()).days
+    if days == 0:
+        name = "Сегодня"
+    elif days == 1:
+        name = "Вчера"
+    else:
+        name = "%d %s" % (local.day, MONTHS[local.month - 1])
+        if local.year != now.year:
+            name += " %d" % local.year
+    return local.date().isoformat(), name
+
+
 def stem(word: str) -> str:
     """Основа слова. Латиница не склоняется — её не трогаем."""
     low = word.lower()
@@ -399,9 +426,14 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
     verdicts, saved = verdicts or {}, saved or ()
     smap = sections.source_map()
     now = local_now()
+    # «Ранее по теме» — одним запросом на всю страницу ленты, а не по запросу
+    # на карточку: связей у читателя десятки, а карточек на странице двадцать
+    chains = threads.earlier(conn, chat_id or "",
+                             [row["url_hash"] for row in rows])
     out = []
     for row in rows:
         topic = row["section"] or smap.get(row["source_id"], "")
+        day_key, day_name = daymark(row["at"], now)
         # заголовок карточки писала модель; у записей, сделанных до появления
         # этой колонки, берём заголовок фида
         out.append({
@@ -417,10 +449,19 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
             "emoji": topic_emoji(topic) if topic else "📰",
             "tone": tone(topic),
             "at": stamp(row["at"], now),
+            # день новости и его название — по ним лента расставляет
+            # разделители, а по `iso` отмечает, что пришло с прошлого захода
+            "day": day_key,
+            "dayName": day_name,
+            "iso": str(row["at"] or ""),
             "score": round(float(row["score"] or 0), 1),
             "breaking": urgent(row),
             "saved": row["url_hash"] in saved,
             "verdict": verdicts.get(row["url_hash"], ""),
+            "earlier": [{"title": clean_title(str(step["title"] or "")),
+                         "url": outward(step["url"]),
+                         "at": stamp(step["at"], now)}
+                        for step in chains.get(row["url_hash"], ())],
         })
     changed = russify(conn, out)
     if changed and chat_id is not None:
@@ -716,6 +757,21 @@ def _form(seen) -> str:
     return sorted(seen.items(),
                   key=lambda kv: (-kv[1], not kv[0][:1].isupper(),
                                   len(kv[0]), kv[0]))[0][0]
+
+
+def stories(conn, chat_id, limit=threads.TOP) -> list:
+    """Сюжеты, которые сейчас развиваются, — для правой колонки страницы.
+
+    Считается по тем же связям, что и «Ранее по теме» под карточкой: ни
+    отдельного запроса к модели, ни отдельного прохода по истории.
+    """
+    now = local_now()
+    return [{"title": clean_title(str(item["title"] or "")),
+             "count": item["count"],
+             "section": item["section"],
+             "emoji": topic_emoji(item["section"]) if item["section"] else "🧵",
+             "at": stamp(item["at"], now)}
+            for item in threads.top(conn, chat_id, limit=limit)]
 
 
 def topics(conn, chat_id, limit=10) -> list:

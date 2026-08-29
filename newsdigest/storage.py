@@ -48,10 +48,32 @@ CREATE TABLE IF NOT EXISTS routes (
 -- стоит денег. Ключ — пара сигнатур, поэтому вердикт общий для всех
 -- подписчиков и переживает пересборку выпуска.
 CREATE TABLE IF NOT EXISTS dupes (
-    pair TEXT PRIMARY KEY,
-    same INTEGER NOT NULL DEFAULT 0,
-    at   TEXT NOT NULL
+    pair    TEXT PRIMARY KEY,
+    same    INTEGER NOT NULL DEFAULT 0,
+    -- события разные, но сюжет один: вторая новость — продолжение первой.
+    -- Отбору это поле не нужно (разные — значит, показываем обе), нужно
+    -- показу: из таких пар и складывается «Ранее по теме»
+    follows INTEGER NOT NULL DEFAULT 0,
+    at      TEXT NOT NULL
 );
+
+-- Сюжетные связи: какая новость какую продолжает. Приговор `follows` живёт в
+-- `dupes` по паре СИГНАТУР — он общий для всех подписчиков и переживает
+-- пересборку выпуска. Здесь же лежит то, что из него вышло у конкретного
+-- читателя: связь между двумя строками его `sent`. Поэтому и chat_id — у
+-- каждого своя история, и цепочка у каждого своя.
+--
+-- `prior` — новость, которая была раньше; `url_hash` — та, что пришла следом.
+-- Пара уникальна, направление задано временем: цепочка строится переходом от
+-- новой к старой, и петли в ней не возникает.
+CREATE TABLE IF NOT EXISTS threads (
+    chat_id  TEXT NOT NULL,
+    url_hash TEXT NOT NULL,
+    prior    TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    PRIMARY KEY (chat_id, url_hash, prior)
+);
+CREATE INDEX IF NOT EXISTS idx_threads_prior ON threads(chat_id, prior);
 
 -- Репутация домена. Половина её бесплатна и наша собственная: когда домен
 -- впервые попался в лентах и сколько раз встречался. Домен, который приходит
@@ -483,6 +505,23 @@ def upgrade(conn) -> None:
     add_favorites(conn)
     add_empty_feed_counter(conn)
     add_link_safety(conn)
+    add_story_links(conn)
+
+
+def add_story_links(conn) -> None:
+    """Продолжение сюжета в приговоре о дублях (3.8, «Ранее по теме»).
+
+    Раньше вердикт был двоичным: одно событие или разные. «Разные» при этом
+    значило и «про другое», и «продолжение того же» — а это ровно то, что
+    читателю интереснее всего, и различать их модель уже умела.
+
+    Пары, рассуженные до появления колонки, остаются с нулём: спрашивать про
+    них заново незачем — они старше `dup_window_h`, и в цепочку уже не
+    попадут. Сама таблица `threads` придёт из SCHEMA.
+    """
+    if not table_exists(conn, "dupes"):  # новая база: колонка придёт из SCHEMA
+        return
+    ensure_column(conn, "dupes", "follows", "INTEGER NOT NULL DEFAULT 0")
 
 
 def add_link_safety(conn) -> None:

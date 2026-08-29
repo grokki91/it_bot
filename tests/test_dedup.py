@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (breaking, dedup, rank, storage,  # noqa: E402
-                        subscribers, textutil)
+from newsdigest import (breaking, dedup, llm, rank, storage,  # noqa: E402
+                        subscribers, textutil, threads)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
@@ -52,15 +52,23 @@ class DedupCase(unittest.TestCase):
         CFG.update(self.saved)
         self.conn.close()
 
-    def answer(self, same):
+    def answer(self, same, follows=False):
         """Подменить модель: она отвечает `same` про каждую пару."""
-        self.answers(lambda _a, _b: same)
+        self.answers(lambda _a, _b: same, follows)
 
-    def answers(self, decide):
-        """То же, но ответ зависит от пары: decide(что видел, что просится)."""
+    def answers(self, decide, follows=False):
+        """То же, но ответ зависит от пары: decide(что видел, что просится).
+
+        `follows` — второе поле вердикта: события разные, но сюжет один.
+        Спрашивается тем же запросом, поэтому и подменяется тем же фейком.
+        """
+        def verdict(a, b):
+            same = bool(decide(a, b))
+            return llm.Verdict(same, not same and bool(follows))
+
         def fake(pairs):
             self.asked.append(list(pairs))
-            return ({i: bool(decide(a, b)) for i, (a, b) in enumerate(pairs)},
+            return ({i: verdict(a, b) for i, (a, b) in enumerate(pairs)},
                     {"in": 5, "out": 5})
         dedup.judge_duplicates = fake
 
@@ -259,7 +267,8 @@ class TestBatching(DedupCase):
             calls.append(list(pairs))
             if len(calls) == 1:
                 raise LLMError("оборвался ответ")
-            return ({i: True for i in range(len(pairs))}, {"in": 5, "out": 5})
+            return ({i: llm.Verdict(True, False) for i in range(len(pairs))},
+                    {"in": 5, "out": 5})
         dedup.judge_duplicates = flaky
 
         shortlists = [("cinema", self.pairs(4))]
