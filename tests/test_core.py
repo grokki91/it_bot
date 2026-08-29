@@ -237,6 +237,31 @@ class TestRender(unittest.TestCase):
         return [(names[i], self.cards(size, text))
                 for i, size in enumerate(sizes)]
 
+    def test_a_story_line_goes_into_the_card(self):
+        """«Ранее по теме» — одной строкой, чтобы читатель вспомнил начало."""
+        group = [item("https://a.com/1", "Число погибших выросло до 200", "src")]
+        text = render.render([({"headline": "Число погибших выросло до 200",
+                                "what": "Спасатели разобрали завалы.",
+                                "why": "", "earlier": "Землетрясение M7,1 на Хонсю"},
+                               group, 8.0, "media")], 10)
+        self.assertIn("🧵 Ранее: Землетрясение M7,1 на Хонсю", text)
+
+    def test_a_card_without_a_story_has_no_such_line(self):
+        text = render.render([({"headline": "Заголовок", "what": "", "why": ""},
+                               [item("https://a.com/2", "Заголовок", "src")],
+                               8.0, "media")], 10)
+        self.assertNotIn("Ранее", text)
+
+    def test_the_story_line_is_the_first_to_go_when_it_is_tight(self):
+        """Место кончилось — режем сюжет, а не саму новость: без него новость
+        читается, без сути — нет."""
+        facts = render.card_facts(
+            {"headline": "Заголовок", "what": "Суть новости.", "why": "",
+             "earlier": "С чего всё началось"},
+            [item("https://a.com/3", "Заголовок", "src")], 8.0)
+        self.assertIn("Ранее", render.card_text(facts, trim=0))
+        self.assertNotIn("Ранее", render.card_text(facts, trim=1))
+
     def test_escapes_html(self):
         group = [item("https://a.com/1", "<b>bold</b> & co", "src")]
         text = render.render([({"headline": "<b>bold</b> & co", "what": "", "why": ""},

@@ -11,8 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (dedup, feedback, pipeline, storage,  # noqa: E402
-                        subscribers, translate)
+from newsdigest import (dedup, feedback, llm, pipeline, storage,  # noqa: E402
+                        subscribers, threads, translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 from newsdigest.profiles import PROFILES  # noqa: E402
@@ -421,9 +421,10 @@ class TestOneEventTwoNotes(PipelineCase):
         dedup.judge_duplicates = self._judge
         PipelineCase.tearDown(self)
 
-    def same(self, verdict):
+    def same(self, verdict, follows=False):
+        answer = llm.Verdict(bool(verdict), not verdict and bool(follows))
         dedup.judge_duplicates = lambda pairs: (
-            {i: verdict for i in range(len(pairs))}, {"in": 5, "out": 5})
+            {i: answer for i in range(len(pairs))}, {"in": 5, "out": 5})
 
     def record_summarize(self, picked, persona, language):
         """Запоминаем, по каким источникам модель писала каждую карточку."""

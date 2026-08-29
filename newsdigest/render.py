@@ -102,6 +102,11 @@ def stamp(published) -> str:
     return to_local(when).strftime("%H:%M") if when else ""
 
 
+#: сколько букв «Ранее по теме» оставляем в сообщении. Строка тут напоминает,
+#: а не пересказывает: длинный хвост съел бы место у самих новостей
+EARLIER = 70
+
+
 def card_facts(card, group, score) -> dict:
     """Карточка простыми полями — всё, что читатель о новости увидит.
 
@@ -119,6 +124,10 @@ def card_facts(card, group, score) -> dict:
             "also": sorted({i["source_id"] for i in group}
                            - {main["source_id"]})[:2],
             "score": float(score), "at": stamp(main.get("published_at")),
+            # чем новость продолжает уже прочитанное (newsdigest/threads.py).
+            # Один шаг назад, не вся цепочка: место в сообщении считанное,
+            # а цепочка целиком есть на странице
+            "earlier": str(card.get("earlier") or "").strip(),
             # оговорка фактчека: показывается вместе с новостью, а не вместо
             # неё. «Препринт, без рецензирования» — это то, что читатель
             # должен знать, чтобы прочесть заголовок правильно
@@ -148,6 +157,10 @@ def card_text(facts, trim=0, when=False) -> str:
         lines.append("⚠️ " + esc(facts["caveat"]))
     if facts["why"] and trim == 0:
         lines.append("💡 " + esc(facts["why"]))
+    # сюжет — первое, что срезается при нехватке места: без него новость
+    # читается, просто читатель не вспомнит, с чего всё началось
+    if facts.get("earlier") and trim == 0:
+        lines.append("🧵 Ранее: " + esc(short(facts["earlier"], EARLIER)))
     lines.append(link)
     return "\n".join(lines)
 

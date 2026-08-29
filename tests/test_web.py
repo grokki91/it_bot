@@ -16,13 +16,16 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import config, feedback, newsfeed, profiles  # noqa: E402
-from newsdigest import sections, storage, subscribers, translate, web  # noqa: E402
-from newsdigest.config import CFG, now_iso  # noqa: E402
+from newsdigest import render, sections, storage, subscribers  # noqa: E402
+from newsdigest import translate, web  # noqa: E402
+from newsdigest.config import CFG, now_iso, to_local  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
 logging.getLogger("nd").addHandler(logging.NullHandler())
@@ -89,6 +92,20 @@ class WebCase(unittest.TestCase):
         if info.get_content_type() == "text/html":
             return code, raw.decode("utf-8")
         return code, json.loads(raw.decode("utf-8")) if raw else {}
+
+    def raw(self, path, headers=None):
+        """Ответ как есть: (код, тип содержимого, текст). Для RSS и манифеста —
+        их не разобрать как json, и разбирать не надо."""
+        request = urllib.request.Request(self.base + path)
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as res:
+                return res.status, res.headers.get_content_type(), \
+                    res.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers.get_content_type(), \
+                exc.read().decode("utf-8")
 
     def login(self, token=TOKEN):
         return self.ask("/api/login", {"token": token})
@@ -879,6 +896,146 @@ class TestNews(WebCase):
         conn.close()
         self.login()
         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
+
+
+class TestFeedDays(WebCase):
+    """День новости считает сервер, а не браузер: часовой пояс задаёт бот."""
+
+    def marks(self):
+        _code, data = self.ask("/api/news")
+        return [(card["day"], card["dayName"]) for card in data["items"]]
+
+    def test_today_and_yesterday_are_named(self):
+        now = to_local(datetime.now(timezone.utc))
+        self.at_hour("d1", "Сегодняшняя новость", now)
+        self.at_hour("d2", "Вчерашняя новость", now - timedelta(days=1))
+        names = dict((day, name) for day, name in self.marks())
+        self.assertIn("Сегодня", names.values())
+        self.assertIn("Вчера", names.values())
+
+    def test_an_older_day_is_named_by_its_date(self):
+        when = to_local(datetime.now(timezone.utc)) - timedelta(days=5)
+        self.at_hour("d3", "Позавчерашняя и раньше", when)
+        found = [name for day, name in self.marks() if day == when.date().isoformat()]
+        self.assertEqual(found, ["%d %s" % (when.day, render.MONTHS[when.month - 1])])
+
+    def test_news_of_one_day_share_a_mark(self):
+        when = to_local(datetime.now(timezone.utc)) - timedelta(days=2)
+        self.at_hour("d4", "Первая", when)
+        self.at_hour("d5", "Вторая", when - timedelta(hours=3))
+        days = {day for day, _name in self.marks()}
+        self.assertEqual(len(days), 1)
+
+    def test_every_card_carries_the_time_it_came(self):
+        """По нему страница отмечает, что пришло с прошлого захода."""
+        self.at_hour("d6", "Новость", to_local(datetime.now(timezone.utc)))
+        _code, data = self.ask("/api/news")
+        self.assertTrue(data["items"][0]["iso"])
+
+    def at_hour(self, url_hash, title, when):
+        conn = storage.db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO sent(chat_id,url_hash,sig,title,url,"
+                "source_id,category,section,headline,summary,digest_date,sent_at)"
+                " VALUES (?,?,?,?,?,?,'media','ai',?,'',?,?)",
+                (OWNER, url_hash, "", title, "https://example.com/" + url_hash,
+                 "theverge", title, when.date().isoformat(), when.isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+class TestRss(WebCase):
+    """Лента для чужой читалки: то же, что видит гость, и ничего сверх."""
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.delivered("r1", "Землетрясение магнитудой 7,1 на Хонсю", "bbc",
+                       section="science", score=9.0,
+                       summary="Толчки в 40 км от побережья.")
+        self.delivered("r2", "Nvidia представила ускоритель Rubin", "verge",
+                       section="ai", score=7.0, summary="Восемь тысяч ядер.")
+
+    def feed(self, path="/rss"):
+        code, ctype, body = self.raw(path)
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "application/rss+xml")
+        return body
+
+    def parsed(self, path="/rss"):
+        return ET.fromstring(self.feed(path))
+
+    def test_a_guest_gets_the_feed_without_a_password(self):
+        titles = [node.text for node in self.parsed().findall(".//item/title")]
+        self.assertIn("Землетрясение магнитудой 7,1 на Хонсю", titles)
+        self.assertIn("Nvidia представила ускоритель Rubin", titles)
+
+    def test_a_section_narrows_the_feed(self):
+        items = self.parsed("/rss?section=" + urllib.parse.quote("наука"))
+        titles = [node.text for node in items.findall(".//item/title")]
+        self.assertEqual(titles, ["Землетрясение магнитудой 7,1 на Хонсю"])
+
+    def test_a_query_narrows_the_feed(self):
+        items = self.parsed("/rss?q=" + urllib.parse.quote("nvidia"))
+        titles = [node.text for node in items.findall(".//item/title")]
+        self.assertEqual(titles, ["Nvidia представила ускоритель Rubin"])
+
+    def test_every_item_has_a_stable_id_and_a_date(self):
+        for item in self.parsed().findall(".//item"):
+            self.assertTrue((item.findtext("guid") or "").strip())
+            self.assertTrue((item.findtext("pubDate") or "").strip())
+
+    def test_a_control_character_does_not_break_the_document(self):
+        """Заголовок из чужого фида бывает каким угодно — лента должна остаться
+        разбираемой."""
+        self.delivered("r3", "Сбой\x0bв ленте", "reuters", section="ai")
+        self.assertEqual(len(self.parsed().findall(".//item")), 3)
+
+    def test_the_host_header_is_not_trusted(self):
+        """Host приходит от клиента: не похож на хост — ссылки в ленте нет."""
+        code, _ctype, body = self.raw("/rss", {"Host": 'zlo"><script>'})
+        self.assertEqual(code, 200)
+        self.assertNotIn("zlo", body)
+        # ссылки на саму страницу нет вовсе: подставить туда чужую строку было
+        # бы хуже, чем обойтись без неё. У самих новостей ссылки при этом свои
+        channel = ET.fromstring(body).find("channel")
+        self.assertIsNone(channel.find("link"))
+        self.assertTrue(channel.findall("item/link"))
+
+    def test_nothing_administrative_leaks_into_the_feed(self):
+        body = self.feed()
+        for secret in (TOKEN, OWNER, "subscribers", "web_token"):
+            self.assertNotIn(secret, body)
+
+
+class TestAppManifest(WebCase):
+    """Манифест и значок: страница ставится на телефон как приложение."""
+
+    def test_the_manifest_is_open_to_everyone(self):
+        code, ctype, body = self.raw("/manifest.webmanifest")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "application/manifest+json")
+        data = json.loads(body)
+        self.assertEqual(data["start_url"], "/")
+        self.assertEqual(data["display"], "standalone")
+        self.assertTrue(data["icons"])
+
+    def test_the_icon_is_served(self):
+        code, ctype, body = self.raw("/icon.svg")
+        self.assertEqual(code, 200)
+        self.assertEqual(ctype, "image/svg+xml")
+        self.assertIn("<svg", body)
+
+    def test_the_page_offers_both_of_them(self):
+        _code, page = self.ask("/")
+        self.assertIn('rel="manifest"', page)
+        self.assertIn('type="application/rss+xml"', page)
+
+    def test_the_policy_allows_the_manifest_and_the_icon(self):
+        """Иначе телефон молча не поставит значок, а браузер не скажет почему."""
+        self.assertIn("manifest-src 'self'", web.CSP)
+        self.assertIn("img-src 'self' data:", web.CSP)
 
 
 class TestSearchIndex(WebCase):

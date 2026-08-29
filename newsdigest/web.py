@@ -33,8 +33,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (bot, config, feedback, newsfeed, redact, sections, settings,
-               subscribers)
+from . import (bot, config, feedback, newsfeed, redact, rss, sections,
+               settings, subscribers)
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile
@@ -51,9 +51,32 @@ MAX_BODY = 64 * 1024
 #: стили и скрипт у страницы свои, снаружи не грузится ничего. Текст новостей
 #: приходит из чужих фидов, и страница вставляет его как текст, а не как
 #: разметку, — CSP тут второй рубеж: даже просочившемуся тегу некуда ходить
-CSP = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-       "script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; "
-       "base-uri 'none'")
+CSP = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
+       "script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; "
+       "form-action 'none'; base-uri 'none'")
+
+#: Значок приложения: та же тарелка, что в заголовке страницы. Своим файлом,
+#: а не data-ссылкой внутри манифеста, — так его понимают все телефоны.
+ICON = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'>"
+        "<rect width='192' height='192' rx='38' fill='#2f6fed'/>"
+        "<text x='96' y='134' font-size='104' text-anchor='middle'>\U0001f4e1</text>"
+        "</svg>")
+
+
+def manifest() -> dict:
+    """Описание страницы как приложения: чтобы её ставили на телефон значком.
+
+    Ничего личного здесь нет и быть не может — манифест открыт всем, как и
+    сама лента. Это только имя, цвета и адрес, с которого начинать.
+    """
+    return {"name": "Дайджест", "short_name": "Дайджест",
+            "description": "Новости, отобранные ботом",
+            "start_url": "/", "scope": "/", "display": "standalone",
+            "background_color": "#f1f3f7", "theme_color": "#2f6fed",
+            "lang": "ru", "orientation": "portrait-primary",
+            "icons": [{"src": "/icon.svg", "sizes": "any",
+                       "type": "image/svg+xml", "purpose": "any"}]}
+
 
 _TOKEN_LOCK = threading.Lock()
 #: (сколько раз ошиблись, до какого времени заблокировано) по IP
@@ -217,6 +240,7 @@ def news(query, worker=None, admin=True) -> dict:
         if not offset:
             payload["side"] = {
                 "menu": newsfeed.menu(conn, chat, sections.plan(sub)),
+                "stories": newsfeed.stories(conn, chat),
                 "sources": newsfeed.sources(conn, chat),
                 "topics": newsfeed.topics(conn, chat),
             }
@@ -333,6 +357,17 @@ class Site(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         return parsed.path.rstrip("/") or "/", urllib.parse.parse_qs(parsed.query)
 
+    def _rss(self, query) -> str:
+        """Лента в RSS. Раздел и поиск — из адреса, остальное как на странице."""
+        section = sections.resolve((query.get("section") or [""])[0])
+        search = str((query.get("q") or [""])[0])[:120]
+        conn = db()
+        try:
+            return rss.feed(conn, chat_id(), section, search,
+                            host=self.headers.get("Host") or "")
+        finally:
+            conn.close()
+
     def _body(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -386,6 +421,19 @@ class Site(BaseHTTPRequestHandler):
                 return
             if path == "/favicon.ico":
                 self._reply(204, b"", "image/svg+xml")
+                return
+            if path == "/icon.svg":
+                self._reply(200, ICON, "image/svg+xml")
+                return
+            if path == "/manifest.webmanifest":
+                self._reply(200, json.dumps(manifest(), ensure_ascii=False),
+                            "application/manifest+json; charset=utf-8")
+                return
+            # лента для чужой читалки. Открыта без пароля — ровно как новости
+            # на самой странице, и ровно тем же составом
+            if path == "/rss":
+                self._reply(200, self._rss(query),
+                            "application/rss+xml; charset=utf-8")
                 return
             admin = self._authed()
             # лента открыта всем: это и есть сайт. Служебное — только по паролю

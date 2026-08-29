@@ -39,7 +39,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from . import (config, dedup, factcheck, safety, sections, signals,
-               subscribers, translate, trust)
+               subscribers, threads, translate, trust)
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .feedparse import parse_date
@@ -402,9 +402,13 @@ def check_group(topics, readers) -> int:
             return 0
 
         hot = hot_clusters(conn, list(topics))
-        pools, checked = {}, 0.0
+        pools, seen, checked = {}, {}, 0.0
         for chat_id, _sub in ready:
-            pools[chat_id], spent = unseen(hot, SentIndex(conn, chat_id), conn)
+            # индекс переживает проверку: разбирая дубли, он узнаёт и то, какое
+            # срочное продолжает уже отправленное, — а пишется это в момент
+            # отправки, ниже
+            seen[chat_id] = SentIndex(conn, chat_id)
+            pools[chat_id], spent = unseen(hot, seen[chat_id], conn)
             checked += spent
         # у кого своих кандидатов не осталось, тот в общем запросе не участвует
         # и его долю за него не платит
@@ -436,7 +440,8 @@ def check_group(topics, readers) -> int:
             for chat_id, sub in ready:
                 with subscribers.overlay(sub):
                     sent += deliver(conn, chat_id, pools[chat_id], rated,
-                                    persona, {}, checked / len(ready))
+                                    persona, {}, checked / len(ready),
+                                    seen[chat_id])
             return sent
 
         # общий запрос делим на всех: иначе в `status` расход одного читателя
@@ -449,7 +454,7 @@ def check_group(topics, readers) -> int:
         for chat_id, sub in ready:
             with subscribers.overlay(sub):
                 sent += deliver(conn, chat_id, pools[chat_id], rated,
-                                persona, cards, cost)
+                                persona, cards, cost, seen[chat_id])
         return sent
     finally:
         conn.close()
@@ -490,7 +495,7 @@ def card_for(conn, group, score, category, persona, cache):
     return card, cost
 
 
-def remember_sent(conn, chat_id, group, card, rating, section) -> None:
+def remember_sent(conn, chat_id, group, card, rating, section, index=None) -> None:
     """Кладёт срочное в историю читателя.
 
     Это и защита от повтора в плановом выпуске, и то, из чего страница строит
@@ -513,6 +518,12 @@ def remember_sent(conn, chat_id, group, card, rating, section) -> None:
          str(card.get("headline") or "")[:300],
          str(card.get("what") or "")[:500], float(rating["urgency"]),
          factcheck.caveat_of(group)))
+    # срочное чаще всего и есть продолжение: землетрясение случилось вечером,
+    # число жертв пришло ночью. Связь нашлась при проверке на повтор
+    # (`dedup.confirm_new`), а пишется здесь — когда событие ушло читателю
+    if index is not None:
+        threads.remember(conn, chat_id, main["url_hash"],
+                         index.prior_of(main["url_hash"]))
     for row in group:
         conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                      (row["url_hash"],))
@@ -527,14 +538,14 @@ def section_of(main) -> str:
     return (main.get("section") or "") or sections.by_source(main["source_id"])
 
 
-def send_flash(conn, chat_id, group, card, rating, stats) -> int:
+def send_flash(conn, chat_id, group, card, rating, stats, index=None) -> int:
     """⚡ Молния: отдельное сообщение прямо сейчас."""
     main = primary_of(group)
     urgency, category = rating["urgency"], rating["category"]
     tg_send(chat_id, breaking_card(card, group, urgency),
             keyboard=feedback_keyboard([(card, group, urgency, category)]),
             silent=False)
-    remember_sent(conn, chat_id, group, card, rating, section_of(main))
+    remember_sent(conn, chat_id, group, card, rating, section_of(main), index)
     conn.commit()
     count_sent(conn, chat_id, FLASH)
     stats["sent"], stats["level"] = 1, FLASH
@@ -544,7 +555,7 @@ def send_flash(conn, chat_id, group, card, rating, stats) -> int:
     return 1
 
 
-def queue_alert(conn, chat_id, group, card, rating, stats) -> int:
+def queue_alert(conn, chat_id, group, card, rating, stats, index=None) -> int:
     """🔔 Важное: в очередь. Уйдёт сводкой, а накопленное ночью — утром.
 
     Считается отправленным сразу: событие читателю уже обещано, лимит на сутки
@@ -559,7 +570,7 @@ def queue_alert(conn, chat_id, group, card, rating, stats) -> int:
          main["source_id"], section, str(card.get("headline") or "")[:300],
          str(card.get("what") or "")[:500], float(rating["urgency"]),
          rating["scope"], now_iso()))
-    remember_sent(conn, chat_id, group, card, rating, section)
+    remember_sent(conn, chat_id, group, card, rating, section, index)
     conn.commit()
     count_sent(conn, chat_id, ALERT)
     stats["queued"], stats["level"] = 1, ALERT
@@ -569,7 +580,7 @@ def queue_alert(conn, chat_id, group, card, rating, stats) -> int:
     return 0        # читатель этого пока не увидел — считаем при отправке сводки
 
 
-def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
+def deliver(conn, chat_id, pool, rated, persona, cards, cost, index=None) -> int:
     """Раскладывает лучшее из кандидатов читателя по уровням срочности."""
     stats = {"candidates": len(pool), "sent": 0, "queued": 0, "cost": cost,
              "best": 0.0, "level": ""}
@@ -598,5 +609,5 @@ def deliver(conn, chat_id, pool, rated, persona, cards, cost) -> int:
                            persona, cards)
     stats["cost"] += spent
     if level == FLASH:
-        return send_flash(conn, chat_id, best, card, rating, stats)
-    return queue_alert(conn, chat_id, best, card, rating, stats)
+        return send_flash(conn, chat_id, best, card, rating, stats, index)
+    return queue_alert(conn, chat_id, best, card, rating, stats, index)

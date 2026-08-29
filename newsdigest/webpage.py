@@ -68,6 +68,12 @@ PAGE = """<!doctype html>
 <meta name="color-scheme" content="light dark">
 <title>Дайджест</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
+<!-- страница ставится на телефон значком и открывается без адресной строки -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="apple-mobile-web-app-title" content="Дайджест">
+<!-- та же лента для чужой читалки: подписаться можно, не открывая страницу -->
+<link rel="alternate" type="application/rss+xml" title="Дайджест" href="/rss">
 <style>
 :root {
   --bg: #f1f3f7; --card: #ffffff; --ink: #14161b; --dim: #6b7280;
@@ -374,6 +380,22 @@ header {
   margin: 8px 0 0; font-size: 13px; line-height: 1.4;
   color: var(--dim); overflow-wrap: anywhere;
 }
+/* «Ранее по теме»: чем эта новость продолжает уже прочитанное. Стоит под
+   текстом и до подписи — это часть новости, а не служебная строка. Вертикальная
+   черта слева читается как «то же самое, но раньше»: связь видно и без цвета */
+.news .back {
+  margin: 10px 0 0; padding-left: 11px; border-left: 2px solid var(--line);
+}
+.news .back .cap {
+  display: block; font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 3px;
+}
+.news .back a, .news .back span.step {
+  display: block; font-size: 13px; line-height: 1.4; color: var(--dim);
+  margin-top: 2px; overflow-wrap: anywhere;
+}
+.news .back a:hover { color: var(--accent); text-decoration: none; }
+.news .back time { font-variant-numeric: tabular-nums; opacity: .75; }
 .news .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
 .news .src { margin-left: auto; font-size: 13px; display: flex; gap: 5px; }
 .act {
@@ -383,10 +405,35 @@ header {
 .act:hover { background: var(--soft); opacity: 1; }
 .act.on { opacity: 1; background: var(--tint); }
 .cover {
-  width: 168px; height: 108px; border-radius: 12px; flex: none;
-  display: flex; align-items: center; justify-content: center; font-size: 40px;
+  width: 116px; height: 96px; border-radius: 12px; flex: none;
+  display: flex; align-items: center; justify-content: center; font-size: 34px;
   background: linear-gradient(140deg, hsl(var(--h) 62% 62%),
                                       hsl(var(--h) 58% 38%));
+}
+/* Выбранная с клавиатуры карточка. Обводка, а не заливка: у срочного своя
+   рамка и свой фон, и подсветка выбора не должна с ними спорить */
+.news.sel { box-shadow: 0 0 0 2px var(--accent); }
+/* Черта между днями. Лента идёт от свежего к старому, и без неё две недели
+   выпусков читаются как один бесконечный день: «вчера, 23:27» у каждой
+   карточки в отдельности время называет, а порядок дней — нет */
+.daybar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 22px 2px 12px; color: var(--dim);
+  font-size: 12.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.daybar::after {
+  content: ''; flex: 1; height: 1px; background: var(--line);
+}
+#list > .daybar:first-child { margin-top: 2px; }
+/* Граница прочитанного: всё выше пришло с прошлого захода. Считается в
+   браузере — серверу знать, когда читатель заходил на страницу, незачем */
+.seenbar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 20px 2px 14px; color: var(--dim); font-size: 12.5px;
+}
+.seenbar::before, .seenbar::after {
+  content: ''; flex: 1; height: 1px; background: var(--line);
 }
 .empty {
   background: var(--card); border: 1px solid var(--line); border-radius: 16px;
@@ -645,6 +692,7 @@ body.guest .tabs { display: none; }
 
     <aside class="rail">
       <div class="box" id="boxDigest"></div>
+      <div class="box" id="boxStories"></div>
       <div class="box" id="boxSources"></div>
       <div class="box" id="boxTopics"></div>
     </aside>
@@ -675,6 +723,9 @@ var S = {
   view: 'news', section: '', q: '', offset: 0, more: false, finding: false,
   seen: '', last: '', unread: 0, hot: false, hello: true, started: false,
   admin: false,
+  /* показ ленты: последний нарисованный день, отметка прошлого захода и
+     сколько новостей оказалось выше неё, выбранная с клавиатуры карточка */
+  day: '', mark: '', fresh: 0, drawn: false, cursor: -1,
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
   filters: [], pick: []
@@ -839,6 +890,28 @@ function loadFilters() {
 
 function keepFilters() {
   try { localStorage.setItem(KEEP, JSON.stringify(S.filters)); } catch (err) { }
+}
+
+/* --------------------------------------------------- что уже видели */
+/* Время самой свежей новости прошлого захода. Лежит в браузере, а не в базе:
+   серверу знать, когда читатель открывал страницу, незачем, а страницу могут
+   смотреть с телефона и с ноутбука порознь — и «новое» у них своё. */
+var MARK = 'nd.seen';
+
+function lastVisit() {
+  try { return localStorage.getItem(MARK) || ''; } catch (err) { return ''; }
+}
+
+function keepVisit(iso) {
+  try { if (iso) { localStorage.setItem(MARK, iso); } } catch (err) { }
+}
+
+/* Общая лента без поиска — единственное место, где отметку можно двигать: в
+   поиске и в закладках порядок не хронологический, и «новое» в них соврало бы.
+   Отфильтрованную по разделам черту рисуем, а отметку не трогаем: за чертой
+   осталось бы непрочитанное из разделов, которые сейчас скрыты. */
+function chronological() {
+  return S.view === 'news' && !S.q;
 }
 
 S.filters = loadFilters();
@@ -1213,10 +1286,44 @@ function loadNews(reset) {
 
 function drawList(items, reset) {
   var box = $('list');
-  if (reset) { box.innerHTML = ''; }
-  items.forEach(function (item) { box.appendChild(drawCard(item)); });
+  if (reset) {
+    box.innerHTML = '';
+    S.day = '';
+    S.cursor = -1;
+    /* отметку читаем один раз на показ ленты и до конца показа не трогаем:
+       иначе черта уехала бы вслед за только что записанным временем */
+    S.mark = chronological() ? lastVisit() : '';
+    S.fresh = 0;
+    S.drawn = false;
+  }
+  items.forEach(function (item) {
+    if (item.day && item.day !== S.day) {
+      S.day = item.day;
+      box.appendChild(el('div', 'daybar', item.dayName || ''));
+    }
+    if (S.mark && item.iso && item.iso <= S.mark) {
+      /* первая новость, которую читатель уже видел: выше неё всё новое */
+      if (!S.drawn && S.fresh) { box.appendChild(drawSeenLine(S.fresh)); }
+      S.drawn = true;
+    } else if (S.mark && !S.drawn) {
+      S.fresh += 1;
+    }
+    box.appendChild(drawCard(item));
+  });
+  /* двигаем отметку только по полной ленте: в разделе и под фильтрами за
+     чертой осталось бы непрочитанное из тех разделов, что сейчас скрыты */
+  if (reset && chronological() && !S.section && !filtering() &&
+      items.length && items[0].iso) {
+    keepVisit(items[0].iso);
+  }
   if (!box.childNodes.length) { box.appendChild(drawEmpty()); }
   markClamped();
+}
+
+function drawSeenLine(count) {
+  return el('div', 'seenbar', count + ' ' +
+    plural(count, 'новая новость', 'новые новости', 'новых новостей') +
+    ' с прошлого захода');
 }
 
 function drawEmpty() {
@@ -1291,6 +1398,7 @@ function drawCard(item) {
   text.appendChild(head);
   if (item.summary) { text.appendChild(drawSummary(item.summary)); }
   if (item.caveat) { text.appendChild(el('p', 'caveat', '⚠️ ' + item.caveat)); }
+  if (item.earlier && item.earlier.length) { text.appendChild(drawEarlier(item)); }
 
   var foot = el('div', 'foot');
   /* 👍/👎/🔖 — это вкусы владельца, они уходят боту и меняют выпуск. Гостю
@@ -1317,6 +1425,31 @@ function drawCard(item) {
   card.appendChild(text);
   card.appendChild(el('div', 'cover', item.emoji));
   return card;
+}
+
+/* Цепочка сюжета под карточкой. Событие другое, а сюжет тот же: землетрясение
+   было вечером, число жертв пришло ночью. Показываем в обратном порядке —
+   от ближайшего шага к самому раннему, так и вспоминают. */
+function drawEarlier(item) {
+  var box = el('div', 'back');
+  box.appendChild(el('span', 'cap', '🧵 Ранее по теме'));
+  item.earlier.forEach(function (step) {
+    var row;
+    if (step.url) {
+      row = el('a', null, step.title);
+      row.href = step.url;
+      row.target = '_blank';
+      row.rel = 'noopener noreferrer';
+    } else {
+      row = el('span', 'step', step.title);
+    }
+    if (step.at) {
+      row.appendChild(document.createTextNode(' '));
+      row.appendChild(el('time', null, '· ' + step.at));
+    }
+    box.appendChild(row);
+  });
+  return box;
 }
 
 function drawSummary(text) {
@@ -1358,6 +1491,7 @@ function actButton(icon, kind, on, item) {
 /* ------------------------------------------------------- правая колонка */
 function drawRail() {
   drawDigestBox();
+  drawStoriesBox();
   drawSourcesBox();
   drawTopicsBox();
 }
@@ -1398,6 +1532,31 @@ function drawDigestBox() {
   pair.appendChild(upd);
   pair.appendChild(out);
   box.appendChild(pair);
+}
+
+/* Сюжеты, которые сейчас развиваются. Считается по тем же связям, что и
+   «Ранее по теме» под карточкой, — отдельных запросов к модели за этим нет. */
+function drawStoriesBox() {
+  var box = $('boxStories');
+  var list = (S.side && S.side.stories) || [];
+  box.className = 'box' + (list.length ? '' : ' hide');
+  box.innerHTML = '';
+  if (!list.length) { return; }
+  box.appendChild(el('h3', null, 'Сюжеты недели'));
+  var rows = el('div', 'rows');
+  list.forEach(function (story) {
+    var button = el('button');
+    button.type = 'button';
+    button.title = 'Развивается: ' + story.count + ' ' +
+      plural(story.count, 'новость', 'новости', 'новостей') +
+      (story.at ? ', последняя — ' + story.at : '');
+    button.appendChild(el('span', 'dot', story.emoji));
+    button.appendChild(el('span', 'nm', story.title));
+    button.appendChild(el('span', 'rate', String(story.count)));
+    button.onclick = function () { find(story.title); };
+    rows.appendChild(button);
+  });
+  box.appendChild(rows);
 }
 
 function drawSourcesBox() {
@@ -1766,10 +1925,73 @@ document.addEventListener('visibilitychange', function () {
   if (!document.hidden && S.started) { refresh(false); }
 });
 
+/* ----------------------------------------------------------- клавиатура */
+/* Лента листается с клавиатуры так же, как в почте и в читалках: j и k ведут
+   по карточкам, Enter открывает источник, o разворачивает текст, / встаёт в
+   поиск. Мышью всё это работало и раньше — здесь только руки не отрываются
+   от клавиатуры. Стрелки не занимаем: ими прокручивают страницу целиком. */
+function cards() {
+  return document.querySelectorAll('#list .news');
+}
+
+function pick(shift) {
+  var list = cards();
+  if (!list.length) { return; }
+  var at = S.cursor + shift;
+  if (at < 0) { at = 0; }
+  if (at >= list.length) { at = list.length - 1; }
+  /* класс снимаем через classList, а не правкой className регуляркой:
+     PAGE — обычная строка Python, и \\b в ней стал бы символом забоя */
+  Array.prototype.forEach.call(list, function (card) {
+    card.classList.remove('sel');
+  });
+  S.cursor = at;
+  list[at].classList.add('sel');
+  list[at].scrollIntoView({block: 'nearest'});
+}
+
+function current() {
+  var list = cards();
+  return S.cursor >= 0 && S.cursor < list.length ? list[S.cursor] : null;
+}
+
+/* Печатает человек или листает — видно по тому, где стоит курсор: в поле
+   ввода j и k это буквы, а не команды. */
+function typing(node) {
+  if (!node) { return false; }
+  var tag = (node.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' ||
+         node.isContentEditable;
+}
+
 document.addEventListener('keydown', function (event) {
-  if (event.key !== 'Escape') { return; }
-  closeFilters();
-  if ($('login').className === 'on') { hideLogin(); }
+  if (event.key === 'Escape') {
+    closeFilters();
+    if ($('login').className === 'on') { hideLogin(); }
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) { return; }
+  if (typing(document.activeElement)) { return; }
+
+  if (event.key === '/') {
+    event.preventDefault();
+    showSearch();
+    return;
+  }
+  if (event.key === 'j') { event.preventDefault(); pick(1); return; }
+  if (event.key === 'k') { event.preventDefault(); pick(-1); return; }
+
+  var card = current();
+  if (!card) { return; }
+  if (event.key === 'Enter') {
+    var link = card.querySelector('h2 a');
+    if (link) { event.preventDefault(); window.open(link.href, '_blank', 'noopener'); }
+    return;
+  }
+  if (event.key === 'o') {
+    var sum = card.querySelector('.sum');
+    if (sum) { event.preventDefault(); sum.click(); }
+  }
 });
 
 /* повернули телефон, растянули окно — в три строки помещается уже другое */

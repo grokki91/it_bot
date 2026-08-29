@@ -70,7 +70,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from .config import CFG, log, now_iso
-from .llm import LLMError, judge_duplicates, llm_cost
+from .llm import LLMError, Verdict, judge_duplicates, llm_cost
 from .rank import primary_of, story
 from .textutil import sim_sets
 
@@ -124,33 +124,41 @@ def weigh(a: set, b: set, weights: dict) -> float:
 
 
 # --------------------------------------------------------------- кэш вердиктов
+#: Ответа про пару не было — ни в кэше, ни от модели. Ведём себя как до всей
+#: проверки: событие считаем новым, сюжета не знаем.
+UNKNOWN = Verdict(False, False)
+
+
 def cached(conn, keys) -> dict:
-    """Что уже спрашивали раньше: ключ пары -> True/False."""
+    """Что уже спрашивали раньше: ключ пары -> Verdict."""
     out = {}
     keys = [k for k in dict.fromkeys(keys) if k]
     for start in range(0, len(keys), 400):       # SQLite не любит длинные IN
         part = keys[start:start + 400]
         marks = ",".join("?" * len(part))
         for row in conn.execute(
-                "SELECT pair, same FROM dupes WHERE pair IN (%s)" % marks, part):
-            out[row["pair"]] = bool(row["same"])
+                "SELECT pair, same, follows FROM dupes WHERE pair IN (%s)" % marks,
+                part):
+            out[row["pair"]] = Verdict(bool(row["same"]), bool(row["follows"]))
     return out
 
 
 def remember(conn, verdicts) -> None:
     """Кладёт ответы модели в кэш: за тот же вопрос второй раз не платим."""
-    rows = [(key, 1 if same else 0, now_iso()) for key, same in verdicts]
+    rows = [(key, 1 if v.same else 0, 1 if v.follows else 0, now_iso())
+            for key, v in verdicts]
     if not rows:
         return
     conn.executemany(
-        "INSERT INTO dupes(pair, same, at) VALUES (?,?,?) "
-        "ON CONFLICT(pair) DO UPDATE SET same=excluded.same, at=excluded.at", rows)
+        "INSERT INTO dupes(pair, same, follows, at) VALUES (?,?,?,?) "
+        "ON CONFLICT(pair) DO UPDATE SET same=excluded.same, "
+        "follows=excluded.follows, at=excluded.at", rows)
     conn.commit()
 
 
 # --------------------------------------------------------------------- вопрос
 def ask(conn, questions):
-    """Разбирает спорные пары. Возвращает ({ключ пары: bool}, стоимость).
+    """Разбирает спорные пары. Возвращает ({ключ пары: Verdict}, стоимость).
 
     `questions` — список (ключ, текст того, что читатель видел, текст
     кандидата), самые весомые первыми. Что нашлось в кэше, о том не
@@ -190,14 +198,16 @@ def ask(conn, questions):
             continue
         answers, usage = answer
         cost += llm_cost(usage)
-        fresh.update({part[idx][0]: same for idx, same in answers.items()})
+        fresh.update({part[idx][0]: verdict for idx, verdict in answers.items()})
     if not fresh:
         return known, cost
 
     remember(conn, fresh.items())
     known.update(fresh)
-    log.info("Дубли: спрошено пар %d, из них повторов %d%s", len(pending) - lost,
-             sum(1 for same in fresh.values() if same),
+    log.info("Дубли: спрошено пар %d, из них повторов %d, продолжений %d%s",
+             len(pending) - lost,
+             sum(1 for v in fresh.values() if v.same),
+             sum(1 for v in fresh.values() if v.follows),
              "" if not lost else ", про %d ответа не пришло" % lost)
     return known, cost
 
@@ -320,7 +330,7 @@ def prune(conn, index, shortlists) -> float:
 
     # 1. против истории. Совпало по словам — выбрасываем без вопросов; попало
     # в спорную зону и было на днях — спросим модель
-    seen_keys = {}
+    seen_keys, seen_sig = {}, {}
     for group in flat:
         score, sig, text, at = index.near(group)
         if score >= CFG["similarity"]:
@@ -328,6 +338,7 @@ def prune(conn, index, shortlists) -> float:
         elif enabled() and gray(score) and at >= since:
             key = pair_key(sig, primary_of(group)["sig"])
             seen_keys.setdefault(key, []).append(group)
+            seen_sig[key] = sig
             questions.append((NOW, weigh(tokens[id(group)], set(sig.split()), weights),
                               question(key, text, group)))
 
@@ -358,14 +369,22 @@ def prune(conn, index, shortlists) -> float:
         questions.sort(key=lambda q: (q[0], -q[1]))
         verdicts, cost = ask(conn, [pair for _rush, _weight, pair in questions])
         for key, groups in seen_keys.items():
-            if verdicts.get(key):
+            verdict = verdicts.get(key, UNKNOWN)
+            if verdict.same:
                 doubles.update(id(group) for group in groups)
+            elif verdict.follows:
+                # событие другое, а сюжет тот же: читателю это не повтор, а
+                # продолжение — и знать, с чего оно началось, ему полезно
+                prior = index.hash_of(seen_sig.get(key, ""))
+                for group in groups:
+                    index.follow(group, prior)
 
         # сначала склейки внутри разделов: после них у кластера может смениться
         # лицо, а связывать разделы надо уже по новому
         fusion = Fusion()
         for key, first, second in couples:
-            if not verdicts.get(key) or home[id(first)] != home[id(second)]:
+            if (not verdicts.get(key, UNKNOWN).same
+                    or home[id(first)] != home[id(second)]):
                 continue
             if id(first) in doubles or id(second) in doubles:
                 continue        # одного из двоих и так убираем — вливать некуда
@@ -373,7 +392,7 @@ def prune(conn, index, shortlists) -> float:
             if guest is not None:
                 fused.add(id(guest))
         for key, first, second in couples:
-            if verdicts.get(key) and home[id(first)] != home[id(second)]:
+            if verdicts.get(key, UNKNOWN).same and home[id(first)] != home[id(second)]:
                 index.link(primary_of(fusion.root(first))["sig"],
                            primary_of(fusion.root(second))["sig"])
 
@@ -404,13 +423,14 @@ def confirm_new(conn, index, groups):
     since = cutoff()
     tokens = {id(group): words_of(group) for group in groups}
     weights = idf(list(tokens.values()) + index.words)
-    fresh, questions = [], []
+    fresh, questions, seen_sig = [], [], {}
     for group in groups:
         score, sig, text, at = index.near(group)
         if score >= CFG["similarity"]:
             continue                        # по словам это уже уходило
         if enabled() and gray(score) and at >= since:
             key = pair_key(sig, primary_of(group)["sig"])
+            seen_sig[key] = sig
             questions.append((weigh(tokens[id(group)], set(sig.split()), weights),
                               question(key, text, group)))
             fresh.append((group, key))
@@ -423,10 +443,13 @@ def confirm_new(conn, index, groups):
         verdicts, cost = ask(conn, [pair for _weight, pair in questions])
     out = []
     for group, key in fresh:
-        if key and verdicts.get(key):
+        verdict = verdicts.get(key, UNKNOWN) if key else UNKNOWN
+        if verdict.same:
             index.mark(primary_of(group)["sig"])
             log.info("Срочное отменено, это уже уходило: %s",
                      primary_of(group)["title"][:70])
             continue
+        if verdict.follows:
+            index.follow(group, index.hash_of(seen_sig.get(key, "")))
         out.append(group)
     return out, cost

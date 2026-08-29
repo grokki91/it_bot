@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from . import (config, dedup, factcheck, issueview, safety, sections,
-               subscribers, translate)
+               subscribers, threads, translate)
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
@@ -264,6 +264,7 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
         return stats
 
     cards = write_cards(conn, blocks, plan, stats)
+    mark_earlier(conn, chat_id, index, cards)
     stats["selected"] = sum(len(block) for _topic, block in cards)
     stats["sections"] = len(cards)
 
@@ -296,6 +297,11 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
                  topic or "", str(card.get("headline") or "")[:300],
                  str(card.get("what") or "")[:500], float(score),
                  factcheck.caveat_of(group)))
+            # чем эта новость продолжает вчерашнюю — приговор модели, вынесенный
+            # ещё при разборе дублей. Пишется здесь, а не там: пока новость не
+            # ушла, связывать было нечего
+            threads.remember(conn, chat_id, main["url_hash"],
+                             index.prior_of(main["url_hash"]))
             for item in group:
                 # 'sent' здесь значит «кому-то уже уходило» и бережёт материал
                 # от уборки; персональный дедуп живёт в таблице sent
@@ -407,6 +413,34 @@ def write_cards(conn, blocks, plan, stats):
         out.append((topic, block))
     stats["cost"] += localize(conn, out)
     return out
+
+
+def mark_earlier(conn, chat_id, index, cards) -> None:
+    """Дописывает в карточку то, что она продолжает, — одной строкой.
+
+    Связь нашлась при разборе дублей (`dedup.prune`), а заголовок той новости
+    лежит в истории читателя. Берётся ближайший шаг назад, а не вся цепочка:
+    в Telegram выпуск — одно сообщение, и место в нём считанное; вся цепочка
+    есть на странице, где её и листают.
+
+    Зовётся ПОСЛЕ `write_cards`: заголовок в истории уже на языке выпуска, и
+    второй раз его переводить незачем.
+    """
+    priors = {}
+    for _topic, block in cards:
+        for _card, group, _score, _cat in block:
+            head = primary_of(group)["url_hash"]
+            prior = index.prior_of(head)
+            if prior:
+                priors[head] = prior
+    if not priors:
+        return
+    known = threads.rows_by_hash(conn, chat_id, list(priors.values()))
+    for _topic, block in cards:
+        for card, group, _score, _cat in block:
+            row = known.get(priors.get(primary_of(group)["url_hash"], ""))
+            if row is not None:
+                card["earlier"] = str(row["headline"] or row["title"])[:200]
 
 
 def card_of(written, main) -> dict:
