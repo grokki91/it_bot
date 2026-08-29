@@ -125,6 +125,54 @@ CFG = {
                                    # это уже не повтор, а возвращение к теме
     "keep_dupes_days":  30,        # сколько живёт кэш её вердиктов
 
+    # --- куда ведёт ссылка ---------------------------------------------------
+    # Всё, что бот показывает, — ссылки из чужих лент, а подписью под ними
+    # стоит наше имя источника. `https://apnews.com@phish.tk/login` читается
+    # как «apnews», а ведёт на phish.tk. Проверка — каскадом, от бесплатного
+    # к дорогому (newsdigest/safety.py).
+    "safe_links":       True,   # [env ND_SAFE_LINKS] проверять ссылки при сборе
+    "safe_strict":      False,  # публиковать ТОЛЬКО то, за что поручились.
+                                # По умолчанию выключено: у половины хороших
+                                # ссылок с Hacker News домен нам незнаком, и
+                                # строгость выбросила бы источник целиком
+    "safe_resolve":     True,   # разворачивать сокращатели (bit.ly, t.co).
+                                # Сетевой запрос, но только на них
+    "safe_resolve_max": 30,     # сколько сокращателей разворачиваем за прогон
+    "safe_hops":        4,      # длина цепочки редиректов
+    "safe_timeout":     10,     # секунд на запрос проверки
+    "safe_seen_days":   7,      # с какого возраста домен считается знакомым
+    "safe_seen_min":    3,      # и сколько раз он должен был нам встретиться
+    # Google Safe Browsing — единственный слой, который знает про домен то,
+    # чего не знаем мы: что его вчера отметили как фишинг. Ключ бесплатный
+    # (console.cloud.google.com, Safe Browsing API), кладётся в env как
+    # SAFEBROWSING_API_KEY. Без ключа слой просто выключен, остальные работают.
+    "safebrowsing":     True,   # [env ND_SAFEBROWSING]
+    "safe_ttl_h":       168,    # сколько живёт его ответ про домен: вчера
+                                # чистый домен сегодня бывает взломан
+    "keep_hosts_days":  180,    # сколько живёт наша репутация доменов
+
+    # --- не вброс ли это -----------------------------------------------------
+    # Проверяется НЕ истинность (модель её не знает), а обеспеченность
+    # заявления: кто подтверждает, названа ли работа, существует ли DOI.
+    # Сомнительное не выбрасывается, а ждёт подтверждения (newsdigest/factcheck.py).
+    "factcheck":        True,   # [env ND_FACTCHECK]
+    "fact_sections":    "science,medicine,health,space,climate,cybersec",
+                                # где вброс дороже всего и проверка идёт глубже
+    "fact_llm":         True,   # [env ND_FACT_LLM] спрашивать модель о форме
+                                # заявления. 0 = только бесплатные слои
+    "fact_candidates":  3,      # сколько верхних кандидатов раздела проверяем
+    "fact_max":         24,     # заявлений за прогон
+    "fact_batch":       8,      # заявлений в одном запросе
+    "fact_hold_h":      18,     # сколько держим карантин. Дольше — и новость
+                                # протухнет раньше, чем дождётся подтверждения
+    "fact_min_publishers": 3,   # столько независимых издателей снимают все
+                                # вопросы к событию
+    "fact_min_strong":  2,      # либо столько сильных: агентство, первоисточник,
+                                # редакция, которая проверяет факты
+    "doi_check":        True,   # проверять DOI через Crossref (бесплатно, без ключа)
+    "doi_timeout":      10,
+    "keep_claims_days": 30,     # сколько живут приговоры
+
     # --- LLM (DeepSeek) ------------------------------------------------------
     "llm_base":         "https://api.deepseek.com",
     "model_rank":       "deepseek-v4-flash",  # ранжирование — дешёвая модель
@@ -281,6 +329,17 @@ ENV_MAP = {
     "ND_CLASSIFY": ("classify_llm",
                     lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_DUP_LLM": ("dup_llm", lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_SAFE_LINKS": ("safe_links",
+                      lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_SAFE_STRICT": ("safe_strict",
+                       lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_SAFEBROWSING": ("safebrowsing",
+                        lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_FACTCHECK": ("factcheck",
+                     lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_FACT_LLM": ("fact_llm",
+                    lambda v: str(v).lower() in ("1", "true", "yes")),
+    "ND_FACT_SECTIONS": ("fact_sections", str),
     "ND_BREAKING": ("breaking", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_BREAKING_QUIET": ("breaking_quiet", str),
     "ND_BREAKING_EVERY": ("breaking_every_min", int),
@@ -300,12 +359,15 @@ log = logging.getLogger("nd")
 TG_TOKEN = ""
 TG_CHAT = ""
 DS_KEY = ""
+#: ключ Google Safe Browsing. Необязателен: без него проверка
+#: ссылок работает своими слоями, просто без внешней базы угроз
+SB_KEY = ""
 
 
 # ------------------------------------------------------------------ окружение
 def load_env() -> None:
     """Читает ~/.newsdigest/env. Переменные, уже заданные снаружи, главнее."""
-    global TG_TOKEN, TG_CHAT, DS_KEY
+    global TG_TOKEN, TG_CHAT, DS_KEY, SB_KEY
     if ENV_FILE.exists():
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -331,6 +393,7 @@ def load_env() -> None:
     TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     DS_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    SB_KEY = os.environ.get("SAFEBROWSING_API_KEY", "").strip()
     remember_secrets()
 
 
@@ -342,7 +405,7 @@ def remember_secrets() -> None:
     сообщение об ошибке или адрес источника. Заодно забираем всё, что лежит в
     окружении под говорящим именем: там же живут ключи, дописанные руками.
     """
-    redact.remember(TG_TOKEN, DS_KEY, CFG.get("web_token"))
+    redact.remember(TG_TOKEN, DS_KEY, SB_KEY, CFG.get("web_token"))
     for name, value in os.environ.items():
         if redact.secret_name(name):
             redact.remember(value)

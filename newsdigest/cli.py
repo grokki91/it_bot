@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import (candidates, config, redact, sections, subscribers, trust,
-               userprofiles)
+from . import (candidates, config, factcheck, redact, safety, sections,
+               subscribers, trust, userprofiles)
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
@@ -572,10 +572,41 @@ def cmd_status(_args):
                   % (row["source_id"], row["empty"], when))
         print("  Проверьте адрес: %s feeds --url <ссылка>" % PROG)
 
+    safety_report(conn, week)
+
     size = DB_FILE.stat().st_size / 1e6 if DB_FILE.exists() else 0
     print("\nРазмер базы: %.1f МБ   каталог: %s" % (size, HOME))
     conn.close()
     return 0
+
+
+def safety_report(conn, week) -> None:
+    """Что отсеяли ссылки и фактчек. Молчит, когда отсеивать было нечего.
+
+    Обе проверки работают тихо, и увидеть их работу иначе негде: небезопасная
+    ссылка просто уступает место другой, а придержанное событие просто не
+    приходит. Раз в неделю на это стоит посмотреть глазами — хотя бы чтобы
+    заметить, что проверка забраковала лишнего.
+    """
+    bad = list(conn.execute(
+        "SELECT url, source_id, safe_why FROM items WHERE safe = ? "
+        "AND fetched_at > ? ORDER BY fetched_at DESC LIMIT 10",
+        (safety.UNSAFE, week)))
+    if bad:
+        print("\n=== Отбракованные ссылки ===")
+        for row in bad:
+            print("  %-22s %s" % (row["source_id"], row["safe_why"]))
+            print("    %s" % redact.safe_url(row["url"])[:96])
+
+    held = list(conn.execute(
+        "SELECT note, at FROM claims WHERE verdict = ? AND at > ? "
+        "ORDER BY at DESC LIMIT 10", (factcheck.HOLD, week)))
+    if held:
+        print("\n=== Придержано до подтверждения ===")
+        for row in held:
+            print("  %s  %s" % (row["at"][:16], row["note"] or "без объяснения"))
+        print("  Карантин снимается сам: подтвердят за %d ч — уйдёт в выпуск."
+              % CFG["fact_hold_h"])
 
 
 SERVICE_TEMPLATE = """[Unit]

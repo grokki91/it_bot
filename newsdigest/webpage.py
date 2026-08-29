@@ -367,6 +367,13 @@ header {
 }
 .news .sum.more { cursor: pointer; }
 .news .sum.open { -webkit-line-clamp: 99; }
+/* оговорка фактчека: «препринт, без рецензирования», «один источник».
+   Она про то, как читать заголовок, поэтому стоит под текстом и не
+   сворачивается вместе с ним */
+.news .caveat {
+  margin: 8px 0 0; font-size: 13px; line-height: 1.4;
+  color: var(--dim); overflow-wrap: anywhere;
+}
 .news .foot { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
 .news .src { margin-left: auto; font-size: 13px; display: flex; gap: 5px; }
 .act {
@@ -1283,6 +1290,7 @@ function drawCard(item) {
   }
   text.appendChild(head);
   if (item.summary) { text.appendChild(drawSummary(item.summary)); }
+  if (item.caveat) { text.appendChild(el('p', 'caveat', '⚠️ ' + item.caveat)); }
 
   var foot = el('div', 'foot');
   /* 👍/👎/🔖 — это вкусы владельца, они уходят боту и меняют выпуск. Гостю

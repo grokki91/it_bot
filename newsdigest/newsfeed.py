@@ -37,7 +37,7 @@ import sqlite3
 import time
 import urllib.parse
 
-from . import sections, translate
+from . import safety, sections, translate
 from .config import CFG, local_now, log, to_local
 from .feedparse import clean_title, parse_date
 from .profiles import emoji as topic_emoji
@@ -83,6 +83,7 @@ SOURCES = {
     "news": """
         SELECT n.url_hash AS url_hash, n.title AS title,
                n.headline AS headline, n.summary AS summary,
+               n.caveat AS caveat,
                COALESCE(i.summary, '') AS lead,
                n.url AS url, n.source_id AS source_id, n.section AS section,
                n.score AS score, n.breaking AS breaking, n.sent_at AS at
@@ -94,6 +95,7 @@ SOURCES = {
         SELECT b.url_hash AS url_hash, b.title AS title,
                COALESCE(n.headline, '') AS headline,
                COALESCE(n.summary, '') AS summary,
+               COALESCE(n.caveat, '') AS caveat,
                COALESCE(i.summary, '') AS lead,
                CASE WHEN b.url != '' THEN b.url
                     ELSE COALESCE(n.url, '') END AS url,
@@ -111,6 +113,7 @@ SOURCES = {
         SELECT f.url_hash AS url_hash, f.title AS title,
                COALESCE(n.headline, '') AS headline,
                COALESCE(n.summary, '') AS summary,
+               COALESCE(n.caveat, '') AS caveat,
                COALESCE(i.summary, '') AS lead,
                COALESCE(n.url, '') AS url,
                CASE WHEN f.source_id != '' THEN f.source_id
@@ -406,7 +409,8 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
             "title": clean_title(
                 str(column(row, "headline") or column(row, "title"))),
             "summary": body(row),
-            "url": row["url"] or "",
+            "url": outward(row["url"]),
+            "caveat": str(column(row, "caveat") or ""),
             "source": domain(row["url"]) or row["source_id"] or "источник",
             "section": topic,
             "label": topic_title(topic) if topic else "Новости",
@@ -530,9 +534,19 @@ MAILING_ROWS = 500
 
 
 def outward(url: str) -> str:
-    """Ссылка наружу. Адрес пришёл из чужого фида — пускаем только http(s)."""
-    url = str(url or "").strip()
-    return url if url.lower().startswith(("http://", "https://")) else ""
+    """Ссылка наружу. Адрес пришёл из чужого фида, поэтому проверяется здесь
+    ещё раз, у самого HTML.
+
+    Схемы мало. `https://apnews.com@phish.tk/x` — это http(s), и старая
+    проверка его пропускала: подпись «apnews», переход на phish.tk. Разбор
+    формы адреса живёт в `safety.shaped_badly` и стоит столько же — ни базы,
+    ни сети он не трогает.
+
+    Второй рубеж нужен не для порядка: в истории лежат новости, собранные до
+    того, как проверка появилась, вердикта у них нет вовсе, а страница
+    открыта всем.
+    """
+    return safety.outward(url)
 
 
 def spoken_date(local, now) -> str:
