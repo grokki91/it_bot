@@ -22,7 +22,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import config, dedup, issueview, sections, subscribers, translate
+from . import (config, dedup, factcheck, issueview, safety, sections,
+               subscribers, translate)
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
 from .llm import LLMError, llm_cost, rank_clusters, summarize
@@ -84,6 +85,10 @@ def shortlist_for(rows, topic, index, ordering, limit):
         return []
     fresh = [g for g in cluster(items, CFG["similarity"])
              if not index.seen(g, CFG["similarity"])]
+    # событие, у которого не осталось ни одной ссылки, годной для показа,
+    # дальше не идёт: ссылка в карточке обязательна, а лицо кластера уже
+    # выбрано с оглядкой на неё (`rank.primary_of`)
+    fresh, _dropped = safety.drop_unsafe(fresh)
     return sorted(fresh, key=ordering, reverse=True)[:limit]
 
 
@@ -217,6 +222,10 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     # выпуском. Спорное разбирается здесь, ДО ранжирования: платить за оценку
     # повтора незачем
     stats["cost"] += dedup.prune(conn, index, shortlists)
+    # обеспеченность заявления — здесь же, до ранжирования: платить за оценку
+    # и карточку события, которое не выйдет, незачем. Придержанное не
+    # теряется — оно ждёт подтверждения и выйдет следующим выпуском
+    stats["cost"] += factcheck.screen(conn, shortlists)
     stats["clusters"] = sum(len(s) for _topic, s in shortlists)
     if not stats["clusters"]:
         log.warning("После дедупликации новых новостей не осталось")
@@ -281,11 +290,12 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
             conn.execute(
                 "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,"
                 "digest_date,sent_at,source_id,category,section,headline,"
-                "summary,score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "summary,score,caveat) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (chat_id, main["url_hash"], main["sig"], main["title"],
                  main["url"], day, now_iso(), main["source_id"], category,
                  topic or "", str(card.get("headline") or "")[:300],
-                 str(card.get("what") or "")[:500], float(score)))
+                 str(card.get("what") or "")[:500], float(score),
+                 factcheck.caveat_of(group)))
             for item in group:
                 # 'sent' здесь значит «кому-то уже уходило» и бережёт материал
                 # от уборки; персональный дедуп живёт в таблице sent

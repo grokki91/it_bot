@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import classify, trust
+from . import classify, safety, trust
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
@@ -172,14 +172,24 @@ def collect(topics=None, wire_only=False) -> dict:
     # Разделы для маршрутизации — те, что кто-то читает: уводить новость туда,
     # куда никто не подписан, значит её потерять
     stats["cost"] = classify.route_all(conn, rows, topics_in_use(conn))
+    # куда ведут ссылки — тоже ЗДЕСЬ и тоже один раз на материал. Сокращатель
+    # при этом разворачивается, и в базу ложится уже конечный адрес: читателю
+    # полезнее видеть, куда он идёт, чем bit.ly
+    links = safety.check(conn, rows)
+    if links["unsafe"]:
+        # в строку прогона кладём только число: `status` печатает её целиком
+        # и обрезает по длине, а подробности и так лежат в логе
+        stats["unsafe"] = links["unsafe"]
     before = conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
     for row in rows:
         conn.execute(
             "INSERT INTO items(url_hash,url,source_id,tier,category,title,summary,"
-            "published_at,fetched_at,sig,social,section,route_conf) "
+            "published_at,fetched_at,sig,social,section,route_conf,safe,safe_why) "
             "VALUES (:url_hash,:url,:source_id,:tier,:category,:title,:summary,"
-            ":published_at,:fetched_at,:sig,:social,:section,:route_conf) "
-            "ON CONFLICT(url_hash) DO UPDATE SET social=MAX(items.social, excluded.social)",
+            ":published_at,:fetched_at,:sig,:social,:section,:route_conf,"
+            ":safe,:safe_why) "
+            "ON CONFLICT(url_hash) DO UPDATE SET social=MAX(items.social, excluded.social), "
+            "safe=excluded.safe, safe_why=excluded.safe_why",
             dict(row, fetched_at=now_iso()))
     conn.commit()
     stats["new"] = conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] - before
@@ -196,6 +206,14 @@ def collect(topics=None, wire_only=False) -> dict:
     conn.execute("DELETE FROM sent WHERE sent_at < ?", (cutoff_s,))
     conn.execute("DELETE FROM routes WHERE at < ?", (cutoff_r,))
     conn.execute("DELETE FROM dupes WHERE at < ?", (cutoff_d,))
+    # приговоры фактчека и наша репутация доменов живут дольше самих новостей:
+    # домен, знакомый полгода, — это и есть то, ради чего таблица заведена
+    conn.execute("DELETE FROM claims WHERE at < ?",
+                 ((datetime.now(timezone.utc)
+                   - timedelta(days=CFG["keep_claims_days"])).isoformat(),))
+    conn.execute("DELETE FROM hosts WHERE last_seen < ? AND verdict = ''",
+                 ((datetime.now(timezone.utc)
+                   - timedelta(days=CFG["keep_hosts_days"])).isoformat(),))
     # перевод новости живёт ровно столько, сколько сама новость: заголовок
     # двухмесячной давности второй раз уже не понадобится
     conn.execute("DELETE FROM translations WHERE at < ?", (cutoff_s,))
@@ -215,6 +233,9 @@ def collect(topics=None, wire_only=False) -> dict:
     conn.close()
     log.info("Сбор: источников ok=%d, ошибок=%d, отключено=%d, получено=%d, новых=%d",
              stats["ok"], stats["failed"], stats["muted"], stats["fetched"], stats["new"])
+    line = safety.stats_line(links)
+    if line:
+        log.info("%s", line)
     return stats
 
 

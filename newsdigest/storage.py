@@ -25,7 +25,12 @@ CREATE TABLE IF NOT EXISTS items (
     -- раздел, определённый по содержанию (classify.route_all), и уверенность
     -- в нём. Пусто = решить не удалось, раздел доберётся по источнику
     section      TEXT NOT NULL DEFAULT '',
-    route_conf   REAL NOT NULL DEFAULT 0
+    route_conf   REAL NOT NULL DEFAULT 0,
+    -- куда ведёт ссылка (newsdigest/safety.py): ok / unsafe / unknown и
+    -- почему. Проверяется один раз при сборе — выпуску и странице вердикт
+    -- достаётся даром
+    safe         TEXT NOT NULL DEFAULT '',
+    safe_why     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_items_section ON items(section);
@@ -48,6 +53,31 @@ CREATE TABLE IF NOT EXISTS dupes (
     at   TEXT NOT NULL
 );
 
+-- Репутация домена. Половина её бесплатна и наша собственная: когда домен
+-- впервые попался в лентах и сколько раз встречался. Домен, который приходит
+-- к нам неделями и десятками записей, не бывает свежей подделкой — фишинговый
+-- живёт дни. Здесь же оседает ответ внешней базы угроз (verdict/checked_at),
+-- если для неё задан ключ: второй раз про тот же домен не спрашиваем.
+CREATE TABLE IF NOT EXISTS hosts (
+    host       TEXT PRIMARY KEY,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    seen       INTEGER NOT NULL DEFAULT 0,
+    verdict    TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL DEFAULT ''
+);
+
+-- Приговоры фактчека (newsdigest/factcheck.py): ok / caveat / hold и оговорка
+-- для читателя. Ключ — сигнатура события, поэтому приговор общий для всех
+-- подписчиков и переживает пересборку выпуска. Отсюда же работает карантин:
+-- `hold` со временем `at` истекает сам через fact_hold_h часов.
+CREATE TABLE IF NOT EXISTS claims (
+    sig     TEXT PRIMARY KEY,
+    verdict TEXT NOT NULL DEFAULT 'ok',
+    note    TEXT NOT NULL DEFAULT '',
+    at      TEXT NOT NULL
+);
+
 -- История отправленного персональна: у каждого подписчика свой дедуп.
 -- Здесь же лежит и сама карточка — раздел, заголовок, суть и оценка модели.
 -- Раньше всё это жило только внутри текста сообщения, и ленту новостей на
@@ -64,6 +94,10 @@ CREATE TABLE IF NOT EXISTS sent (
     section     TEXT NOT NULL DEFAULT '',
     headline    TEXT NOT NULL DEFAULT '',
     summary     TEXT NOT NULL DEFAULT '',
+    -- оговорка фактчека: «препринт, без рецензирования», «один источник».
+    -- Лежит рядом с карточкой, потому что показывается вместе с ней — и в
+    -- Telegram, и на странице
+    caveat      TEXT NOT NULL DEFAULT '',
     score       REAL NOT NULL DEFAULT 0,
     breaking    INTEGER NOT NULL DEFAULT 0,
     digest_date TEXT NOT NULL,
@@ -448,6 +482,24 @@ def upgrade(conn) -> None:
     add_item_section(conn)
     add_favorites(conn)
     add_empty_feed_counter(conn)
+    add_link_safety(conn)
+
+
+def add_link_safety(conn) -> None:
+    """Вердикт ссылки прямо у материала (проверка ссылок, newsdigest/safety.py).
+
+    Материалы, собранные до появления проверки, остаются с пустым вердиктом —
+    это «не знаем», и ведут себя они как раньше. Заново их не перепроверяем:
+    ссылка на странице всё равно проходит через `safety.outward`, а в выпуск
+    старьё уже не попадёт.
+    """
+    # таблицы проверяются порознь: у базы версии 2.0 есть `sent` и нет
+    # `items` вовсе, и общий ранний выход оставил бы историю без колонки
+    if table_exists(conn, "items"):     # новая база: колонки придут из SCHEMA
+        ensure_column(conn, "items", "safe", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "items", "safe_why", "TEXT NOT NULL DEFAULT ''")
+    if table_exists(conn, "sent"):
+        ensure_column(conn, "sent", "caveat", "TEXT NOT NULL DEFAULT ''")
 
 
 def add_empty_feed_counter(conn) -> None:

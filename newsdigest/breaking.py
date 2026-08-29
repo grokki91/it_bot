@@ -38,7 +38,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import config, dedup, sections, signals, subscribers, translate, trust
+from . import (config, dedup, factcheck, safety, sections, signals,
+               subscribers, translate, trust)
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .feedparse import parse_date
@@ -184,6 +185,10 @@ def hot_clusters(conn, topics=None):
     if not rows:
         return []
     hot = [g for g in cluster(rows, CFG["similarity"]) if is_hot(g)]
+    hot, dropped = safety.drop_unsafe(hot)
+    if dropped:
+        log.info("Срочное: снято событий %d — показать нечего, ссылка не годится",
+                 dropped)
     return sorted(hot, key=prescore, reverse=True)
 
 
@@ -194,11 +199,18 @@ def unseen(hot, index, conn=None):
     Слова ловят пересказ, но не смену угла: «умер N» и «коллеги прощаются с N»
     по словам не сходятся, а событие одно, и приходить срочным оно второй раз
     не должно. Спорное разбирает `dedup` — там же, где и в плановом выпуске.
+
+    Здесь же событие проходит фактчек, и строже, чем в выпуске: срочное
+    приходит отдельным сообщением и со звуком, поэтому неподтверждённое не
+    отправляется вовсе. Оно не теряется — дождётся подтверждения и придёт
+    плановым выпуском, где к нему будет оговорка.
     """
     fresh = [g for g in hot if not index.seen(g, CFG["similarity"])][:MAX_CANDIDATES]
     if conn is None or not fresh:
         return fresh, 0.0
-    return dedup.confirm_new(conn, index, fresh)
+    fresh, cost = dedup.confirm_new(conn, index, fresh)
+    vetted, spent = factcheck.vet(conn, fresh)
+    return vetted, cost + spent
 
 
 def candidates(conn, chat_id="", topics=None):
@@ -493,13 +505,14 @@ def remember_sent(conn, chat_id, group, card, rating, section) -> None:
     main = primary_of(group)
     conn.execute(
         "INSERT OR IGNORE INTO sent(chat_id,url_hash,sig,title,url,digest_date,"
-        "sent_at,source_id,category,section,headline,summary,score,breaking) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+        "sent_at,source_id,category,section,headline,summary,score,caveat,"
+        "breaking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
         (chat_id, main["url_hash"], main["sig"], main["title"], main["url"],
          local_now().strftime("%Y-%m-%d"), now_iso(), main["source_id"],
          rating["category"], section,
          str(card.get("headline") or "")[:300],
-         str(card.get("what") or "")[:500], float(rating["urgency"])))
+         str(card.get("what") or "")[:500], float(rating["urgency"]),
+         factcheck.caveat_of(group)))
     for row in group:
         conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                      (row["url_hash"],))

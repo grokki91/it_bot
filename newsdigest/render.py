@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import html as html_mod
 
-from . import feedback
+from . import factcheck, feedback
 from .config import CFG, local_now, log, to_local
 from .feedparse import parse_date
 from .profiles import emoji as topic_emoji
@@ -118,7 +118,11 @@ def card_facts(card, group, score) -> dict:
             "url": main["url"], "source": main["source_id"],
             "also": sorted({i["source_id"] for i in group}
                            - {main["source_id"]})[:2],
-            "score": float(score), "at": stamp(main.get("published_at"))}
+            "score": float(score), "at": stamp(main.get("published_at")),
+            # оговорка фактчека: показывается вместе с новостью, а не вместо
+            # неё. «Препринт, без рецензирования» — это то, что читатель
+            # должен знать, чтобы прочесть заголовок правильно
+            "caveat": factcheck.caveat_of(group)}
 
 
 def card_text(facts, trim=0, when=False) -> str:
@@ -138,6 +142,10 @@ def card_text(facts, trim=0, when=False) -> str:
     lines = [head]
     if facts["what"]:
         lines.append(esc(facts["what"]))
+    if facts.get("caveat"):
+        # оговорка идёт ВЫШЕ «зачем это знать» и не срезается вместе с ним:
+        # если места хватило на суть новости, хватит и на «это препринт»
+        lines.append("⚠️ " + esc(facts["caveat"]))
     if facts["why"] and trim == 0:
         lines.append("💡 " + esc(facts["why"]))
     lines.append(link)
@@ -314,6 +322,9 @@ def breaking_card(card, group, score):
     what = str(card.get("what") or main["summary"][:300]).strip()
     if what:
         lines.append(esc(what))
+    note = factcheck.caveat_of(group)
+    if note:
+        lines.append("⚠️ " + esc(note))
     why = str(card.get("why") or "").strip()
     if why:
         lines.append("💡 " + esc(why))

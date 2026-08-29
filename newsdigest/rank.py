@@ -6,7 +6,7 @@ import math
 import urllib.parse
 from datetime import datetime, timezone
 
-from . import trust
+from . import safety, trust
 from .config import CFG, WEIGHTS, now_iso
 from .feedparse import parse_date
 from .textutil import sim_sets
@@ -37,13 +37,21 @@ def cluster(items, threshold):
 
 
 def primary_of(group):
-    """Лицо кластера: сначала tier, потом дата.
+    """Лицо кластера: сначала годная ссылка, потом tier, потом дата.
 
     Пресс-релиз вендора и госагентство уступают тем, кто эту новость проверял:
     ссылка в карточке должна вести на разбор, а не на анонс. Если проверять
     было некому, порядок прежний — tier, дата.
+
+    Первым же ключом идёт безопасность ссылки, и это не про качество
+    материала, а про то, что мы вообще показываем. Кластер — это несколько
+    заметок об одном событии; если ссылка одной из них никуда не годится
+    (`safety.safe`), лицом становится следующая, и читатель получает ту же
+    новость со ссылкой на издателя, который не фишинг. Годных нет ни одной —
+    сортировать всё равно надо, и событие отсеется выше, в `safety.drop_unsafe`.
     """
-    return sorted(group, key=lambda i: (trust.demoted(i, group), i["tier"],
+    return sorted(group, key=lambda i: (not safety.safe(i),
+                                        trust.demoted(i, group), i["tier"],
                                         i["published_at"] or ""))[0]
 
 
