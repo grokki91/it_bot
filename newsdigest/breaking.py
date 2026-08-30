@@ -542,7 +542,11 @@ def send_flash(conn, chat_id, group, card, rating, stats, index=None) -> int:
     """⚡ Молния: отдельное сообщение прямо сейчас."""
     main = primary_of(group)
     urgency, category = rating["urgency"], rating["category"]
-    tg_send(chat_id, breaking_card(card, group, urgency),
+    # событие то же, что читатель уже видел, но счётчик сдвинулся: чем именно —
+    # модель сказала при проверке на повтор (`dedup.confirm_new`), и читателю
+    # это первое, что нужно знать
+    gain = index.gain_of(main["url_hash"]) if index is not None else ""
+    tg_send(chat_id, breaking_card(card, group, urgency, gain),
             keyboard=feedback_keyboard([(card, group, urgency, category)]),
             silent=False)
     remember_sent(conn, chat_id, group, card, rating, section_of(main), index)

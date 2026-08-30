@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Второй слой дедупликации: одно ли это событие — решает модель.
+"""Второй слой дедупликации: что нового в этой новости — решает модель.
 
 Первый слой — слова (`textutil.sim_sets`). У пересказа одной новости общих
 слов много, и порог `similarity` сводит такие заметки в один кластер. Этого
@@ -15,10 +15,30 @@
 вечером в выпуске, ночью — срочным.
 
 Поэтому спорную зону — совпадение ниже `similarity`, но не ниже `dup_gray` —
-разбирает модель. Вопрос ей задаётся ровно один: это одно и то же событие?
-Не «похожи ли тексты», а «узнает ли читатель из второй заметки то, чего не
-было в первой». Причина смерти, число жертв, реакция властей, решение суда —
-это уже следующая новость, и приходить она должна.
+разбирает модель. Вопрос ей задаётся один, и задан он не про тексты и даже не
+про событие, а про читателя: ЧТО НОВОГО он узнает из второй заметки, если
+первую уже видел. Ответ — одно слово (`llm.SAME`, `LESS`, `MORE`, `NEXT`,
+`OTHER`) и, если новое есть, короткая фраза, что именно.
+
+Вопрос был другим — «одно ли это событие?» — и на такой формулировке бот
+дважды за вечер прислал одно крушение:
+
+    15:14  «У берегов Северного Кипра перевернулась лодка с 270 людьми.
+            Спасательная операция продолжается, 159 пассажиров уже найдены»
+    17:08  «Паром с 260 пассажирами затонул у берегов Северного Кипра»
+
+Формально вторая заметка — «другое»: лодка стала паромом, перевернулась
+стала затонула, 270 стало 260. По сути читателю не сообщили ничего: те же
+источники другими словами, и даже спасённых у него отняли. Такой пересказ
+приходит всегда — одно крушение попадает в пять лент за час, — и отличается
+он от продолжения не набором слов, а тем, прибавилось ли знание. Поэтому
+`LESS` («то же событие, но знает МЕНЬШЕ») стоит в шкале рядом с прямым
+повтором и снимается так же, а `MORE` («тот же счётчик, но сдвинувшийся»)
+идёт к читателю: «найдено 200 из 270» — это новость, ради которой всё и
+затевалось.
+
+Причина смерти, число жертв, реакция властей, решение суда — это `NEXT`,
+следующая новость сюжета, и приходить она должна.
 
 Порог `dup_gray` низкий (0.05 — практически «есть хоть одно общее слово»),
 иначе случай выше в него не попадает. Спорных пар при таком пороге много,
@@ -39,8 +59,8 @@
 
 Найденное применяется по-разному, и это важно:
 
-    * совпало с ИСТОРИЕЙ — кандидат выбрасывается сразу: читатель это уже
-      видел, второй раз показывать нечего;
+    * совпало с ИСТОРИЕЙ (`SAME` или `LESS`) — кандидат выбрасывается сразу:
+      читатель это уже видел, и видел подробнее;
     * совпали два кандидата ОДНОГО РАЗДЕЛА — они склеиваются в один кластер
       (`fuse`). Ничего не выбрасывается: карточку пишет модель по материалам
       кластера, и после склейки в неё идут обе заметки сразу. Читатель получает
@@ -59,6 +79,14 @@
 ниже оценка, а у той, что с оценкой, — три строки текста. Склейка снимает
 и то, и другое разом.
 
+Срочному этого мало. Выпуск — список, и лишняя карточка в нём стоит строчки;
+срочное приходит отдельным сообщением и со звуком. Поэтому там планка на
+ступень выше: `MORE`, в котором модель не смогла НАЗВАТЬ новое, звонком не
+становится (`thin`) — но и не пропадает, а ждёт очередного выпуска, где его
+рассудят по общей мерке. А то, что уходит, несёт названное с собой: карточка
+срочного начинается со строки «что нового» (`render.breaking_card`), чтобы
+читателю не пришлось искать отличие самому, сличая два сообщения.
+
 Модель недоступна или выключена (`ND_DUP_LLM=0`) — работает первый слой,
 ровно как работал раньше.
 """
@@ -70,7 +98,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from .config import CFG, log, now_iso
-from .llm import LLMError, Verdict, judge_duplicates, llm_cost
+from .llm import LESS, LLMError, MORE, Verdict, judge_duplicates, llm_cost
 from .rank import primary_of, story
 from .textutil import sim_sets
 
@@ -123,10 +151,42 @@ def weigh(a: set, b: set, weights: dict) -> float:
     return sum(weights.get(word, 1.0) for word in a & b)
 
 
+def moved(tokens: set, seen: set) -> bool:
+    """Есть ли у кандидата число, которого читатель ещё не видел.
+
+    Нужно это в одном месте — там, где слова УЖЕ сказали «повтор». Обычно они
+    правы, и спрашивать не о чем. Но у развивающегося события пересказ и
+    продолжение написаны почти одними словами:
+
+        «У берегов Кипра перевернулась лодка с 270 людьми, 159 найдены»
+        «У берегов Кипра найдены 200 из 270 пассажиров лодки»
+
+    Совпадение 0.56 при пороге 0.32 — первый слой снимает вторую заметку молча,
+    и «нашли ещё сорок человек» читателю не приходит. А ведь ровно за этим он и
+    следит.
+
+    Отличить одно от другого дёшево: в развивающемся событии двигается
+    СЧЁТЧИК. Новое число — повод задать один вопрос модели, и только его:
+    решает всё равно она, а этот повод лишь бережёт вопросы от того, чтобы
+    задавать их про каждый пересказ подряд.
+    """
+    return any(word.isdigit() and word not in seen for word in tokens)
+
+
+def update_of(verdict) -> bool:
+    """То же событие, но счётчик сдвинулся, и модель СКАЗАЛА, на сколько.
+
+    Пустое поле при `MORE` — не новость: промпт велит в сомнениях выбирать
+    `MORE`, значит, пустота и есть сомнение. Там, где заметку уже сняли слова,
+    сомнения мало: вернуть её в выпуск может только названный факт.
+    """
+    return verdict.kind == MORE and bool(verdict.gain)
+
+
 # --------------------------------------------------------------- кэш вердиктов
 #: Ответа про пару не было — ни в кэше, ни от модели. Ведём себя как до всей
 #: проверки: событие считаем новым, сюжета не знаем.
-UNKNOWN = Verdict(False, False)
+UNKNOWN = Verdict(False, False, "", "")
 
 
 def cached(conn, keys) -> dict:
@@ -137,22 +197,25 @@ def cached(conn, keys) -> dict:
         part = keys[start:start + 400]
         marks = ",".join("?" * len(part))
         for row in conn.execute(
-                "SELECT pair, same, follows FROM dupes WHERE pair IN (%s)" % marks,
-                part):
-            out[row["pair"]] = Verdict(bool(row["same"]), bool(row["follows"]))
+                "SELECT pair, same, follows, kind, gain FROM dupes "
+                "WHERE pair IN (%s)" % marks, part):
+            out[row["pair"]] = Verdict(bool(row["same"]), bool(row["follows"]),
+                                       row["kind"] or "", row["gain"] or "")
     return out
 
 
 def remember(conn, verdicts) -> None:
     """Кладёт ответы модели в кэш: за тот же вопрос второй раз не платим."""
-    rows = [(key, 1 if v.same else 0, 1 if v.follows else 0, now_iso())
-            for key, v in verdicts]
+    rows = [(key, 1 if v.same else 0, 1 if v.follows else 0,
+             v.kind, v.gain, now_iso()) for key, v in verdicts]
     if not rows:
         return
     conn.executemany(
-        "INSERT INTO dupes(pair, same, follows, at) VALUES (?,?,?,?) "
+        "INSERT INTO dupes(pair, same, follows, kind, gain, at) "
+        "VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(pair) DO UPDATE SET same=excluded.same, "
-        "follows=excluded.follows, at=excluded.at", rows)
+        "follows=excluded.follows, kind=excluded.kind, gain=excluded.gain, "
+        "at=excluded.at", rows)
     conn.commit()
 
 
@@ -204,9 +267,11 @@ def ask(conn, questions):
 
     remember(conn, fresh.items())
     known.update(fresh)
-    log.info("Дубли: спрошено пар %d, из них повторов %d, продолжений %d%s",
+    log.info("Дубли: спрошено пар %d, из них повторов %d "
+             "(в том числе пересказов короче %d), продолжений %d%s",
              len(pending) - lost,
              sum(1 for v in fresh.values() if v.same),
+             sum(1 for v in fresh.values() if v.kind == LESS),
              sum(1 for v in fresh.values() if v.follows),
              "" if not lost else ", про %d ответа не пришло" % lost)
     return known, cost
@@ -309,7 +374,8 @@ def top_of(shortlists) -> list:
 
 
 def prune(conn, index, shortlists) -> float:
-    """Разбирает кандидатов выпуска: виденное убирает, одинаковое склеивает.
+    """Разбирает кандидатов выпуска: виденное убирает, одинаковое склеивает,
+    обновившееся возвращает.
 
     Правит списки кандидатов на месте, возвращает стоимость запроса. Зовётся
     один раз на выпуск — после того, как разделы набрали кандидатов, и до
@@ -328,19 +394,26 @@ def prune(conn, index, shortlists) -> float:
     tokens = {id(group): words_of(group) for group in flat}
     weights = idf(list(tokens.values()) + index.words)
 
-    # 1. против истории. Совпало по словам — выбрасываем без вопросов; попало
-    # в спорную зону и было на днях — спросим модель
-    seen_keys, seen_sig = {}, {}
+    # 1. против истории. Совпало по словам — выбрасываем; попало в спорную зону
+    # и было на днях — спросим модель. Спрашиваем и про один вид повторов: тот,
+    # где у кандидата появилось новое число (`moved`). Такой снят заранее и
+    # вернётся, только если модель назовёт, что в нём нового
+    seen_keys, seen_sig, repeats = {}, {}, set()
     for group in flat:
         score, sig, text, at = index.near(group)
+        recent = enabled() and at >= since
         if score >= CFG["similarity"]:
             doubles.add(id(group))
-        elif enabled() and gray(score) and at >= since:
-            key = pair_key(sig, primary_of(group)["sig"])
-            seen_keys.setdefault(key, []).append(group)
-            seen_sig[key] = sig
-            questions.append((NOW, weigh(tokens[id(group)], set(sig.split()), weights),
-                              question(key, text, group)))
+            if not (recent and moved(tokens[id(group)], set(sig.split()))):
+                continue
+            repeats.add(id(group))
+        elif not (recent and gray(score)):
+            continue
+        key = pair_key(sig, primary_of(group)["sig"])
+        seen_keys.setdefault(key, []).append(group)
+        seen_sig[key] = sig
+        questions.append((NOW, weigh(tokens[id(group)], set(sig.split()), weights),
+                          question(key, text, group)))
 
     # 2. кандидаты между собой. Внутри раздела их уже развела кластеризация,
     # так что сюда доходит спорная зона — и разные разделы, где одно событие
@@ -373,11 +446,15 @@ def prune(conn, index, shortlists) -> float:
             if verdict.same:
                 doubles.update(id(group) for group in groups)
             elif verdict.follows:
-                # событие другое, а сюжет тот же: читателю это не повтор, а
-                # продолжение — и знать, с чего оно началось, ему полезно
+                # событие другое (или то же, но со сдвинувшимся счётчиком): для
+                # читателя это не повтор, а продолжение — и знать, с чего оно
+                # началось, ему полезно
                 prior = index.hash_of(seen_sig.get(key, ""))
                 for group in groups:
-                    index.follow(group, prior)
+                    if id(group) in repeats and not update_of(verdict):
+                        continue     # снят словами, вернуть его нечем
+                    doubles.discard(id(group))
+                    index.follow(group, prior, verdict.gain)
 
         # сначала склейки внутри разделов: после них у кластера может смениться
         # лицо, а связывать разделы надо уже по новому
@@ -402,12 +479,29 @@ def prune(conn, index, shortlists) -> float:
     for at, (topic, groups) in enumerate(shortlists):
         shortlists[at] = (topic, [g for g in groups if id(g) not in gone])
     if doubles:
-        log.info("Дедупликация: снято кандидатов %d — читатель это уже видел",
-                 len(doubles))
+        log.info("Дедупликация: снято кандидатов %d — читатель это уже видел, "
+                 "и знает не меньше", len(doubles))
     if fused:
         log.info("Дедупликация: склеено кандидатов %d — событие одно, "
                  "карточка будет одна и подробнее", len(fused))
     return cost
+
+
+def thin(verdict) -> bool:
+    """Событие то же, а нового модель назвать не смогла.
+
+    `MORE` — это «то же событие, но вторая знает больше», и что именно —
+    модель обязана сказать в `gain`. Пустое поле при `MORE` значит ровно одно:
+    сказать нечего, а слово выбрано из вежливости (промпт прямо велит в
+    сомнениях выбирать `MORE`, и это правильно для выпуска).
+
+    Выпуску такой строгости не надо: там лишняя карточка стоит строчки. Срочное
+    — другое дело: оно приходит отдельным сообщением и со звуком, и «то же
+    самое, но чуть иначе» второй раз за вечер — ровно то, за что бота
+    выключают. `ND_DUP_BREAKING_GAIN=0` возвращает прежнее поведение.
+    """
+    return (bool(CFG["dup_breaking_gain"])
+            and verdict.kind == MORE and not update_of(verdict))
 
 
 def confirm_new(conn, index, groups):
@@ -416,6 +510,10 @@ def confirm_new(conn, index, groups):
     Кандидатов здесь единицы, зато цена ошибки выше: срочное приходит
     отдельным сообщением и со звуком, и повторить им вечерний выпуск — худшее,
     что бот может сделать.
+
+    Поэтому планка здесь выше на одну ступень. Выпуску довольно, чтобы событие
+    было не тем же самым; срочному нужно, чтобы в нём было НАЗВАННОЕ новое —
+    см. `thin`.
     """
     if not groups:
         return groups, 0.0
@@ -445,11 +543,23 @@ def confirm_new(conn, index, groups):
     for group, key in fresh:
         verdict = verdicts.get(key, UNKNOWN) if key else UNKNOWN
         if verdict.same:
+            # `mark` закрывает событие и для планового выпуска: показывать в
+            # нём то, что уже было, незачем — ни целиком, ни в урезанном виде
             index.mark(primary_of(group)["sig"])
-            log.info("Срочное отменено, это уже уходило: %s",
+            log.info("Срочное отменено (%s): %s",
+                     "пересказ короче уже показанного" if verdict.kind == LESS
+                     else "это уже уходило",
+                     primary_of(group)["title"][:70])
+            continue
+        if thin(verdict):
+            # а здесь отменяется только звонок. Событие не закрыто: в плановом
+            # выпуске такая новость остаётся, и решает про неё `prune` — по
+            # своей, более мягкой мерке. Строгость срочного касается срочного
+            log.info("Срочное отменено (нового не названо): %s",
                      primary_of(group)["title"][:70])
             continue
         if verdict.follows:
-            index.follow(group, index.hash_of(seen_sig.get(key, "")))
+            index.follow(group, index.hash_of(seen_sig.get(key, "")),
+                         verdict.gain)
         out.append(group)
     return out, cost

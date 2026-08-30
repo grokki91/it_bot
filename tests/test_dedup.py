@@ -27,6 +27,16 @@ logging.getLogger("nd").propagate = False
 
 CHAT = "77"
 
+#: то самое крушение: 15:14 и 17:08 одного вечера, оба — срочным. Вторая
+#: заметка знает о событии МЕНЬШЕ первой: лодка стала паромом, 270 стало 260,
+#: а про 159 спасённых в ней нет ни слова
+BOAT = ("У берегов Северного Кипра перевернулась лодка с 270 людьми. "
+        "Спасательная операция продолжается, 159 пассажиров уже найдены")
+FERRY = ("Паром с 260 пассажирами затонул у берегов Северного Кипра. "
+         "На борту находилось более 260 человек")
+RESCUE = ("У берегов Северного Кипра найдены 200 из 270 пассажиров лодки. "
+          "Спасательная операция продолжается вторые сутки")
+
 DEATH = "Тим Карри, звезда «Шоу ужасов Рокки Хоррора», умер в 80 лет"
 TRIBUTE = "Коллеги, включая Кэрол Бернетт и Люка Эванса, прощаются с Тимом Карри"
 CAUSE = "Названа причина смерти Тима Карри"
@@ -56,15 +66,29 @@ class DedupCase(unittest.TestCase):
         """Подменить модель: она отвечает `same` про каждую пару."""
         self.answers(lambda _a, _b: same, follows)
 
+    def says(self, kind, gain=""):
+        """То же, но словом самой модели: llm.SAME, LESS, MORE, NEXT, OTHER.
+
+        Вердикт из слова собирается тем же `llm.verdict_of`, что и на живом
+        ответе: тест едет по той же дороге, а не по её описанию.
+        """
+        self.answers(lambda _a, _b: (kind, gain))
+
     def answers(self, decide, follows=False):
         """То же, но ответ зависит от пары: decide(что видел, что просится).
 
-        `follows` — второе поле вердикта: события разные, но сюжет один.
-        Спрашивается тем же запросом, поэтому и подменяется тем же фейком.
+        Вернуть можно и «да/нет» (тогда `follows` говорит, продолжение ли
+        это), и слово модели, и пару (слово, что нового).
         """
         def verdict(a, b):
-            same = bool(decide(a, b))
-            return llm.Verdict(same, not same and bool(follows))
+            out = decide(a, b)
+            if isinstance(out, tuple):
+                return llm.verdict_of(*out)
+            if isinstance(out, str):
+                return llm.verdict_of(out)
+            if out:
+                return llm.verdict_of(llm.SAME)
+            return llm.verdict_of(llm.NEXT if follows else llm.OTHER)
 
         def fake(pairs):
             self.asked.append(list(pairs))
@@ -480,6 +504,260 @@ class TestConfirmNew(DedupCase):
         self.assertEqual(dedup.confirm_new(self.conn, self.index(), []), ([], 0.0))
 
 
+class TestShrunkRetelling(DedupCase):
+    """Пересказ, который знает МЕНЬШЕ уже показанного.
+
+    Ровно случай с Кипром: в 15:14 читателю пришло «перевернулась лодка с 270,
+    159 найдены», в 17:08 — «паром с 260 пассажирами затонул». Формально
+    событие «другое»: другое судно, другой глагол, другое число. По сути ему
+    не сообщили ничего и вдобавок отняли спасённых.
+    """
+
+    def test_a_poorer_retelling_is_dropped(self):
+        self.says(llm.LESS)
+        self.send(BOAT, "reuters-world")
+        shortlists = [("world", [self.group(FERRY, "rbc")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [])
+
+    def test_a_moved_counter_goes_through(self):
+        """А «найдено 200 из 270» — это новость, и прийти она должна."""
+        self.says(llm.MORE, "найдено 200 из 270")
+        self.send(BOAT, "reuters-world")
+        shortlists = [("world", [self.group(RESCUE, "aljazeera")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+
+    def test_the_update_remembers_what_it_adds(self):
+        """Найденное новое доезжает до показа: без него читателю пришлось бы
+        искать отличие самому, сличая два сообщения."""
+        self.says(llm.MORE, "найдено 200 из 270")
+        self.send(BOAT, "reuters-world")
+        index, group = self.index(), self.group(RESCUE, "aljazeera")
+        dedup.prune(self.conn, index, [("world", [group])])
+        head = rank.primary_of(group)["url_hash"]
+        self.assertTrue(index.prior_of(head))
+        self.assertEqual(index.gain_of(head), "найдено 200 из 270")
+
+    def test_a_continuation_has_nothing_to_add(self):
+        """У продолжения сюжета новость своя: дополнять ему нечего, и строки
+        «что нового» под ним быть не должно."""
+        self.says(llm.NEXT, "причина смерти")
+        self.send(DEATH, "hollywoodreporter")
+        index, group = self.index(), self.group(CAUSE, "deadline")
+        dedup.prune(self.conn, index, [("cinema", [group])])
+        head = rank.primary_of(group)["url_hash"]
+        self.assertTrue(index.prior_of(head))
+        self.assertEqual(index.gain_of(head), "")
+
+    def test_the_whole_answer_is_cached(self):
+        """В кэше лежит само слово модели, а не выжимка из него: иначе второй
+        выпуск не отличил бы урезанный пересказ от прямого повтора."""
+        self.says(llm.LESS)
+        self.send(BOAT, "reuters-world")
+        dedup.prune(self.conn, self.index(),
+                    [("world", [self.group(FERRY, "rbc")])])
+        row = self.conn.execute("SELECT * FROM dupes").fetchone()
+        self.assertEqual(row["kind"], llm.LESS)
+        self.assertEqual((row["same"], row["follows"]), (1, 0))
+
+    def test_an_unknown_word_is_treated_as_silence(self):
+        """Модель ответила не по шкале — ведём себя как при обрыве связи:
+        новость идёт в выпуск, а не пропадает."""
+        self.says("возможно")
+        self.send(BOAT, "reuters-world")
+        shortlists = [("world", [self.group(FERRY, "rbc")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+
+
+class TestMovedCounter(DedupCase):
+    """Повтор, у которого сдвинулся счётчик.
+
+    Обратная беда, и она страшнее. «У берегов Кипра найдены 200 из 270
+    пассажиров» совпадает с вечерним «перевернулась лодка с 270 людьми, 159
+    найдены» на 0.56 при пороге 0.32 — первый слой снимает такую заметку
+    молча, и «нашли ещё сорок человек» до читателя не доходит вовсе. А следит
+    он именно за этим.
+    """
+
+    def issue(self, title, source="aljazeera"):
+        """История, индекс и выпуск с одним кандидатом — в правильном порядке."""
+        self.send(BOAT, "reuters-world")
+        index, group = self.index(), self.group(title, source)
+        return index, group, [("world", [group])]
+
+    def test_a_repeat_with_a_new_number_is_asked_about(self):
+        self.says(llm.MORE, "найдено 200 из 270")
+        _index, _group, shortlists = self.issue(RESCUE)
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(self.asked), 1)
+
+    def test_the_moved_counter_returns_to_the_issue(self):
+        self.says(llm.MORE, "найдено 200 из 270")
+        index, group, shortlists = self.issue(RESCUE)
+        dedup.prune(self.conn, index, shortlists)
+        self.assertEqual(shortlists[0][1], [group])
+        self.assertEqual(index.gain_of(rank.primary_of(group)["url_hash"]),
+                         "найдено 200 из 270")
+
+    def test_an_unnamed_update_stays_out(self):
+        """Слова уже сказали «повтор». Вернуть заметку может только названный
+        факт, а не «кажется, тут что-то новое»."""
+        self.says(llm.MORE, "")
+        _index, _group, shortlists = self.issue(RESCUE)
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [])
+
+    def test_the_same_number_told_again_stays_out(self):
+        """Другая оценка того же — не сдвиг счётчика, а тот же счётчик."""
+        self.says(llm.LESS)
+        _index, _group, shortlists = self.issue(RESCUE)
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [])
+
+    def test_a_repeat_without_numbers_costs_nothing(self):
+        """Пересказ без единого нового числа — обычный повтор: его снимает
+        первый слой, и вопроса модели он не стоит."""
+        self.send(DEATH, "hollywoodreporter")
+        shortlists = [("cinema", [self.group(DEATH.replace("умер", "скончался"),
+                                             "variety")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [])
+        self.assertEqual(self.asked, [])
+
+    def test_silence_leaves_the_repeat_where_it_was(self):
+        """Модель не ответила — ведём себя как первый слой: повтор снят.
+
+        Здесь молчание толкуется наоборот, чем в спорной зоне, и это нарочно:
+        там слова сомневаются и новость идёт в выпуск, здесь слова уже сказали
+        «повтор», и без ответа модели решение остаётся за ними.
+        """
+        def fail(pairs):
+            raise LLMError("нет связи")
+        dedup.judge_duplicates = fail
+        _index, _group, shortlists = self.issue(RESCUE)
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(shortlists[0][1], [])
+
+    def test_an_old_repeat_is_not_reopened(self):
+        """Через неделю это уже не «сдвинулся счётчик», а возвращение к теме."""
+        CFG["dup_window_h"] = 1
+        self.send(BOAT, "reuters-world", days_ago=3)
+        shortlists = [("world", [self.group(RESCUE, "aljazeera")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(self.asked, [])
+
+
+class TestMoved(unittest.TestCase):
+    """Дешёвый повод спросить: появилось ли у кандидата новое число."""
+
+    def words(self, text):
+        return set(textutil.signature(text).split())
+
+    def test_a_new_number_counts(self):
+        self.assertTrue(self.moved(RESCUE, BOAT))
+
+    def test_the_same_numbers_do_not(self):
+        self.assertFalse(self.moved("Найдены 159 из 270 пассажиров",
+                                    "Лодка с 270 людьми, 159 найдены"))
+
+    def test_words_alone_are_not_a_counter(self):
+        self.assertFalse(self.moved("Спасательная операция продолжается",
+                                    "Лодка с 270 людьми, 159 найдены"))
+
+    def moved(self, new, seen):
+        return dedup.moved(self.words(new), self.words(seen))
+
+
+class TestBreakingNeedsSomethingNew(DedupCase):
+    """Планка срочного на ступень выше: мало, чтобы событие было «не то же».
+
+    Выпуск — список, и лишняя карточка в нём стоит строчки. Срочное приходит
+    отдельным сообщением и со звуком, поэтому «то же самое, но чуть иначе»
+    второй раз за вечер там недопустимо.
+    """
+
+    def candidate(self, title=FERRY, source="rbc"):
+        """История и кандидат к ней. Историю наполняем ПЕРВОЙ: индекс читает
+        её в момент создания, и построенный раньше времени пуст."""
+        self.send(BOAT, "reuters-world")
+        return self.index(), [self.group(title, source)]
+
+    def test_an_update_without_a_named_fact_does_not_wake_anyone(self):
+        """Модель выбрала «есть новое», а назвать его не смогла. Промпт велит
+        в сомнениях выбирать more — значит, пустое поле и есть сомнение."""
+        self.says(llm.MORE, "")
+        index, groups = self.candidate()
+        fresh, _cost = dedup.confirm_new(self.conn, index, groups)
+        self.assertEqual(fresh, [])
+
+    def test_a_named_fact_breaks_through(self):
+        """А названное новое будит: за этим срочное и нужно."""
+        self.says(llm.MORE, "найдено 200 из 270")
+        self.send(BOAT, "reuters-world")
+        index = self.index()
+        group = self.group("Спасатели у Кипра подняли на борт ещё 41 человека",
+                           "aljazeera")
+        fresh, _cost = dedup.confirm_new(self.conn, index, [group])
+        self.assertEqual(fresh, [group])
+        self.assertEqual(index.gain_of(rank.primary_of(group)["url_hash"]),
+                         "найдено 200 из 270")
+
+    def test_a_shrunk_retelling_never_breaks(self):
+        self.says(llm.LESS)
+        index, groups = self.candidate()
+        fresh, _cost = dedup.confirm_new(self.conn, index, groups)
+        self.assertEqual(fresh, [])
+
+    def test_a_cancelled_candidate_does_not_return_in_the_issue(self):
+        """Событие закрыто целиком: показывать в выпуске то, что уже было,
+        незачем — ни целиком, ни в урезанном виде."""
+        self.says(llm.LESS)
+        index, groups = self.candidate()
+        dedup.confirm_new(self.conn, index, groups)
+        self.assertTrue(index.seen(groups[0], CFG["similarity"]))
+
+    def test_only_the_call_is_cancelled_not_the_event(self):
+        """Отменяется звонок, а не новость: строгость срочного касается
+        срочного. В плановом выпуске эту заметку рассудит `prune` — по своей,
+        более мягкой мерке.
+        """
+        self.says(llm.MORE, "")
+        index, groups = self.candidate()
+        dedup.confirm_new(self.conn, index, groups)
+        self.assertFalse(index.seen(groups[0], CFG["similarity"]))
+
+    def test_a_word_for_word_repeat_is_not_even_asked_about(self):
+        """Граница нарочная. В выпуске повтор со сдвинувшимся счётчиком
+        переспрашивается у модели (`moved`), в срочном — нет: там слово первого
+        слоя окончательное. Разбудить человека ради того, что он уже читал,
+        хуже, чем показать это же строчкой в очередном выпуске, — куда такая
+        новость и попадёт.
+        """
+        self.says(llm.MORE, "найдено 200 из 270")
+        index, groups = self.candidate(RESCUE, "aljazeera")
+        fresh, _cost = dedup.confirm_new(self.conn, index, groups)
+        self.assertEqual(fresh, [])
+        self.assertEqual(self.asked, [])
+
+    def test_the_issue_is_not_that_strict(self):
+        """В выпуске тот же вердикт новость не снимает: там она стоит строчки,
+        а не звонка среди ночи."""
+        self.says(llm.MORE, "")
+        self.send(BOAT, "reuters-world")
+        shortlists = [("world", [self.group(FERRY, "rbc")])]
+        dedup.prune(self.conn, self.index(), shortlists)
+        self.assertEqual(len(shortlists[0][1]), 1)
+
+    def test_switch_off_restores_the_old_behaviour(self):
+        CFG["dup_breaking_gain"] = False
+        self.says(llm.MORE, "")
+        index, groups = self.candidate()
+        fresh, _cost = dedup.confirm_new(self.conn, index, groups)
+        self.assertEqual(len(fresh), 1)
+
+
 class TestSentIndex(DedupCase):
     """Что `near` находит там, где `seen` уже не смотрит."""
 
@@ -564,6 +842,24 @@ class TestBreakingEndToEnd(DedupCase):
         self.hot(CAUSE)
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
         self.assertEqual(len(self.posted), 1)
+
+    def test_the_evening_wreck_does_not_come_back_two_hours_later(self):
+        """Тот вечер целиком: в 15:14 ушло «перевернулась лодка с 270, 159
+        найдены», в 17:08 те же события пришли из других лент и короче."""
+        self.says(llm.LESS)
+        self.send(BOAT, "reuters-world")
+        self.hot(FERRY)
+        self.assertEqual(breaking.check(chat_id=CHAT), 0)
+        self.assertEqual(self.posted, [])
+
+    def test_an_update_says_what_is_new_in_it(self):
+        """А то, что прошло, объясняет читателю разницу само: сличать два
+        сообщения — не его работа."""
+        self.says(llm.MORE, "найдено 200 из 270")
+        self.send(BOAT, "reuters-world")
+        self.hot("Спасатели у Кипра подняли на борт ещё 41 человека")
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertIn("🔁 Новое: найдено 200 из 270", self.posted[0])
 
 
 if __name__ == "__main__":

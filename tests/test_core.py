@@ -309,6 +309,17 @@ class TestRender(unittest.TestCase):
         self.assertIn("<b>Заголовок 0</b>", text)
         self.assertNotIn("📌", text)
 
+    def test_breaking_says_what_is_new_in_it(self):
+        """Событие то же, что читатель уже видел, — и первым делом карточка
+        говорит, чем оно отличается: сличать два сообщения не его работа."""
+        card, group, score, _cat = self.cards(1)[0]
+        text = render.breaking_card(card, group, score, "найдено 200 из 270")
+        self.assertIn("🔁 Новое: найдено 200 из 270", text)
+
+    def test_breaking_without_a_novelty_says_nothing_extra(self):
+        card, group, score, _cat = self.cards(1)[0]
+        self.assertNotIn("🔁", render.breaking_card(card, group, score))
+
     def test_header_names_the_day_and_the_slot(self):
         text = render.fit_blocks(self.blocks(2, 1), 100)[0][0]
         head = text.split("\n")[0]
