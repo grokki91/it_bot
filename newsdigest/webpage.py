@@ -7,12 +7,30 @@
 
 Страница устроена как новостной сайт: слева разделы, в центре лента карточек,
 справа справка о выпуске, популярные источники и темы. Левое меню — это только
-разделы: оно не прокручивается и всегда видно целиком, а если разделов больше,
-чем влезает в экран, список сам переходит на более плотный шаг. Всё служебное
-переехало в шапку: «Избранное» (звёздочка), «Уведомления» (колокольчик) — это
-список рассылок: когда пришла, сколько было новостей и пять главных ссылок, —
-и «Настройки» (человечек) — подписчики и значения настроек, только для
-чтения.
+разделы: оно стоит карточкой, не прокручивается и всегда видно целиком, а если
+разделов больше, чем влезает в экран, список сам переходит на более плотный
+шаг. Всё служебное переехало в шапку: «Избранное» (звёздочка), «Уведомления»
+(колокольчик) — это список рассылок: когда пришла, сколько было новостей и
+пять главных ссылок, — и «Настройки» (человечек) — подписчики и значения
+настроек, только для чтения.
+
+Значок раздела в этом столбце нарисован линией, а не взят эмодзи (ICONS): у
+эмодзи свой цвет, и выбранный пункт от этого переставал читаться — синими в
+нём становились название и число, но не картинка. Линия берёт цвет строки и
+одинаково выглядит в обеих темах. Значок есть у каждого раздела из PROFILES;
+незнакомый — а разделы заводят на ходу — получает метку «прочее».
+
+Под разделами стоит переключатель темы: светлая и тёмная, две кнопки, и
+нажатая подсвечена. Выбор лежит в браузере (`nd.theme`) и переживает закрытие
+вкладки; пока выбора нет, страница идёт за системной настройкой и слушает её
+дальше. Ставит тему крошечный скрипт в самой голове страницы — иначе тёмная
+страница успевала бы мигнуть белым. На телефоне столбца разделов нет, и та же
+кнопка стоит в шапке; на ней нарисовано, куда переключит.
+
+Строка поиска в шапке занимает не всю ширину: ищут раз в сеанс, а место рядом
+нужно постоянно. Позвать её можно с клавиатуры — Ctrl+K (на маке ⌘K) или `/`,
+как в почте и редакторах; о первом написано прямо в строке, и подсказка
+уступает место крестику «очистить», как только начали набирать.
 
 Кнопка «Фильтры» над лентой закрепляет разделы: можно оставить один, можно
 несколько («только наука, спорт и экономика») — и «Главное» покажет новости
@@ -74,8 +92,28 @@ PAGE = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="Дайджест">
 <!-- та же лента для чужой читалки: подписаться можно, не открывая страницу -->
 <link rel="alternate" type="application/rss+xml" title="Дайджест" href="/rss">
+<!-- Тема выбирается до первой отрисовки, иначе тёмная страница успевала бы
+     мигнуть белым. Это единственный скрипт в голове: всё остальное ждёт
+     конца разметки. -->
+<script>
+(function () {
+  var pick = '';
+  try { pick = localStorage.getItem('nd.theme') || ''; } catch (err) { pick = ''; }
+  if (pick !== 'light' && pick !== 'dark') {
+    pick = window.matchMedia
+        && window.matchMedia('(prefers-color-scheme: dark)').matches
+         ? 'dark' : 'light';
+  }
+  document.documentElement.setAttribute('data-theme', pick);
+})();
+</script>
 <style>
+/* Какая тема сейчас, написано в атрибуте data-theme у <html>: его ставит
+   скрипт в голове страницы — по выбору читателя, а если выбора не было, по
+   системной настройке. Поэтому тёмная палитра здесь одна (а не две: на
+   prefers-color-scheme и на выбор руками), и меняется она без перезагрузки. */
 :root {
+  color-scheme: light;
   --bg: #f1f3f7; --card: #ffffff; --ink: #14161b; --dim: #6b7280;
   --line: #e5e7eb; --soft: #f3f5f9; --accent: #2f6fed; --accent-ink: #ffffff;
   --tint: #e8effd; --warn: #b45309; --star: #f5a524;
@@ -83,15 +121,14 @@ PAGE = """<!doctype html>
   --shadow: 0 1px 2px rgba(16, 24, 40, .06);
   --tone-l: 40%; --tone-s: 68%;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101216; --card: #1a1d23; --ink: #e8eaee; --dim: #98a0ac;
-    --line: #272b33; --soft: #22262e; --accent: #5b8dff; --accent-ink: #0c0e12;
-    --tint: #1c2740; --warn: #fbbf24; --star: #fbbf24;
-    --hot: #ff6b6f; --hot-tint: #241417; --hot-ring: rgba(255, 107, 111, .22);
-    --shadow: none;
-    --tone-l: 68%; --tone-s: 62%;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #101216; --card: #1a1d23; --ink: #e8eaee; --dim: #98a0ac;
+  --line: #272b33; --soft: #22262e; --accent: #5b8dff; --accent-ink: #0c0e12;
+  --tint: #1c2740; --warn: #fbbf24; --star: #fbbf24;
+  --hot: #ff6b6f; --hot-tint: #241417; --hot-ring: rgba(255, 107, 111, .22);
+  --shadow: none;
+  --tone-l: 68%; --tone-s: 62%;
 }
 * { box-sizing: border-box; }
 body {
@@ -145,20 +182,32 @@ header {
 }
 .brand {
   display: flex; align-items: center; gap: 8px; font-size: 18px;
-  font-weight: 700; width: 216px; flex: none;
+  font-weight: 700; width: 244px; flex: none;
 }
 .brand span { font-size: 22px; }
 .brand { cursor: pointer; user-select: none; }
 .brand:focus-visible { outline: 2px solid var(--dim); outline-offset: 4px;
                        border-radius: 8px; }
-.search { flex: 1 1 240px; position: relative; min-width: 0; }
+/* Строка поиска не тянется на всю шапку: ищут раз в сеанс, а место рядом с
+   разделами и значками нужно постоянно. Ширины хватает на запрос из трёх-
+   четырёх слов, а подсказка справа говорит, чем строку позвать с клавиатуры,
+   не целясь мышью. */
+.search { flex: 0 1 380px; position: relative; min-width: 0; }
 .search input {
-  background: var(--soft); border-color: transparent; padding-left: 40px;
-  border-radius: 12px;
+  background: var(--soft); border-color: transparent;
+  padding-left: 38px; padding-right: 66px; border-radius: 12px;
 }
 .search .lens {
-  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+  color: var(--dim); pointer-events: none; display: flex;
+}
+.search .lens svg { width: 17px; height: 17px; }
+.search .kbd {
+  position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  font-size: 11.5px; font-weight: 600; line-height: 1.6;
   color: var(--dim); pointer-events: none;
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+  background: var(--card); white-space: nowrap;
 }
 .search .clear {
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
@@ -195,6 +244,10 @@ header {
   display: flex; align-items: center; justify-content: center;
 }
 .icon.on { border-color: var(--accent); color: var(--accent); }
+.icon svg { width: 18px; height: 18px; }
+/* Тема на широком экране переключается в столбце разделов; в шапке кнопка
+   нужна только там, где столбца нет, — на телефоне. */
+#theme { display: none; }
 .icon .badge {
   position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px;
   padding: 0 5px; border-radius: 9px; background: #e5484d; color: #fff;
@@ -203,7 +256,7 @@ header {
 
 /* --------------------------------------------------------------- каркас */
 .shell {
-  display: grid; grid-template-columns: 216px minmax(0, 1fr) 320px; gap: 20px;
+  display: grid; grid-template-columns: 244px minmax(0, 1fr) 320px; gap: 20px;
   max-width: 1460px; margin: 0 auto; padding: 20px; align-items: start;
 }
 .side, .rail { position: sticky; top: 84px; }
@@ -212,10 +265,12 @@ header {
    (см. fitNav) — вместо полосы прокрутки, из-под которой раньше выглядывали
    служебные кнопки. */
 .side {
-  --nav-gap: 2px; --item-pad: 10px 12px; --item-font: 15px; --item-ico: 17px;
-  --item-round: 12px; --foot-pad: 18px;
+  --nav-gap: 2px; --item-pad: 9px 10px; --item-font: 14.5px; --item-ico: 17px;
+  --item-round: 12px; --foot-pad: 16px;
   display: flex; flex-direction: column; overflow: hidden;
   max-height: calc(100vh - 104px);
+  background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+  padding: 12px 10px; box-shadow: var(--shadow);
 }
 .side.d1 { --nav-gap: 2px; --item-pad: 8px 11px; --item-font: 14.5px;
            --item-ico: 16px; --item-round: 11px; --foot-pad: 14px; }
@@ -234,18 +289,41 @@ header {
   flex: none;
 }
 .side.d4 .foot { display: none; }
+/* Тема — под разделами, а не в настройках: это про то, как читателю смотреть,
+   а не про службу бота, и владельцем для этого быть не нужно. Две кнопки, а
+   не одна с переключением: видно не только куда нажать, но и что сейчас. */
+.themes {
+  display: flex; justify-content: center; gap: 8px; flex: none;
+  border-top: 1px solid var(--line);
+  margin-top: var(--foot-pad); padding-top: var(--foot-pad);
+}
+.tgl {
+  width: 34px; height: 34px; border-radius: 50%; flex: none;
+  border: 1px solid var(--line); background: var(--bg); color: var(--dim);
+  display: flex; align-items: center; justify-content: center;
+}
+.tgl svg { width: 17px; height: 17px; }
+.tgl:hover { color: var(--ink); }
+.tgl.on {
+  background: var(--tint); border-color: var(--accent); color: var(--accent);
+}
+.side.d3 .tgl, .side.d4 .tgl { width: 28px; height: 28px; }
+.side.d3 .tgl svg, .side.d4 .tgl svg { width: 15px; height: 15px; }
 /* Крайний случай: разделов столько, что не спасает и самый плотный шаг.
    Прокрутка тут — меньшее зло, чем разделы, срезанные краем экрана. */
 .side.roomy nav { overflow-y: auto; }
 .item {
-  display: flex; align-items: center; gap: 12px; padding: var(--item-pad);
+  display: flex; align-items: center; gap: 10px; padding: var(--item-pad);
   border-radius: var(--item-round); border: 0; background: none; width: 100%;
   text-align: left; font-size: var(--item-font); font-weight: 500;
 }
-.item:hover { background: var(--card); }
+.item:hover { background: var(--soft); }
 .item.on { background: var(--tint); color: var(--accent); font-weight: 600; }
-.item .ico { font-size: var(--item-ico); width: 22px; text-align: center;
-             flex: none; }
+.item .ico {
+  font-size: var(--item-ico); width: 22px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.item .ico svg { width: 1.3em; height: 1.3em; }
 .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; }
 .item .num { color: var(--dim); font-size: 12px; font-weight: 500; }
@@ -319,7 +397,11 @@ header {
 .pick button.on .tick {
   background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
 }
-.pick .ico { font-size: 17px; width: 22px; text-align: center; flex: none; }
+.pick .ico {
+  font-size: 17px; width: 22px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.pick .ico svg { width: 1.3em; height: 1.3em; }
 .pick .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
             white-space: nowrap; }
 .pick .num { color: var(--dim); font-size: 12px; font-weight: 500; }
@@ -588,6 +670,10 @@ body.guest .tabs { display: none; }
   header.finding .search {
     display: block; order: 3; flex-basis: 100%; margin-top: 8px;
   }
+  /* На телефоне подсказка про Ctrl+K врёт: клавиатуры с Ctrl там нет, а место
+     в строке она занимает. Освободившееся место отдаём самому запросу. */
+  .search .kbd { display: none; }
+  .search input { padding-right: 40px; }
   .rubrics { display: flex; }
   header.finding .rubrics { display: none; }
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
@@ -596,8 +682,10 @@ body.guest .tabs { display: none; }
   /* без нижней панели незачем и место под неё */
   body.guest .shell { padding-bottom: 20px; }
   /* «Избранное» на телефоне живёт в нижней панели — в шапке звезда только
-     теснила бы поиск */
+     теснила бы поиск. Место освободилось под тему: столбца разделов, где она
+     стоит на широком экране, здесь нет. */
   #star { display: none; }
+  #theme { display: flex; }
   .tabs { display: flex; }
   .head { flex-wrap: wrap; }
   .head h1 { font-size: 23px; }
@@ -648,21 +736,24 @@ body.guest .tabs { display: none; }
         <span>📡</span> Дайджест
       </div>
       <form class="search" onsubmit="return search(event)">
-        <span class="lens">🔍</span>
+        <span class="lens" id="lens"></span>
         <input type="text" id="q" autocomplete="off" spellcheck="false"
-               placeholder="Поиск по новостям, темам или источникам"
+               placeholder="Поиск по новостям и темам"
                oninput="typed()"
                onkeydown="if (event.key === 'Escape') { hideSearch(); }">
+        <span class="kbd" id="kbd"></span>
         <button type="button" class="clear hide" id="clear"
                 onclick="clearSearch()" title="Очистить">✕</button>
       </form>
       <div class="tools">
         <button class="icon" id="find" onclick="toggleSearch()"
-                title="Поиск">🔍</button>
+                title="Поиск" aria-label="Поиск"></button>
         <button class="icon" id="star" onclick="go('liked')"
                 title="Избранное">⭐</button>
         <button class="icon" id="bell" onclick="go('alerts')"
                 title="Уведомления">🔔</button>
+        <button class="icon" id="theme" onclick="flipTheme()"
+                aria-label="Сменить тему"></button>
         <button class="icon" id="who" onclick="whoTap()"
                 title="Настройки">👤</button>
       </div>
@@ -673,6 +764,14 @@ body.guest .tabs { display: none; }
   <div class="shell">
     <aside class="side">
       <nav id="nav"></nav>
+      <div class="themes" role="group" aria-label="Тема оформления">
+        <button type="button" class="tgl" id="lightTheme"
+                onclick="setTheme('light')" title="Светлая тема"
+                aria-label="Светлая тема"></button>
+        <button type="button" class="tgl" id="darkTheme"
+                onclick="setTheme('dark')" title="Тёмная тема"
+                aria-label="Тёмная тема"></button>
+      </div>
       <div class="foot">© Дайджест<br>Все права защищены</div>
     </aside>
 
@@ -748,6 +847,104 @@ function allowed(view) { return S.admin || view === 'news'; }
 
 var NAMES = { news: 'Главное', saved: 'Сохранённые', liked: 'Избранное',
               alerts: 'Уведомления', tools: 'Настройки' };
+
+/* ------------------------------------------------------------- значки */
+/* Значки разделов рисуем сами, одной линией на общей сетке 24x24. Эмодзи
+   тянут за собой чужой цвет: столбец разделов от них пестрил, а выбранный
+   пункт переставал читаться — синими в нём становились название и число, но
+   не картинка. Линия же берёт цвет строки: серую у обычной, синюю у выбранной,
+   и одинаково выглядит в светлой теме и в тёмной.
+
+   Здесь только внутренности <svg>: рамку добавляет svgIcon(). Незнакомый
+   раздел (их заводят командой на месте) получает метку — ту же, что стоит у
+   раздела «Прочее». */
+var ICON_HEAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+              + 'stroke-width="1.6" stroke-linecap="round" '
+              + 'stroke-linejoin="round" aria-hidden="true" focusable="false">';
+
+var ICONS = {
+  '': '<path d="M3.6 10.7 12 4.2l8.4 6.5"/>'
+    + '<path d="M5.8 9.8V19a1.2 1.2 0 0 0 1.2 1.2h10a1.2 1.2 0 0 0 1.2-1.2V9.8"/>'
+    + '<path d="M9.8 20.2v-5.4h4.4v5.4"/>',
+  politics: '<path d="M12 3.4 20.6 8H3.4z"/>'
+    + '<path d="M6.2 8.6v8.2M10.1 8.6v8.2M13.9 8.6v8.2M17.8 8.6v8.2"/>'
+    + '<path d="M4.6 16.8h14.8"/><path d="M3.4 20.4h17.2"/>',
+  incidents: '<path d="M7.2 20.4h9.6"/>'
+    + '<path d="M8.4 20.4v-6.2a3.6 3.6 0 0 1 7.2 0v6.2"/>'
+    + '<path d="M12 3.6v2.3"/><path d="M6.6 6.2 8.2 7.8"/>'
+    + '<path d="M17.4 6.2 15.8 7.8"/><path d="M4.2 12.4h1.9M17.9 12.4h1.9"/>',
+  science: '<path d="M9.6 3.6v5.6L5.2 17a2.3 2.3 0 0 0 2 3.4h9.6a2.3 2.3 0 0 0 '
+    + '2-3.4l-4.4-7.8V3.6"/><path d="M8.4 3.6h7.2"/><path d="M7.3 14.6h9.4"/>',
+  cybersec: '<path d="M12 3.4 19.2 6v6.1c0 4.1-2.9 7.1-7.2 8.5-4.3-1.4-7.2-4.4'
+    + '-7.2-8.5V6z"/><path d="m9.4 12.2 1.9 1.9 3.5-3.8"/>',
+  cinema: '<rect x="3.4" y="7.4" width="17.2" height="12.4" rx="2.2"/>'
+    + '<path d="M3.4 11.8h17.2"/>'
+    + '<path d="M8.4 7.4 6.2 11.8M13.6 7.4l-2.2 4.4M18.8 7.4l-2.2 4.4"/>',
+  ai: '<rect x="4.4" y="8" width="15.2" height="11.6" rx="3.2"/>'
+    + '<path d="M12 4.6V8"/><circle cx="12" cy="3.4" r="1.1"/>'
+    + '<path d="M9.2 12.4v1.6M14.8 12.4v1.6"/><path d="M9.8 16.6h4.4"/>'
+    + '<path d="M4.4 12.6H2.9M19.6 12.6h1.5"/>',
+  dev: '<path d="M8.8 8.2 4.4 12l4.4 3.8"/><path d="M15.2 8.2 19.6 12l-4.4 3.8"/>'
+    + '<path d="M13.4 5.2 10.6 18.8"/>',
+  hardware: '<rect x="7.4" y="7.4" width="9.2" height="9.2" rx="2"/>'
+    + '<rect x="10.6" y="10.6" width="2.8" height="2.8" rx=".8"/>'
+    + '<path d="M10 4.6v2.8M14 4.6v2.8M10 16.6v2.8M14 16.6v2.8"/>'
+    + '<path d="M4.6 10h2.8M4.6 14h2.8M16.6 10h2.8M16.6 14h2.8"/>',
+  robots: '<path d="M4 20.4h7.6"/><path d="M7.8 20.4v-4.6"/>'
+    + '<circle cx="7.8" cy="14.2" r="1.6"/><path d="M9 13.1 12.9 9.2"/>'
+    + '<circle cx="14.1" cy="8" r="1.6"/><path d="M15.3 6.9 17.4 4.8"/>'
+    + '<path d="M16.2 3.6 20.4 7.8"/>',
+  space: '<path d="M12 3.4c2.8 2.4 4.3 5.6 4.3 9.1l-1.7 3.3H9.4l-1.7-3.3c0-3.5 '
+    + '1.5-6.7 4.3-9.1z"/><circle cx="12" cy="10.2" r="1.9"/>'
+    + '<path d="M9.4 15.8 6.8 18.4l.6-4.2"/><path d="m14.6 15.8 2.6 2.6-.6-4.2"/>'
+    + '<path d="M10.6 18.6 12 21.2l1.4-2.6"/>',
+  climate: '<circle cx="12" cy="12" r="8.4"/><path d="M3.7 12h16.6"/>'
+    + '<path d="M12 3.6c2.2 2.3 3.4 5.2 3.4 8.4s-1.2 6.1-3.4 8.4c-2.2-2.3-3.4'
+    + '-5.2-3.4-8.4S9.8 5.9 12 3.6z"/>',
+  medicine: '<path d="M6.2 3.6v4.9a4.1 4.1 0 0 0 8.2 0V3.6"/>'
+    + '<path d="M4.9 3.6h2.6M13.1 3.6h2.6"/>'
+    + '<path d="M10.3 12.6v2.3a4.2 4.2 0 0 0 8.4 0v-1.5"/>'
+    + '<circle cx="18.7" cy="11.3" r="2"/>',
+  health: '<path d="M12 20.2C9.5 18.5 4.2 15 4.2 10.6a3.9 3.9 0 0 1 7.8-1.5 3.9 '
+    + '3.9 0 0 1 7.8 1.5c0 4.4-5.3 7.9-7.8 9.6z"/>'
+    + '<path d="M6.2 12.2h2.9l1.4-2.4 1.9 4.2 1.3-1.8h4.1"/>',
+  economy: '<circle cx="12" cy="12" r="8.4"/>'
+    + '<path d="M14.8 9.4c-.5-1-1.6-1.7-2.9-1.7-1.7 0-2.9 1-2.9 2.3 0 3 5.9 1.6 '
+    + '5.9 4.6 0 1.4-1.3 2.4-3 2.4-1.5 0-2.6-.7-3.1-1.8"/>'
+    + '<path d="M12 6.1v1.6M12 16.6v1.6"/>',
+  sports: '<circle cx="12" cy="12" r="8.4"/>'
+    + '<path d="M12 3.8 8.6 8.5l1.3 4.3h4.2l1.3-4.3z"/>'
+    + '<path d="M4.1 9.8 8.6 8.5M19.9 9.8l-4.5-1.3M7 18.7l2.9-5.9M17 18.7l-2.9-5.9"/>',
+  games: '<path d="M8.8 8.6h6.4a5.2 5.2 0 0 1 5.1 4.3l.5 2.7a2.5 2.5 0 0 1-4.6 '
+    + '1.7l-1.2-2H9l-1.2 2a2.5 2.5 0 0 1-4.6-1.7l.5-2.7a5.2 5.2 0 0 1 5.1-4.3z"/>'
+    + '<path d="M8.6 11.7v2.6M7.3 13h2.6"/>'
+    + '<path d="M15.4 12.2h.01M17.2 14h.01"/>',
+  crypto: '<circle cx="12" cy="12" r="8.4"/><path d="M9.6 7.8v8.4"/>'
+    + '<path d="M9.6 12h3.4a2.1 2.1 0 0 1 0 4.2H9.6"/>'
+    + '<path d="M9.6 7.8h3a2.1 2.1 0 0 1 0 4.2"/>'
+    + '<path d="M11.4 6.1v1.7M13.4 6.1v1.7M11.4 16.2v1.7M13.4 16.2v1.7"/>',
+  custom: '<path d="M12 20.6s6.2-5.4 6.2-9.8a6.2 6.2 0 1 0-12.4 0c0 4.4 6.2 9.8 '
+    + '6.2 9.8z"/><circle cx="12" cy="10.6" r="2.3"/>'
+};
+
+var LENS_ICON = '<circle cx="11" cy="11" r="6.4"/><path d="M20.2 20.2 15.7 15.7"/>';
+
+var SUN_ICON = '<circle cx="12" cy="12" r="4.2"/>'
+             + '<path d="M12 2.8v2.3M12 18.9v2.3M2.8 12h2.3M18.9 12h2.3"/>'
+             + '<path d="m5.5 5.5 1.6 1.6M16.9 16.9l1.6 1.6M18.5 5.5l-1.6 1.6'
+             + 'M7.1 16.9l-1.6 1.6"/>';
+
+var MOON_ICON = '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>';
+
+function svgIcon(body) { return ICON_HEAD + body + '</svg>'; }
+
+/* Значок раздела строкой меню. Разметку берём из своего же набора — снаружи
+   сюда ничего не приходит, кроме идентификатора раздела. */
+function iconNode(id) {
+  var box = el('span', 'ico');
+  box.innerHTML = svgIcon(ICONS[id] || ICONS.custom);
+  return box;
+}
 
 var $ = function (id) { return document.getElementById(id); };
 
@@ -1050,7 +1247,7 @@ function drawNav() {
     /* с фильтрами «Главное» показывает не всё — и число рядом должно быть
        про то, что читатель там увидит */
     var count = !entry.id && S.filters.length ? countPicked() : entry.count;
-    nav.appendChild(navItem(entry.emoji, entry.title, count, on,
+    nav.appendChild(navItem(entry.id, entry.title, count, on,
                             function () { go('news', entry.id); }));
   });
   fitNav();
@@ -1132,10 +1329,10 @@ function centerRubric(box, button) {
   box.scrollLeft = Math.max(0, shift);
 }
 
-function navItem(icon, name, count, on, act) {
+function navItem(id, name, count, on, act) {
   var button = el('button', 'item' + (on ? ' on' : ''));
   button.type = 'button';
-  button.appendChild(el('span', 'ico', icon));
+  button.appendChild(iconNode(id));
   button.appendChild(el('span', 'name', name));
   if (count) { button.appendChild(el('span', 'num', count)); }
   button.onclick = act;
@@ -1246,7 +1443,7 @@ function drawPick() {
     var button = el('button', on ? 'on' : '');
     button.type = 'button';
     button.appendChild(el('span', 'tick', '✓'));
-    button.appendChild(el('span', 'ico', entry.emoji));
+    button.appendChild(iconNode(entry.id));
     button.appendChild(el('span', 'nm', entry.title));
     if (entry.count) { button.appendChild(el('span', 'num', entry.count)); }
     button.onclick = function () { togglePick(entry.id); };
@@ -1607,7 +1804,7 @@ function drawTopicsBox() {
 function find(text) {
   S.q = text;
   $('q').value = text;
-  $('clear').className = 'clear';
+  markQuery();
   S.finding = true;     /* запрос пришёл не из строки — покажем, что ищем */
   go('news', '');
 }
@@ -1640,6 +1837,14 @@ function markSearch() {
   $('find').className = 'icon' + (S.finding ? ' on' : '');
 }
 
+/* Правый угол строки поиска занят по очереди: пусто — подсказка про Ctrl+K,
+   набрано — крестик «очистить». Вместе они бы налезли друг на друга. */
+function markQuery() {
+  var filled = !!$('q').value;
+  $('clear').className = filled ? 'clear' : 'clear hide';
+  $('kbd').className = filled ? 'kbd hide' : 'kbd';
+}
+
 function search(event) {
   event.preventDefault();
   S.q = $('q').value.trim();
@@ -1649,7 +1854,7 @@ function search(event) {
 
 /* Печатают быстрее, чем отвечает база, — ждём паузы в наборе. */
 function typed() {
-  $('clear').className = $('q').value ? 'clear' : 'clear hide';
+  markQuery();
   clearTimeout(S.typing);
   S.typing = setTimeout(function () {
     var value = $('q').value.trim();
@@ -1662,9 +1867,64 @@ function typed() {
 
 function clearSearch() {
   $('q').value = '';
-  $('clear').className = 'clear hide';
+  markQuery();
   S.q = '';
   loadNews(true);
+}
+
+/* ------------------------------------------------------------------ тема */
+/* Светлая или тёмная — выбор читателя, а не настройка бота: он лежит в
+   браузере и никуда не уходит. Пока выбора нет, идём за системой и слушаем
+   её дальше: сменился системный вид — сменился и наш. Сам атрибут ставит
+   скрипт в голове страницы, здесь только его правка руками. */
+var THEME = 'nd.theme';
+
+function theme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark'
+       ? 'dark' : 'light';
+}
+
+function chosenTheme() {
+  try { return localStorage.getItem(THEME) || ''; } catch (err) { return ''; }
+}
+
+function setTheme(name) {
+  var pick = name === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', pick);
+  try { localStorage.setItem(THEME, pick); } catch (err) { }
+  drawTheme();
+}
+
+function flipTheme() { setTheme(theme() === 'dark' ? 'light' : 'dark'); }
+
+/* В столбце разделов стоят обе кнопки, и нажатая подсвечена: видно не только
+   куда нажать, но и что сейчас. В шапке (это телефон, столбца там нет) кнопка
+   одна, и на ней нарисовано, куда переключит, — иначе она читалась бы как
+   «сейчас день», а не «сделать ночь». */
+function drawTheme() {
+  var now = theme();
+  var light = $('lightTheme');
+  var dark = $('darkTheme');
+  light.className = 'tgl' + (now === 'light' ? ' on' : '');
+  dark.className = 'tgl' + (now === 'dark' ? ' on' : '');
+  light.innerHTML = svgIcon(SUN_ICON);
+  dark.innerHTML = svgIcon(MOON_ICON);
+  var head = $('theme');
+  head.innerHTML = svgIcon(now === 'dark' ? SUN_ICON : MOON_ICON);
+  head.title = now === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+}
+
+function watchTheme() {
+  if (!window.matchMedia) { return; }
+  var system = window.matchMedia('(prefers-color-scheme: dark)');
+  var follow = function (event) {
+    if (chosenTheme()) { return; }    /* выбрали руками — система не указ */
+    document.documentElement.setAttribute('data-theme',
+                                          event.matches ? 'dark' : 'light');
+    drawTheme();
+  };
+  if (system.addEventListener) { system.addEventListener('change', follow); }
+  else if (system.addListener) { system.addListener(follow); }
 }
 
 /* ------------------------------------------------------------ уведомления */
@@ -1970,6 +2230,15 @@ document.addEventListener('keydown', function (event) {
     if ($('login').className === 'on') { hideLogin(); }
     return;
   }
+  /* Ctrl+K (на маке ⌘K) — тот же жест, что и в почте, и в редакторах: встать
+     в поиск, откуда бы ни писали. Поэтому он идёт до проверки на «печатают в
+     поле»: из чужого поля позвать поиск тоже надо. */
+  if ((event.ctrlKey || event.metaKey) && !event.altKey &&
+      (event.key === 'k' || event.key === 'K')) {
+    event.preventDefault();
+    showSearch();
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey) { return; }
   if (typing(document.activeElement)) { return; }
 
@@ -1996,6 +2265,17 @@ document.addEventListener('keydown', function (event) {
 
 /* повернули телефон, растянули окно — в три строки помещается уже другое */
 window.addEventListener('resize', markClamped);
+
+/* Значки, которые не меняются от данных: лупа в строке поиска и подсказка
+   про Ctrl+K. На маке тот же жест зовут ⌘K — пишем так, как он выглядит на
+   клавиатуре читателя. */
+var MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform
+                                      || navigator.userAgent || '');
+$('lens').innerHTML = svgIcon(LENS_ICON);
+$('find').innerHTML = svgIcon(LENS_ICON);
+$('kbd').textContent = MAC ? '⌘K' : 'Ctrl K';
+drawTheme();
+watchTheme();
 
 start();
 </script>
