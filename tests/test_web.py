@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -498,6 +499,56 @@ class TestNoCommands(WebCase):
         _code, page = self.ask("/")
         self.assertNotIn("Собрать выпуск", page)
         self.assertNotIn("Собрать новости", page)
+
+
+class TestPageLook(WebCase):
+    """Как страница выглядит: значки разделов, тема и быстрый поиск.
+
+    Проверяем не красоту, а то, что ломается не глядя: заведённый раздел без
+    значка, потерянный переключатель темы, забытый Ctrl+K.
+    """
+
+    def icons(self):
+        """Разделы, для которых на странице нарисован значок."""
+        _code, page = self.ask("/")
+        body = page.split("var ICONS = {", 1)[1].split("\n};", 1)[0]
+        return set(re.findall(r"^  '?([a-z]*)'?:", body, re.M))
+
+    def test_every_section_has_its_own_icon(self):
+        """Раздел без своего значка получает метку «прочее» и становится
+        неотличим от соседа. Разделы живут в profiles, значки — на странице:
+        добавили первое, не добавив второго, — вот это и ловим."""
+        missing = sorted(set(profiles.PROFILES) - self.icons())
+        self.assertEqual(missing, [], "разделы без значка: %s" % missing)
+
+    def test_the_whole_feed_has_an_icon_too(self):
+        """«Главное» стоит в том же столбце и тем же значком не обделено."""
+        self.assertIn("", self.icons())
+
+    def test_section_icons_take_the_colour_of_the_line(self):
+        """Значок раздела рисуется линией, а не берётся эмодзи: у выбранного
+        пункта он синий, у обычного серый, и в тёмной теме тоже."""
+        _code, page = self.ask("/")
+        self.assertIn('stroke="currentColor"', page)
+
+    def test_theme_is_switched_on_the_page(self):
+        _code, page = self.ask("/")
+        self.assertIn("setTheme('light')", page)
+        self.assertIn("setTheme('dark')", page)
+
+    def test_chosen_theme_stays_in_the_browser(self):
+        """Тема — дело читателя: серверу о ней знать нечего, а браузер помнит
+        её и до первой отрисовки, чтобы тёмная страница не мигала белым."""
+        _code, page = self.ask("/")
+        self.assertIn("localStorage.setItem(THEME, pick)", page)
+        self.assertIn("data-theme", page)
+        self.assertNotIn("theme", json.dumps(self.ask("/api/state")[1]))
+
+    def test_search_is_called_from_the_keyboard(self):
+        """Ctrl+K зовёт поиск, и в самой строке об этом написано."""
+        _code, page = self.ask("/")
+        self.assertIn("Ctrl K", page)
+        self.assertIn("event.key === 'k'", page)
 
 
 class TestTools(WebCase):
