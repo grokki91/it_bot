@@ -525,6 +525,28 @@ class TestPageLook(WebCase):
         """«Главное» стоит в том же столбце и тем же значком не обделено."""
         self.assertIn("", self.icons())
 
+    def tool_icons(self):
+        """Значки служебных кнопок — шапки и нижней панели."""
+        _code, page = self.ask("/")
+        body = page.split("var TOOL_ICONS = {", 1)[1].split("\n};", 1)[0]
+        return set(re.findall(r"^  ([a-z]+):", body, re.M))
+
+    def test_service_buttons_are_drawn_from_the_same_set(self):
+        """Нижняя панель зовёт значки по имени: опечатка в имени оставила бы
+        на кнопке метку «прочее», и заметить это можно было бы только глазами."""
+        _code, page = self.ask("/")
+        named = set(re.findall(r"icon: '([a-z]+)'", page))
+        self.assertTrue(named, "нижняя панель осталась без значков")
+        self.assertLessEqual(named, self.tool_icons())
+
+    def test_no_emoji_left_in_the_header(self):
+        """Шапка и нижняя панель — один набор значков: эмодзи рядом с рисунком
+        читается как значок из чужого набора."""
+        _code, page = self.ask("/")
+        head = page.split('<div class="tools">', 1)[1].split("</div>", 1)[0]
+        for emoji in ("\u2b50", "\U0001f514", "\U0001f464", "\U0001f50d"):
+            self.assertNotIn(emoji, head)
+
     def test_section_icons_take_the_colour_of_the_line(self):
         """Значок раздела рисуется линией, а не берётся эмодзи: у выбранного
         пункта он синий, у обычного серый, и в тёмной теме тоже."""

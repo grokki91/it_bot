@@ -20,6 +20,13 @@
 одинаково выглядит в обеих темах. Значок есть у каждого раздела из PROFILES;
 незнакомый — а разделы заводят на ходу — получает метку «прочее».
 
+Тем же набором нарисованы и служебные кнопки (TOOL_ICONS): поиск, избранное,
+уведомления, настройки и вход в шапке, все пять кнопок нижней панели и
+«Фильтры» над лентой. Эмодзи рядом с рисунком читались как значки из двух
+разных наборов, а «Главная» внизу и «Главное» слева — это один экран, и
+значок у них теперь общий. Цветными эмодзи остались только обложки карточек
+и отметки под ними: обложка — замена картинке, а 👍/👎/🔖 — не навигация.
+
 Под разделами стоит переключатель темы: светлая и тёмная, две кнопки, и
 нажатая подсвечена. Выбор лежит в браузере (`nd.theme`) и переживает закрытие
 вкладки; пока выбора нет, страница идёт за системной настройкой и слушает её
@@ -339,7 +346,9 @@ header {
   background: var(--accent); color: var(--accent-ink); border: 0;
   border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 14px;
   white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px;
 }
+.tune svg { width: 16px; height: 16px; }
 /* плашки — это закреплённые фильтры, а не второй список разделов: разделы и
    так стоят слева. Фильтров не выбрано — полосы нет вовсе. Выбрано много —
    лишние уезжают вправо, и край растушёван, чтобы это было видно */
@@ -638,7 +647,8 @@ body.guest .tabs { display: none; }
   color: var(--dim); display: flex; flex-direction: column; align-items: center;
   gap: 3px; position: relative;
 }
-.tabs button b { font-size: 19px; font-weight: 400; line-height: 1; }
+.tabs button .ico { display: flex; }
+.tabs button svg { width: 21px; height: 21px; }
 .tabs button.on { color: var(--accent); }
 .tabs .badge {
   position: absolute; top: 2px; right: 50%; margin-right: -18px; min-width: 16px;
@@ -749,13 +759,13 @@ body.guest .tabs { display: none; }
         <button class="icon" id="find" onclick="toggleSearch()"
                 title="Поиск" aria-label="Поиск"></button>
         <button class="icon" id="star" onclick="go('liked')"
-                title="Избранное">⭐</button>
+                title="Избранное" aria-label="Избранное"></button>
         <button class="icon" id="bell" onclick="go('alerts')"
-                title="Уведомления">🔔</button>
+                title="Уведомления" aria-label="Уведомления"></button>
         <button class="icon" id="theme" onclick="flipTheme()"
                 aria-label="Сменить тему"></button>
         <button class="icon" id="who" onclick="whoTap()"
-                title="Настройки">👤</button>
+                title="Настройки" aria-label="Настройки"></button>
       </div>
     </div>
     <nav class="rubrics" id="rubrics"></nav>
@@ -779,7 +789,7 @@ body.guest .tabs { display: none; }
       <div class="head">
         <h1 id="title">Главное</h1>
         <div class="meta" id="meta"></div>
-        <button class="tune" id="tune" onclick="openFilters()">⚙ Фильтры</button>
+        <button class="tune" id="tune" onclick="openFilters()"></button>
       </div>
       <div class="chips" id="chips"></div>
       <div id="list"></div>
@@ -835,11 +845,11 @@ var S = {
    паролю. Соврать себе `S.admin = true` в консоли можно — увидеть от этого
    нечего: сервер отдаст 401. */
 var TABS = [
-  { id: 'news',   icon: '🏠', name: 'Главная' },
-  { id: 'saved',  icon: '🔖', name: 'Сохранённые', admin: true },
-  { id: 'liked',  icon: '⭐', name: 'Избранное', admin: true },
-  { id: 'alerts', icon: '🔔', name: 'Уведомления', admin: true },
-  { id: 'tools',  icon: '⚙',  name: 'Настройки', admin: true }
+  { id: 'news',   icon: 'home',  name: 'Главная' },
+  { id: 'saved',  icon: 'saved', name: 'Сохранённые', admin: true },
+  { id: 'liked',  icon: 'star',  name: 'Избранное', admin: true },
+  { id: 'alerts', icon: 'bell',  name: 'Уведомления', admin: true },
+  { id: 'tools',  icon: 'tools', name: 'Настройки', admin: true }
 ];
 
 /* Гостю доступна одна лента: остальное — про рассылки и настройки бота. */
@@ -927,14 +937,48 @@ var ICONS = {
     + '6.2 9.8z"/><circle cx="12" cy="10.6" r="2.3"/>'
 };
 
-var LENS_ICON = '<circle cx="11" cy="11" r="6.4"/><path d="M20.2 20.2 15.7 15.7"/>';
+/* Служебные значки — шапки и нижней панели. Набор тот же, что у разделов:
+   эмодзи рядом с рисунком читались как значки из двух разных наборов, а на
+   красном кружке непрочитанного цветной колокольчик и вовсе спорил с цветом.
+   «Главная» в нижней панели берёт значок прямо у «Главного» из столбца
+   разделов — это один и тот же экран. */
+var TOOL_ICONS = {
+  home: ICONS[''],
+  lens: '<circle cx="11" cy="11" r="6.4"/><path d="M20.2 20.2 15.7 15.7"/>',
+  sun: '<circle cx="12" cy="12" r="4.2"/>'
+     + '<path d="M12 2.8v2.3M12 18.9v2.3M2.8 12h2.3M18.9 12h2.3"/>'
+     + '<path d="m5.5 5.5 1.6 1.6M16.9 16.9l1.6 1.6M18.5 5.5l-1.6 1.6'
+     + 'M7.1 16.9l-1.6 1.6"/>',
+  moon: '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>',
+  star: '<path d="M12 3.8 14.5 9l5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 '
+      + '5.7-.8z"/>',
+  bell: '<path d="M6.2 9.8a5.8 5.8 0 0 1 11.6 0c0 5.2 2.3 6.8 2.3 6.8H3.9s2.3'
+      + '-1.6 2.3-6.8z"/><path d="M13.9 19.8a2.1 2.1 0 0 1-3.8 0"/>',
+  saved: '<path d="M6.6 3.8h10.8a1.4 1.4 0 0 1 1.4 1.4v15l-6.8-4.4-6.8 4.4v-15'
+       + 'a1.4 1.4 0 0 1 1.4-1.4z"/>',
+  who: '<path d="M19.4 20.4v-1.9a4.4 4.4 0 0 0-4.4-4.4H9a4.4 4.4 0 0 0-4.4 '
+     + '4.4v1.9"/><circle cx="12" cy="7.6" r="3.8"/>',
+  key: '<circle cx="8.4" cy="15.6" r="4.2"/><path d="M11.4 12.6 20.4 3.6"/>'
+     + '<path d="m16 8 2.8 2.8M18.6 5.4l2.8 2.8"/>',
+  tools: '<circle cx="12" cy="12" r="3.2"/>'
+       + '<path d="M19.1 14.8a1.6 1.6 0 0 0 .3 1.8l.1.1a1.9 1.9 0 1 1-2.7 2.7'
+       + 'l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5v.3a1.9 1.9 0 1 1'
+       + '-3.8 0v-.2a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a1.9 1.9 0 '
+       + '1 1-2.7-2.7l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1h-.3a1.9 '
+       + '1.9 0 1 1 0-3.8h.2a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a'
+       + '1.9 1.9 0 1 1 2.7-2.7l.1.1a1.6 1.6 0 0 0 1.8.3h.1a1.6 1.6 0 0 0 1-1.5'
+       + 'v-.3a1.9 1.9 0 1 1 3.8 0v.2a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3'
+       + 'l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 '
+       + '0 0 1.5 1h.3a1.9 1.9 0 1 1 0 3.8h-.2a1.6 1.6 0 0 0-1.5 1z"/>'
+};
 
-var SUN_ICON = '<circle cx="12" cy="12" r="4.2"/>'
-             + '<path d="M12 2.8v2.3M12 18.9v2.3M2.8 12h2.3M18.9 12h2.3"/>'
-             + '<path d="m5.5 5.5 1.6 1.6M16.9 16.9l1.6 1.6M18.5 5.5l-1.6 1.6'
-             + 'M7.1 16.9l-1.6 1.6"/>';
-
-var MOON_ICON = '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>';
+/* Значок служебной кнопки. Незнакомое имя тут — опечатка в своём же коде, и
+   метка «прочее» на кнопке видна сразу. */
+function toolIcon(name) {
+  var box = el('span', 'ico');
+  box.innerHTML = svgIcon(TOOL_ICONS[name] || ICONS.custom);
+  return box;
+}
 
 function svgIcon(body) { return ICON_HEAD + body + '</svg>'; }
 
@@ -1189,8 +1233,7 @@ function paint() {
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
   drawIcons();
-  $('tune').textContent = S.filters.length
-    ? '⚙ Фильтры · ' + S.filters.length : '⚙ Фильтры';
+  drawTune();
   markSearch();
   drawMeta();
   drawNav();
@@ -1199,6 +1242,16 @@ function paint() {
   drawTabs();
   if (S.view === 'alerts') { drawAlerts(); }
   if (S.view === 'tools') { drawPanel(); }
+}
+
+/* Кнопка «Фильтры»: тот же значок, что у «Настроек» внизу, — раньше на обеих
+   стояла одна и та же шестерёнка эмодзи, и разными им становиться незачем. */
+function drawTune() {
+  var button = $('tune');
+  button.innerHTML = '';
+  button.appendChild(toolIcon('tools'));
+  button.appendChild(el('span', null, S.filters.length
+    ? 'Фильтры · ' + S.filters.length : 'Фильтры'));
 }
 
 /* Значки в шапке. У гостя от них остаётся один: 🔑 — вход для владельца.
@@ -1212,7 +1265,7 @@ function drawIcons() {
                       + (S.view === 'alerts' ? ' on' : '');
   var who = $('who');
   who.className = 'icon' + (S.view === 'tools' ? ' on' : '');
-  who.textContent = S.admin ? '👤' : '🔑';
+  who.innerHTML = svgIcon(TOOL_ICONS[S.admin ? 'who' : 'key']);
   who.title = S.admin ? 'Настройки' : 'Войти';
 }
 
@@ -1347,7 +1400,7 @@ function drawTabs() {
     var on = S.view === tab.id && (tab.id !== 'news' || !S.section);
     var button = el('button', on ? 'on' : '');
     button.type = 'button';
-    button.appendChild(el('b', null, tab.icon));
+    button.appendChild(toolIcon(tab.icon));
     button.appendChild(el('span', null, tab.name));
     if (tab.id === 'alerts' && S.unread) {
       button.appendChild(alertBadge());
@@ -1356,7 +1409,7 @@ function drawTabs() {
     box.appendChild(button);
   });
   var bell = $('bell');
-  bell.innerHTML = '🔔';
+  bell.innerHTML = svgIcon(TOOL_ICONS.bell);
   if (S.admin && S.unread) { bell.appendChild(alertBadge()); }
 }
 
@@ -1907,10 +1960,10 @@ function drawTheme() {
   var dark = $('darkTheme');
   light.className = 'tgl' + (now === 'light' ? ' on' : '');
   dark.className = 'tgl' + (now === 'dark' ? ' on' : '');
-  light.innerHTML = svgIcon(SUN_ICON);
-  dark.innerHTML = svgIcon(MOON_ICON);
+  light.innerHTML = svgIcon(TOOL_ICONS.sun);
+  dark.innerHTML = svgIcon(TOOL_ICONS.moon);
   var head = $('theme');
-  head.innerHTML = svgIcon(now === 'dark' ? SUN_ICON : MOON_ICON);
+  head.innerHTML = svgIcon(TOOL_ICONS[now === 'dark' ? 'sun' : 'moon']);
   head.title = now === 'dark' ? 'Светлая тема' : 'Тёмная тема';
 }
 
@@ -2271,8 +2324,9 @@ window.addEventListener('resize', markClamped);
    клавиатуре читателя. */
 var MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform
                                       || navigator.userAgent || '');
-$('lens').innerHTML = svgIcon(LENS_ICON);
-$('find').innerHTML = svgIcon(LENS_ICON);
+$('lens').innerHTML = svgIcon(TOOL_ICONS.lens);
+$('find').innerHTML = svgIcon(TOOL_ICONS.lens);
+$('star').innerHTML = svgIcon(TOOL_ICONS.star);
 $('kbd').textContent = MAC ? '⌘K' : 'Ctrl K';
 drawTheme();
 watchTheme();
