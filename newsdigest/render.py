@@ -326,12 +326,21 @@ def fit_message(cards, scanned):
     return fit_blocks([(None, cards)], scanned)
 
 
-def breaking_card(card, group, score):
-    """Отдельная карточка для срочного: одна новость, но с пометкой ⚡."""
+def breaking_card(card, group, score, gain=""):
+    """Отдельная карточка для срочного: одна новость, но с пометкой ⚡.
+
+    `gain` — что в ней нового по сравнению с тем, что читатель уже видел.
+    Событие то же самое, и без такой строки читателю пришлось бы искать
+    отличие самому, сличая два сообщения (`dedup`, `llm.MORE`). Пусто —
+    событие новое, сличать не с чем.
+    """
     main = primary_of(group)
     others = sorted({i["source_id"] for i in group} - {main["source_id"]})[:3]
     lines = ["⚡ <b>Срочно</b>", "",
              "<b>%s</b>" % esc(card.get("headline") or main["title"])]
+    gain = " ".join(str(gain or "").split())[:120].strip()
+    if gain:
+        lines.append("🔁 Новое: " + esc(gain))
     what = str(card.get("what") or main["summary"][:300]).strip()
     if what:
         lines.append(esc(what))

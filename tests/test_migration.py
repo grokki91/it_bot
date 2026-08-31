@@ -244,6 +244,32 @@ class TestUpgradeFrom20(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_dupes_get_the_word_of_the_model(self):
+        """Кэш вердиктов версии 3.8 знал про пару два «да/нет». Теперь в нём
+        лежит само слово модели и то, чем новость дополняет прежнюю, — а
+        старые ответы должны пережить обновление, а не потребовать переспроса.
+        """
+        old = sqlite3.connect(str(self.db_file))
+        old.executescript("""
+            CREATE TABLE dupes (pair TEXT PRIMARY KEY,
+                same INTEGER NOT NULL DEFAULT 0,
+                follows INTEGER NOT NULL DEFAULT 0, at TEXT NOT NULL);
+        """)
+        old.execute("INSERT INTO dupes(pair,same,follows,at) VALUES "
+                    "('p1',1,0,'2026-08-01T09:00:00+00:00')")
+        old.commit()
+        old.close()
+
+        conn = storage.db()
+        try:
+            row = conn.execute("SELECT * FROM dupes WHERE pair='p1'").fetchone()
+            self.assertEqual(row["same"], 1)
+            # «не знаем, каким словом» — и ведёт себя такой ответ как раньше
+            self.assertEqual(row["kind"], "")
+            self.assertEqual(row["gain"], "")
+        finally:
+            conn.close()
+
     def test_outbox_gets_message_id(self):
         """Старые копии сообщений остаются, у новых появляется номер в Telegram."""
         conn = storage.db()

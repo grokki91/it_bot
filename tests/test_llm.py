@@ -94,6 +94,71 @@ class TestLlmJson(unittest.TestCase):
             llm.llm_json("s", "u", "model")
 
 
+class TestVerdicts(unittest.TestCase):
+    """Ответ про пару: одно слово модели — и вся дальнейшая судьба новости."""
+
+    def test_nothing_new_is_a_duplicate(self):
+        for kind in (llm.SAME, llm.LESS):
+            verdict = llm.verdict_of(kind)
+            self.assertTrue(verdict.same, kind)
+            self.assertFalse(verdict.follows, kind)
+
+    def test_a_moved_counter_is_shown_and_linked(self):
+        verdict = llm.verdict_of(llm.MORE, "найдено 200 из 270")
+        self.assertFalse(verdict.same)
+        self.assertTrue(verdict.follows)
+        self.assertEqual(verdict.gain, "найдено 200 из 270")
+
+    def test_a_continuation_has_no_gain(self):
+        """Поле «что нового» осмысленно только там, где событие ТО ЖЕ. У
+        продолжения новость своя, и дополнять ей нечего."""
+        self.assertEqual(llm.verdict_of(llm.NEXT, "названа причина").gain, "")
+
+    def test_unrelated_news_is_not_a_story(self):
+        verdict = llm.verdict_of(llm.OTHER)
+        self.assertFalse(verdict.same)
+        self.assertFalse(verdict.follows)
+
+    def test_an_unknown_word_is_silence(self):
+        """Модель ответила не по шкале — считаем, что не ответила вовсе:
+        новость идёт в выпуск, а сюжета мы не знаем."""
+        silence = llm.Verdict(False, False, "", "")
+        for answer in ("возможно", "", None, "SAME-ISH"):
+            self.assertEqual(llm.verdict_of(answer), silence)
+
+    def test_the_word_is_read_case_insensitively(self):
+        self.assertEqual(llm.verdict_of(" LESS ").kind, llm.LESS)
+
+    def test_a_long_gain_is_trimmed(self):
+        self.assertLessEqual(len(llm.verdict_of(llm.MORE, "ы" * 200).gain), 80)
+
+
+class TestJudgeDuplicates(TestLlmJson):
+    """Разбор ответа целиком — по номерам пар, как он и приходит."""
+
+    def answer(self, raw, pairs):
+        self._answer(raw)
+        return llm.judge_duplicates(pairs)[0]
+
+    def test_answers_map_to_pairs(self):
+        out = self.answer(
+            '{"items": [{"id": 0, "news": "less", "gain": ""},'
+            ' {"id": 1, "news": "more", "gain": "200 найдены"}]}',
+            [("а", "б"), ("в", "г")])
+        self.assertTrue(out[0].same)
+        self.assertEqual(out[1].gain, "200 найдены")
+
+    def test_a_pair_without_an_answer_stays_unjudged(self):
+        """Чего модель не вернула, то в выпуск и идёт: молчание не приговор."""
+        out = self.answer('{"items": [{"id": 0, "news": "same"}]}',
+                          [("а", "б"), ("в", "г")])
+        self.assertEqual(list(out), [0])
+
+    def test_a_number_out_of_range_is_ignored(self):
+        self.assertEqual(self.answer('{"items": [{"id": 7, "news": "same"}]}',
+                                     [("а", "б")]), {})
+
+
 class TestTranslateTexts(TestLlmJson):
     """Перевод: ответ раскладывается обратно по номерам строк."""
 
