@@ -18,7 +18,10 @@
 эмодзи свой цвет, и выбранный пункт от этого переставал читаться — синими в
 нём становились название и число, но не картинка. Линия берёт цвет строки и
 одинаково выглядит в обеих темах. Значок есть у каждого раздела из PROFILES;
-незнакомый — а разделы заводят на ходу — получает метку «прочее».
+незнакомый — а разделы заводят на ходу — получает метку «прочее». Той же
+линией нарисованы и значки навигации: кружки в шапке и нижняя панель на
+телефоне. Эмодзи там несли каждый свой цвет, и панель пестрила, — теперь и
+шапка, и панель, и столбец разделов выглядят одинаково.
 
 Под разделами стоит переключатель темы: светлая и тёмная, две кнопки, и
 нажатая подсвечена. Выбор лежит в браузере (`nd.theme`) и переживает закрытие
@@ -55,7 +58,7 @@
 уведомлений о рассылках, ни подписчиков, ни настроек, ни справки о выпуске
 справа, ни кнопок 👍/👎/🔖 под карточками у него нет — и не потому, что они
 спрятаны стилями: `web.py` этих данных ему не отдаёт, а всякий POST, кроме
-входа, ему закрыт. Владелец нажимает 🔑 в шапке, вводит пароль — и страница
+входа, ему закрыт. Владелец нажимает ключ в шапке, вводит пароль — и страница
 становится прежней: рассылки, подписчики, настройки, отметки.
 
 Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
@@ -638,7 +641,8 @@ body.guest .tabs { display: none; }
   color: var(--dim); display: flex; flex-direction: column; align-items: center;
   gap: 3px; position: relative;
 }
-.tabs button b { font-size: 19px; font-weight: 400; line-height: 1; }
+.tabs button .ico { display: flex; align-items: center; line-height: 1; }
+.tabs button .ico svg { width: 21px; height: 21px; }
 .tabs button.on { color: var(--accent); }
 .tabs .badge {
   position: absolute; top: 2px; right: 50%; margin-right: -18px; min-width: 16px;
@@ -749,13 +753,13 @@ body.guest .tabs { display: none; }
         <button class="icon" id="find" onclick="toggleSearch()"
                 title="Поиск" aria-label="Поиск"></button>
         <button class="icon" id="star" onclick="go('liked')"
-                title="Избранное">⭐</button>
+                title="Избранное"></button>
         <button class="icon" id="bell" onclick="go('alerts')"
-                title="Уведомления">🔔</button>
+                title="Уведомления"></button>
         <button class="icon" id="theme" onclick="flipTheme()"
                 aria-label="Сменить тему"></button>
         <button class="icon" id="who" onclick="whoTap()"
-                title="Настройки">👤</button>
+                title="Настройки"></button>
       </div>
     </div>
     <nav class="rubrics" id="rubrics"></nav>
@@ -835,11 +839,11 @@ var S = {
    паролю. Соврать себе `S.admin = true` в консоли можно — увидеть от этого
    нечего: сервер отдаст 401. */
 var TABS = [
-  { id: 'news',   icon: '🏠', name: 'Главная' },
-  { id: 'saved',  icon: '🔖', name: 'Сохранённые', admin: true },
-  { id: 'liked',  icon: '⭐', name: 'Избранное', admin: true },
-  { id: 'alerts', icon: '🔔', name: 'Уведомления', admin: true },
-  { id: 'tools',  icon: '⚙',  name: 'Настройки', admin: true }
+  { id: 'news',   icon: 'home',     name: 'Главная' },
+  { id: 'saved',  icon: 'bookmark', name: 'Сохранённые', admin: true },
+  { id: 'liked',  icon: 'star',     name: 'Избранное', admin: true },
+  { id: 'alerts', icon: 'bell',     name: 'Уведомления', admin: true },
+  { id: 'tools',  icon: 'gear',     name: 'Настройки', admin: true }
 ];
 
 /* Гостю доступна одна лента: остальное — про рассылки и настройки бота. */
@@ -936,7 +940,37 @@ var SUN_ICON = '<circle cx="12" cy="12" r="4.2"/>'
 
 var MOON_ICON = '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>';
 
+/* Значки навигации — нижняя панель на телефоне и кружки в шапке. Рисуем их той
+   же линией на той же сетке, что и значки разделов: эмодзи здесь несли каждый
+   свой цвет, и панель пестрила, а у выбранной кнопки синим становилось только
+   слово под картинкой. Линия берёт цвет кнопки — серый у обычной, синий у
+   выбранной, — и панель наконец читается как одно целое. */
+var UI_ICONS = {
+  home: ICONS[''],
+  bookmark: '<path d="M6.8 3.8h10.4a1.2 1.2 0 0 1 1.2 1.2v15.2L12 16.6l-6.4 3.6'
+    + 'V5a1.2 1.2 0 0 1 1.2-1.2z"/>',
+  star: '<path d="m12 3.6 2.6 5.4 5.9.9-4.3 4.1 1 5.9L12 17.1l-5.2 2.8 1-5.9'
+    + '-4.3-4.1 5.9-.9z"/>',
+  bell: '<path d="M12 3.4a5.7 5.7 0 0 0-5.7 5.7c0 4.2-1.5 5.7-1.5 5.7h14.4'
+    + 's-1.5-1.5-1.5-5.7A5.7 5.7 0 0 0 12 3.4z"/>'
+    + '<path d="M10.2 18a2.1 2.1 0 0 0 3.6 0"/>',
+  gear: '<path d="M4.2 7.4h9M17.6 7.4h2.2M4.2 16.6h2.4M11 16.6h8.8"/>'
+    + '<circle cx="15.3" cy="7.4" r="2.3"/><circle cx="8.7" cy="16.6" r="2.3"/>',
+  user: '<circle cx="12" cy="8.4" r="3.7"/>'
+    + '<path d="M4.9 20.2a7.1 7.1 0 0 1 14.2 0"/>',
+  key: '<circle cx="8.2" cy="12" r="3.9"/><path d="M12.1 12h8.3"/>'
+    + '<path d="M17.2 12v3.2M20.4 12v2.4"/>'
+};
+
 function svgIcon(body) { return ICON_HEAD + body + '</svg>'; }
+
+/* Значок навигации в своей обёртке — той же, что у значка раздела: размер
+   задаёт CSS кнопки, а не сама картинка. */
+function uiIcon(name) {
+  var box = el('span', 'ico');
+  box.innerHTML = svgIcon(UI_ICONS[name]);
+  return box;
+}
 
 /* Значок раздела строкой меню. Разметку берём из своего же набора — снаружи
    сюда ничего не приходит, кроме идентификатора раздела. */
@@ -1201,7 +1235,7 @@ function paint() {
   if (S.view === 'tools') { drawPanel(); }
 }
 
-/* Значки в шапке. У гостя от них остаётся один: 🔑 — вход для владельца.
+/* Значки в шапке. У гостя от них остаётся один: ключ — вход для владельца.
    «Избранное» и «Уведомления» ему не показываем — там отметки и рассылки
    владельца, и сервер их всё равно не отдаст. */
 function drawIcons() {
@@ -1212,7 +1246,7 @@ function drawIcons() {
                       + (S.view === 'alerts' ? ' on' : '');
   var who = $('who');
   who.className = 'icon' + (S.view === 'tools' ? ' on' : '');
-  who.textContent = S.admin ? '👤' : '🔑';
+  who.innerHTML = svgIcon(S.admin ? UI_ICONS.user : UI_ICONS.key);
   who.title = S.admin ? 'Настройки' : 'Войти';
 }
 
@@ -1347,7 +1381,7 @@ function drawTabs() {
     var on = S.view === tab.id && (tab.id !== 'news' || !S.section);
     var button = el('button', on ? 'on' : '');
     button.type = 'button';
-    button.appendChild(el('b', null, tab.icon));
+    button.appendChild(uiIcon(tab.icon));
     button.appendChild(el('span', null, tab.name));
     if (tab.id === 'alerts' && S.unread) {
       button.appendChild(alertBadge());
@@ -1356,7 +1390,7 @@ function drawTabs() {
     box.appendChild(button);
   });
   var bell = $('bell');
-  bell.innerHTML = '🔔';
+  bell.innerHTML = svgIcon(UI_ICONS.bell);
   if (S.admin && S.unread) { bell.appendChild(alertBadge()); }
 }
 
@@ -2273,6 +2307,9 @@ var MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform
                                       || navigator.userAgent || '');
 $('lens').innerHTML = svgIcon(LENS_ICON);
 $('find').innerHTML = svgIcon(LENS_ICON);
+$('star').innerHTML = svgIcon(UI_ICONS.star);
+$('bell').innerHTML = svgIcon(UI_ICONS.bell);
+$('who').innerHTML = svgIcon(UI_ICONS.user);
 $('kbd').textContent = MAC ? '⌘K' : 'Ctrl K';
 drawTheme();
 watchTheme();
