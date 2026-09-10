@@ -37,7 +37,7 @@ class BreakingCase(unittest.TestCase):
         conn = storage.db()
         try:
             for table in ("items", "sent", "meta", "runs", "feedback",
-                          "subscribers", "alerts"):
+                          "subscribers", "alerts", "cards"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.add(conn, CHAT, role="member", title="тест")

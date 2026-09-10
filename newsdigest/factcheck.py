@@ -81,7 +81,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import trust
 from .config import CFG, log, now_iso
-from .llm import LLMError, judge_claims, llm_cost
+from .llm import LLMError, judge_claims, lead_of, llm_cost
 from .net import http_get
 from .rank import primary_of
 
@@ -409,7 +409,7 @@ def question(group, topic="") -> dict:
     paper = paper_of(group)
     return {
         "title": str(main.get("title") or "")[:300],
-        "lead": str(main.get("summary") or "")[:500],
+        "lead": lead_of(main, 500),
         "section": topic,
         "sources": sorted({trust.publisher(i["source_id"]) for i in group})[:5],
         "kinds": sorted({trust.kind(i["source_id"]) for i in group}),

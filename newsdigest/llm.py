@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import re
 import time
@@ -15,6 +16,64 @@ from .rank import primary_of, voices
 
 class LLMError(RuntimeError):
     pass
+
+
+def task(label: str, payload, *head) -> str:
+    """Сообщение пользователя: переменная шапка, потом данные задания.
+
+    Всё, что меняется от подписчика к подписчику и от раздела к разделу —
+    портрет читателя, язык ответа, список разделов, — живёт ЗДЕСЬ, а не в
+    системном промпте. Причина денежная: провайдер кэширует запрос по общему
+    НАЧАЛУ, и кэшированный токен стоит в разы дешевле обычного. Пока
+    инструкция начиналась строкой «Читатель: инженер-разработчик…», общего
+    начала у двух запросов не было вовсе — кэш не срабатывал ни разу. Теперь
+    системный промпт у всех запросов одного вида побайтово одинаков, и платим
+    мы за него по цене кэша.
+
+    Данные пишем компактным json: пробелы после запятых и двоеточий — это
+    лишние токены в каждой строке каждого запроса, а модели они не говорят
+    ничего.
+    """
+    lines = [line for line in head if line]
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return "\n".join(lines + ["", "%s (json):" % label, body])
+
+
+#: Приглашение дочитать на сайте и подпись движка. Отрезаем только то, что
+#: начинает СВОЮ фразу: «рассказал подробнее о планах» — это текст новости, а
+#: «Событие случилось. Подробнее на сайте» — уже подпись.
+_TAIL_PHRASES = re.compile(
+    r"""(?isx) (?: ^ | (?<=[.!?…»)"']) ) \s*
+        (?: the\ post\b.{0,150}?appeared\ first\ on\b.{0,80}
+          | continue\ reading.{0,80}
+          | read\ (?:more|the\ full\ story).{0,60}
+          | читать\ (?:далее|дальше|полностью).{0,60}
+          | подробнее(?:\ на\ сайте)?.{0,60}
+          | share\ this:.*
+        ) $""")
+
+#: Метка обрыва, которой лента заканчивает урезанное описание.
+_TAIL_MARK = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…)$")
+
+
+def lead_of(item, limit: int = 300) -> str:
+    """Начало заметки для запроса к модели: без повтора заголовка и хвостов.
+
+    Половина лент кладёт в описание сначала сам заголовок слово в слово, а в
+    конец — «The post … appeared first on …» и приглашение читать дальше.
+    Модели это не сообщает ничего: заголовок она уже видит соседним полем.
+    Чистим ДО обрезки, поэтому в окно попадает суть события, а не служебный
+    текст, — и запрос выходит короче на ровном месте.
+    """
+    text = str(item.get("summary") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if title and text[:len(title)].lower() == title.lower():
+        text = text[len(title):].lstrip(" .:;-—–|»)")
+    previous = None
+    while previous != text:            # хвостов бывает два подряд
+        previous = text
+        text = _TAIL_MARK.sub("", _TAIL_PHRASES.sub("", text).strip()).strip()
+    return text[:limit]
 
 
 def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
@@ -220,7 +279,8 @@ def llm_cost(usage) -> float:
             + usage.get("out", 0) / 1e6 * CFG["price_out"])
 
 
-RANK_SYSTEM = """Ты — редактор ежедневного дайджеста новостей. Читатель: {persona}
+RANK_SYSTEM = """Ты — редактор ежедневного дайджеста новостей.
+Портрет читателя и кандидаты придут следующим сообщением.
 
 Отранжируй кандидатов ОТНОСИТЕЛЬНО ДРУГ ДРУГА. Критерии по убыванию важности:
 1. Значимость события для отрасли
@@ -235,7 +295,7 @@ RANK_SYSTEM = """Ты — редактор ежедневного дайджес
 1-2  — маркетинг, рерайт чужой новости, спекуляция, «5 способов...»
 
 Ответь ТОЛЬКО валидным json вида:
-{{"items": [{{"id": 0, "score": 8.5, "category": "labs", "why": "до 10 слов"}}]}}
+{"items": [{"id": 0, "score": 8.5, "category": "labs"}]}
 Включи ВСЕХ кандидатов, отсортируй по убыванию score."""
 
 BREAKING_SYSTEM = """Ты — выпускающий редактор новостной ленты. Решаешь ровно
@@ -243,8 +303,9 @@ BREAKING_SYSTEM = """Ты — выпускающий редактор новос
 уведомить прямо сейчас.
 
 Это НЕ оценка «интересно ли читателю». Землетрясение важно и тому, кто читает
-только про базы данных. Читатель ({persona}) влияет лишь на то, считать ли
-событие отраслевым: для него отрасль — своя, для остальных та же новость нишевая.
+только про базы данных. Читатель (его портрет придёт следующим сообщением)
+влияет лишь на то, считать ли событие отраслевым: для него отрасль — своя,
+для остальных та же новость нишевая.
 
 Шкала urgency — как в мировых агентствах:
 10   событие мирового масштаба, меняющее повестку: начало войны, смерть или
@@ -269,8 +330,7 @@ scope — насколько широк круг задетых:
 НИКОГДА, каким бы громким ни был заголовок.
 
 Ответь ТОЛЬКО валидным json вида:
-{{"items": [{{"id": 0, "urgency": 9.5, "scope": "global",
-  "category": "policy", "why": "до 10 слов"}}]}}
+{"items": [{"id": 0, "urgency": 9.5, "scope": "global", "category": "policy"}]}
 Включи ВСЕХ кандидатов."""
 
 DUP_SYSTEM = """Ты — выпускающий редактор. Читатель уже видел ПЕРВУЮ новость
@@ -373,11 +433,10 @@ note — оговорка для читателя на русском, до 8 с
 
 
 SUM_SYSTEM = """Ты пишешь карточки новостей для ежедневного дайджеста.
-Читатель: {persona}
-Язык ответа: {language}
+Портрет читателя и язык ответа придут следующим сообщением.
 
 Правила:
-- ВСЕ три поля пиши на языке {language}, даже если источник на другом языке:
+- ВСЕ три поля пиши на ЯЗЫКЕ ОТВЕТА, даже если источник на другом языке:
   заголовок переводится наравне с текстом, оставлять его как в источнике нельзя;
 - имена, названия компаний, продуктов и версии сохраняй в оригинальном
   написании (Nvidia, Linux 7.2, GPT-5), термины переводи;
@@ -392,24 +451,25 @@ SUM_SYSTEM = """Ты пишешь карточки новостей для еж�
 - без воды и оборотов вроде «в мире произошло знаковое событие».
 
 Ответь ТОЛЬКО валидным json вида:
-{{"items": [{{"id": 0,
+{"items": [{"id": 0,
   "headline": "заголовок до 70 символов",
   "what": "что произошло, 1-2 предложения",
-  "why": "почему это важно — следствие, а не пересказ, 1 предложение"}}]}}
+  "why": "почему это важно — следствие, а не пересказ, 1 предложение"}]}
 Верни карточку для КАЖДОГО входного id."""
 
-TR_SYSTEM = """Ты переводишь новостной дайджест. Язык перевода: {language}
+TR_SYSTEM = """Ты переводишь новостной дайджест.
+Язык перевода придёт следующим сообщением.
 
 Правила:
 - переводи смысл, а не слова: строка должна читаться так, будто её сразу
-  написали на языке {language};
+  написали на языке перевода;
 - имена людей, названия компаний, продуктов, версий и тикеры оставляй в
   оригинальном написании (Nvidia, Linux 7.2, GPT-5), остальное переводи;
 - ничего не добавляй, не выбрасывай и не сокращай: это перевод, а не пересказ;
 - если строка уже на нужном языке, верни её без изменений.
 
 Ответь ТОЛЬКО валидным json вида:
-{{"items": [{{"id": 0, "text": "перевод"}}]}}
+{"items": [{"id": 0, "text": "перевод"}]}
 Верни перевод для КАЖДОГО входного id."""
 
 
@@ -418,12 +478,11 @@ def rank_clusters(clusters, persona):
     for idx, group in enumerate(clusters):
         main = primary_of(group)
         payload.append({"id": idx, "title": main["title"],
-                        "lead": main["summary"][:300],
+                        "lead": lead_of(main),
                         "source": main["source_id"],
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
-        RANK_SYSTEM.format(persona=persona),
-        "Кандидаты (json):\n" + json.dumps(payload, ensure_ascii=False),
+        RANK_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
         CFG["model_rank"], max_tokens=3000)
     return as_list(data), usage
 
@@ -440,12 +499,11 @@ def rate_urgency(clusters, persona):
     for idx, group in enumerate(clusters):
         main = primary_of(group)
         payload.append({"id": idx, "title": main["title"],
-                        "lead": main["summary"][:300],
+                        "lead": lead_of(main),
                         "source": main["source_id"],
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
-        BREAKING_SYSTEM.format(persona=persona),
-        "Кандидаты (json):\n" + json.dumps(payload, ensure_ascii=False),
+        BREAKING_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
         CFG["model_rank"], max_tokens=2000)
     return as_list(data), usage
 
@@ -502,8 +560,7 @@ def judge_duplicates(pairs):
     payload = [{"id": idx, "a": str(a)[:300], "b": str(b)[:300]}
                for idx, (a, b) in enumerate(pairs)]
     data, usage = llm_json(
-        DUP_SYSTEM,
-        "Пары (json):\n" + json.dumps(payload, ensure_ascii=False),
+        DUP_SYSTEM, task("Пары", payload),
         # ответ подрос на `gain`: короткая фраза «что нового» вместо
         # второго булева поля
         CFG["model_rank"], max_tokens=64 * len(payload) + 400)
@@ -528,8 +585,7 @@ def judge_claims(claims):
     """
     payload = [dict(claim, id=idx) for idx, claim in enumerate(claims)]
     data, usage = llm_json(
-        CLAIM_SYSTEM,
-        "Новости (json):\n" + json.dumps(payload, ensure_ascii=False),
+        CLAIM_SYSTEM, task("Новости", payload),
         CFG["model_rank"], max_tokens=80 * len(payload) + 500)
     out = {}
     for entry in as_list(data):
@@ -543,17 +599,28 @@ def judge_claims(claims):
     return out, usage
 
 
+def card_text(group) -> str:
+    """Текст события для карточки: голоса кластера подряд, каждый со своим
+    источником. Он же — ключ кэша карточек, поэтому собирается одним местом."""
+    return " ".join("[%s] %s. %s" % (i["source_id"], i["title"], lead_of(i, 350))
+                    for i in voices(group))[:1800]
+
+
+def card_key(persona: str, language: str, text: str) -> str:
+    """Ключ карточки: то же событие теми же словами, тот же читатель, тот же
+    язык — значит, и карточка будет та же. Спрашивать второй раз нечего."""
+    seed = "\n".join((str(persona), str(language), text))
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
 def summarize_batch(picked, persona, language, offset=0):
     """Карточки для одной пачки новостей. Ключи ответа — индексы в picked."""
     payload = []
     for idx, (group, _score, _cat) in enumerate(picked, offset):
-        main = primary_of(group)
-        body = " ".join("[%s] %s. %s" % (i["source_id"], i["title"], i["summary"][:350])
-                        for i in voices(group))
-        payload.append({"id": idx, "url": main["url"], "text": body[:1800]})
+        payload.append({"id": idx, "text": card_text(group)})
     data, usage = llm_json(
-        SUM_SYSTEM.format(persona=persona, language=language),
-        "Новости (json):\n" + json.dumps(payload, ensure_ascii=False),
+        SUM_SYSTEM, task("Новости", payload, "Читатель: " + persona,
+                         "Язык ответа: " + language),
         CFG["model_summary"], max_tokens=400 * len(payload) + 500)
     cards = {}
     for card in as_list(data):
@@ -573,8 +640,7 @@ def translate_texts(texts, language):
     payload = [{"id": idx, "text": str(text)[:600]}
                for idx, text in enumerate(texts)]
     data, usage = llm_json(
-        TR_SYSTEM.format(language=language),
-        "Строки (json):\n" + json.dumps(payload, ensure_ascii=False),
+        TR_SYSTEM, task("Строки", payload, "Язык перевода: " + language),
         CFG["model_summary"], max_tokens=300 * len(payload) + 500)
     out = {}
     for row in as_list(data):

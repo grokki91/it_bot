@@ -265,6 +265,21 @@ CREATE TABLE IF NOT EXISTS translations (
     PRIMARY KEY (lang, src_hash)
 );
 
+-- Кэш карточек, написанных моделью. Ключ — хеш от текста события вместе с
+-- портретом читателя и языком (`llm.card_key`): те же слова о том же событии,
+-- тот же читатель и тот же язык — значит, и карточка та же. Поэтому она общая
+-- для подписчиков с одинаковым набором разделов и переживает пересборку
+-- выпуска. Карточки — самый дорогой запрос в выпуске (в них уходит полный
+-- текст события из всех редакций сразу), и платить за одну и ту же дважды
+-- незачем.
+CREATE TABLE IF NOT EXISTS cards (
+    key      TEXT PRIMARY KEY,
+    headline TEXT NOT NULL DEFAULT '',
+    what     TEXT NOT NULL DEFAULT '',
+    why      TEXT NOT NULL DEFAULT '',
+    at       TEXT NOT NULL
+);
+
 -- Копии сообщений бота: их показывает веб-страница. Всё, что уходит в
 -- Telegram, попадает и сюда, поэтому в браузере видно ровно то же самое.
 -- message_id — номер того же сообщения в Telegram. По нему бот достаёт полную
@@ -858,6 +873,42 @@ def outbox_page(conn, chat_id, after=None, limit=60):
     return list(conn.execute(
         "SELECT * FROM outbox WHERE chat_id=? AND id>? ORDER BY id LIMIT ?",
         (str(chat_id), int(after), limit)))
+
+
+def cards_known(conn, keys) -> dict:
+    """Карточки, уже написанные моделью раньше: ключ -> карточка."""
+    out = {}
+    keys = [key for key in keys if key]
+    for start in range(0, len(keys), 400):      # SQLite не любит длинные IN
+        part = keys[start:start + 400]
+        marks = ",".join("?" * len(part))
+        for row in conn.execute(
+                "SELECT key, headline, what, why FROM cards WHERE key IN (%s)"
+                % marks, part):
+            out[row["key"]] = {"headline": row["headline"], "what": row["what"],
+                               "why": row["why"]}
+    return out
+
+
+def remember_cards(conn, pairs) -> None:
+    """Кладёт написанные карточки в кэш.
+
+    Пустую карточку не запоминаем: это не ответ модели, а её молчание, и
+    закрепить его значит навсегда оставить новость с заголовком из фида.
+    """
+    rows = [(key, str(card.get("headline") or "")[:300],
+             str(card.get("what") or "")[:800],
+             str(card.get("why") or "")[:500], now_iso())
+            for key, card in pairs
+            if key and isinstance(card, dict)
+            and (card.get("headline") or card.get("what"))]
+    if not rows:
+        return
+    conn.executemany(
+        "INSERT INTO cards(key, headline, what, why, at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET headline=excluded.headline, "
+        "what=excluded.what, why=excluded.why, at=excluded.at", rows)
+    conn.commit()
 
 
 def db() -> sqlite3.Connection:
