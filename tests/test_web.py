@@ -25,7 +25,7 @@ os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import config, feedback, newsfeed, profiles  # noqa: E402
 from newsdigest import render, sections, storage, subscribers  # noqa: E402
-from newsdigest import translate, web  # noqa: E402
+from newsdigest import translate, userprofiles, web  # noqa: E402
 from newsdigest.config import CFG, now_iso, to_local  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
@@ -610,6 +610,133 @@ class TestTools(WebCase):
     def test_timezone_comes_along(self):
         self.login()
         self.assertTrue(self.tools()["tz"])
+
+
+class TestFeedList(WebCase):
+    """Источники в настройках: откуда бот берёт новости — список для чтения.
+
+    Владелец видит и сам список, и состояние каждой ленты: сбоит она,
+    молчит или отвечает. Править отсюда нечего — на это есть /feed в чате.
+    """
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.forget_health()
+
+    def tearDown(self):
+        self.forget_health()
+        userprofiles.write({})
+        userprofiles.apply()
+        WebCase.tearDown(self)
+
+    def forget_health(self):
+        conn = storage.db()
+        try:
+            conn.execute("DELETE FROM health")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def health(self, source_id, **fields):
+        """Строка о состоянии источника — как её пишет обход фидов."""
+        fields.setdefault("fails", 0)
+        columns = ", ".join(fields)
+        conn = storage.db()
+        try:
+            conn.execute("INSERT OR REPLACE INTO health(source_id, %s) "
+                         "VALUES (?%s)" % (columns, ",?" * len(fields)),
+                         [source_id] + list(fields.values()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def feeds(self):
+        self.login()
+        return self.ask("/api/tools")[1]["feeds"]
+
+    def find(self, data, source_id, topic="ai"):
+        for group in data["groups"]:
+            if group["id"] != topic:
+                continue
+            for feed in group["feeds"]:
+                if feed["id"] == source_id:
+                    return feed
+        return None
+
+    def test_needs_password(self):
+        """Список источников — служебное: гостю его не отдают."""
+        self.assertEqual(self.ask("/api/tools")[0], 401)
+
+    def test_sections_and_their_feeds_are_listed(self):
+        data = self.feeds()
+        names = {group["id"] for group in data["groups"]}
+        self.assertIn("ai", names)
+        feed = self.find(data, "openai")
+        self.assertEqual(feed["url"], "https://openai.com/news/rss.xml")
+        self.assertEqual(feed["host"], "openai.com")
+        self.assertEqual(feed["tier"], 1)
+        self.assertEqual(feed["category"], "labs")
+        self.assertFalse(feed["custom"])
+
+    def test_totals_count_every_feed_once(self):
+        """Один и тот же источник в двух разделах — это один источник."""
+        userprofiles.add_feed("ai", "https://example.com/rss")
+        userprofiles.add_feed("dev", "https://example.com/rss")
+        data = self.feeds()
+        seen = {feed["id"] for group in data["groups"] for feed in group["feeds"]}
+        self.assertEqual(data["total"], len(seen))
+        self.assertEqual(data["total"],
+                         sum(group["count"] for group in data["groups"]) - 1)
+
+    def test_working_source_tells_when_it_answered(self):
+        self.health("openai", ok_at=now_iso(), last_count=4)
+        feed = self.find(self.feeds(), "openai")
+        self.assertEqual(feed["state"], "ok")
+        self.assertIn("4", feed["note"])
+        self.assertTrue(feed["when"])
+
+    def test_broken_source_shows_the_error(self):
+        self.health("openai", err="HTTP 403", err_at=now_iso(), fails=2)
+        feed = self.find(self.feeds(), "openai")
+        self.assertEqual(feed["state"], "fail")
+        self.assertIn("HTTP 403", feed["note"])
+        self.assertEqual(self.feeds()["bad"], 1)
+
+    def test_muted_source_is_told_apart_from_a_stumble(self):
+        """После mute_after_fails сбоев источник сутки не опрашивается —
+        и в списке это видно, иначе непонятно, почему из него тихо."""
+        self.health("openai", err="таймаут", err_at=now_iso(),
+                    fails=CFG["mute_after_fails"] + 2)
+        feed = self.find(self.feeds(), "openai")
+        self.assertEqual(feed["state"], "muted")
+        self.assertIn("отключён", feed["note"])
+
+    def test_quiet_source_is_visible(self):
+        """Фид отвечает двухсоткой и не отдаёт ничего — беда молчаливая."""
+        self.health("openai", ok_at=now_iso(),
+                    empty=CFG["quiet_after_empty"] + 1, empty_at=now_iso())
+        feed = self.find(self.feeds(), "openai")
+        self.assertEqual(feed["state"], "quiet")
+        self.assertIn("пусто", feed["note"])
+        self.assertEqual(self.feeds()["bad"], 1)
+
+    def test_unpolled_source_says_so(self):
+        feed = self.find(self.feeds(), "openai")
+        self.assertEqual(feed["state"], "new")
+        self.assertEqual(self.feeds()["bad"], 0)
+
+    def test_own_source_is_marked(self):
+        userprofiles.add_feed("ai", "https://example.com/rss", 1, "labs")
+        feed = self.find(self.feeds(), "example")
+        self.assertTrue(feed["custom"])
+
+    def test_password_in_a_feed_address_is_hidden(self):
+        """Ссылку с ключом внутри показывать нельзя даже владельцу: страницу
+        открывают на людях, а скриншот живёт дольше ключа."""
+        userprofiles.add_feed(
+            "ai", "https://example.com/rss?api_key=sk-secret-value-42")  # nd-redact: allow
+        feed = self.find(self.feeds(), "example")
+        self.assertNotIn("sk-secret-value-42", json.dumps(feed))  # nd-redact: allow
 
 
 class TestButtons(WebCase):

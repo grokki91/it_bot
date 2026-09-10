@@ -15,9 +15,9 @@
 него закрыт весь, кроме входа.
 
 Владелец вводит пароль и получает то же самое плюс служебное: уведомления о
-рассылках, подписчиков, значения настроек — всё для чтения — и кнопки
-👍/👎/🔖 под карточками: это не команда, а вкусы читателя, и они те же, что
-в чате.
+рассылках, подписчиков, значения настроек, список источников с их здоровьем —
+всё для чтения — и кнопки 👍/👎/🔖 под карточками: это не команда, а вкусы
+читателя, и они те же, что в чате.
 
 Сервер — из стандартной библиотеки, поднимается нитью внутри демона.
 Пароль владельца (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
@@ -34,10 +34,11 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import (bot, config, feedback, newsfeed, redact, rss, sections,
-               settings, subscribers)
+               settings, sources, subscribers)
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
-from .profiles import label, profile
+from .profiles import label, profile, title as section_title
+from .render import plural
 from .storage import db, item_facts, meta_get
 from .webpage import PAGE
 
@@ -177,6 +178,71 @@ def readers(conn) -> list:
              "own": subscribers.describe(row)} for row in rows]
 
 
+#: сколько источников раздела показывать сразу — остальные по кнопке.
+#: В «ИИ» их два с половиной десятка, и раскрытый раздел иначе занимает
+#: экран целиком
+FEEDS_SHOWN = 8
+
+def feed_note(feed) -> str:
+    """Чем занят источник — одной строкой под его именем.
+
+    Числа из `health` сами по себе ничего не говорят: «fails=5» надо ещё
+    сопоставить с `mute_after_fails`. Здесь они уже переведены на язык,
+    на котором про источник и думают: отвечает, сбоит, молчит, отключён.
+    """
+    state, fails, empty = feed["state"], feed["fails"], feed["empty"]
+    if state == "new":
+        return "ещё не опрашивался"
+    if state in ("fail", "muted"):
+        note = "%d %s подряд" % (fails, plural(fails, "сбой", "сбоя", "сбоев"))
+        if state == "muted":
+            note = "отключён на сутки, " + note
+        return note + (": %s" % feed["err"] if feed["err"] else "")
+    if state == "quiet":
+        return ("отвечает, но пусто: %d %s подряд без новостей"
+                % (empty, plural(empty, "обход", "обхода", "обходов")))
+    count = feed["count"]
+    if not count:
+        return "в последнем обходе пусто"
+    return "%d %s в последнем обходе" % (
+        count, plural(count, "новость", "новости", "новостей"))
+
+
+def feeds(conn, sub) -> dict:
+    """Источники по разделам: откуда бот берёт новости — для чтения.
+
+    Правят список в чате (`/feed add`, `/feed rm`) или в profiles.json на
+    самой машине бота. Страница про него только рассказывает — как и про
+    всё остальное в этом разделе.
+
+    Разделы идут в том же порядке, что и в выпуске: сначала свои, следом
+    те, что читает кто-то ещё. Один и тот же источник стоит в нескольких
+    разделах (агентства — почти во всех), поэтому в итогах он считается
+    один раз: «312 источников» — это триста двенадцать разных лент.
+    """
+    order = sections.plan(sub)
+    order += [topic for topic in sources.topics_in_use(conn) if topic not in order]
+
+    groups, seen, bad = [], set(), set()
+    for group in sources.overview(conn, order):
+        topic, rows = group["topic"], []
+        for feed in group["feeds"]:
+            seen.add(feed["id"])
+            if feed["state"] in ("fail", "muted", "quiet"):
+                bad.add(feed["id"])
+            rows.append({"id": feed["id"], "url": redact.safe_url(feed["url"]),
+                         "host": newsfeed.domain(feed["url"]),
+                         "tier": feed["tier"], "category": feed["category"],
+                         "custom": feed["custom"], "wire": feed["wire"],
+                         "state": feed["state"], "note": feed_note(feed),
+                         "when": newsfeed.stamp(feed["at"])})
+        if rows:
+            groups.append({"id": topic, "title": section_title(topic),
+                           "count": len(rows), "feeds": rows})
+    return {"groups": groups, "total": len(seen), "bad": len(bad),
+            "shown": FEEDS_SHOWN, "hn": bool(CFG["use_hackernews"])}
+
+
 def tuning(sub) -> list:
     """Настройки приложения с текущими значениями — для показа, не для правки.
 
@@ -279,17 +345,18 @@ def alerts(worker=None, admin=True) -> dict:
 
 
 def tools(worker=None) -> dict:
-    """Раздел «Настройки»: подписчики и настройки приложения, всё для чтения."""
+    """Раздел «Настройки»: подписчики, источники и настройки — всё для чтения."""
     chat = chat_id()
     conn = db()
     try:
         subscribers.ensure_owner(conn)
         sub = subscribers.get(conn, chat)
         people = readers(conn)
+        feed_list = feeds(conn, sub)
     finally:
         conn.close()
-    return {"readers": people, "settings": tuning(sub), "tz": tz_label(),
-            "state": state(worker)}
+    return {"readers": people, "settings": tuning(sub), "feeds": feed_list,
+            "tz": tz_label(), "state": state(worker)}
 
 
 # ------------------------------------------------------------------- действия

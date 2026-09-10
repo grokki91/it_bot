@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from . import classify, safety, trust
+from . import classify, safety, trust, userprofiles
 from .config import CFG, log, now_iso
 from .feedparse import parse_date, parse_feed, strip_html
 from .net import http_get
@@ -92,14 +92,24 @@ def fetch_hackernews(keywords=None):
     return out
 
 
-def is_muted(conn, source_id) -> bool:
-    """Сломанный источник молчит сутки, потом пробуем снова — сам вернётся в строй."""
-    row = conn.execute("SELECT fails, err_at FROM health WHERE source_id=?",
-                       (source_id,)).fetchone()
-    if not row or row["fails"] < CFG["mute_after_fails"] or not row["err_at"]:
+def muted_row(row) -> bool:
+    """Отключён ли источник — по строке health, без похода в базу.
+
+    Отдельной функцией, чтобы обход фидов и список источников на странице
+    считали «отключён» одинаково: иначе в настройках висело бы одно, а
+    собиралось бы другое.
+    """
+    if not row or (row["fails"] or 0) < CFG["mute_after_fails"] or not row["err_at"]:
         return False
     last = parse_date(row["err_at"])
     return bool(last and datetime.now(timezone.utc) - last < timedelta(hours=24))
+
+
+def is_muted(conn, source_id) -> bool:
+    """Сломанный источник молчит сутки, потом пробуем снова — сам вернётся в строй."""
+    return muted_row(conn.execute(
+        "SELECT fails, err_at FROM health WHERE source_id=?",
+        (source_id,)).fetchone())
 
 
 def mark_health(conn, source_id, ok, err="", count=0):
@@ -303,3 +313,77 @@ def keywords_for(topics=None) -> list:
             if word.lower() not in words:
                 words.append(word.lower())
     return words
+
+
+# ------------------------------------------------------- список источников
+def health_map(conn) -> dict:
+    """Что база знает о фидах — одним запросом на всех.
+
+    Источников три сотни, и спрашивать про каждый отдельно ради одного
+    экрана не стоит: строк в `health` столько же, сколько источников.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT source_id, ok_at, err, err_at, fails, last_count, "
+            "empty, empty_at FROM health")
+    except sqlite3.Error as exc:            # база ещё не готова — не беда
+        log.debug("Не смог прочитать health: %s", exc)
+        return {}
+    return {row["source_id"]: row for row in rows}
+
+
+def feed_state(row) -> dict:
+    """Состояние источника словами кода: отвечает, сбоит, молчит, отключён.
+
+    Порядок важен: отключённый источник сбоит по определению, а молчание
+    у сбоящего никого не интересует — сначала называем то, из-за чего
+    новостей нет прямо сейчас.
+    """
+    if row is None:
+        return {"state": "new", "fails": 0, "empty": 0, "count": 0,
+                "err": "", "at": ""}
+    fails, empty = int(row["fails"] or 0), int(row["empty"] or 0)
+    if muted_row(row):
+        state = "muted"
+    elif fails:
+        state = "fail"
+    elif empty >= CFG["quiet_after_empty"]:
+        state = "quiet"
+    else:
+        state = "ok"
+    return {"state": state, "fails": fails, "empty": empty,
+            "count": int(row["last_count"] or 0),
+            "err": str(row["err"] or "")[:120],
+            "at": str((row["err_at"] if state in ("fail", "muted")
+                       else row["ok_at"]) or "")}
+
+
+def overview(conn=None, topics=None) -> list:
+    """Источники по разделам — для показа: откуда бот берёт новости.
+
+    Ничего не собирает и в сеть не ходит: список фидов из профилей плюс то,
+    что о них знает `health` с прошлых обходов. Разделы — те, которые
+    кто-то читает: остальные лежат в profiles.py, но не опрашиваются, и
+    называть их источниками новостей было бы неправдой.
+    """
+    close = conn is None
+    conn = conn or db()
+    try:
+        health = health_map(conn)
+        topics = list(topics) if topics is not None else topics_in_use(conn)
+    finally:
+        if close:
+            conn.close()
+
+    out = []
+    for topic in topics:
+        feeds = []
+        for source_id, url, tier, category in sorted(
+                PROFILES.get(topic, {}).get("feeds", [])):
+            feeds.append(dict(feed_state(health.get(source_id)),
+                              id=source_id, url=url,
+                              tier=int(tier), category=str(category),
+                              wire=trust.is_wire(source_id),
+                              custom=userprofiles.is_custom(topic, source_id)))
+        out.append({"topic": topic, "feeds": feeds})
+    return out
