@@ -627,6 +627,60 @@ header {
 }
 .folk .about { color: var(--dim); font-size: 13px; }
 
+/* Источники: откуда бот берёт новости. Разделов шестнадцать, лент в них под
+   три сотни — поэтому раздел свёрнут в одну строку и раскрывается по нажатию,
+   ровно как пункт меню слева. Точка состояния цветная только у больного
+   источника: у трёх сотен здоровых лент три сотни зелёных точек — это рябь,
+   а не сведения. Здоровье молчит, беда видна. */
+.feeds { display: flex; flex-direction: column; gap: 2px; }
+.feeds .grp {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: none; border: 0; border-radius: 11px; padding: 8px 6px;
+  font-size: 14px; color: var(--ink);
+}
+.feeds .grp:hover { background: var(--soft); }
+.feeds .grp .ico { display: flex; align-items: center; color: var(--dim); }
+.feeds .grp .ico svg { width: 19px; height: 19px; }
+.feeds .grp.on .ico { color: var(--accent); }
+.feeds .grp .nm {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feeds .grp .rate { color: var(--dim); font-size: 13px; }
+.feeds .grp .chev {
+  color: var(--dim); display: flex; align-items: center;
+  transition: transform .15s;
+}
+.feeds .grp .chev svg { width: 16px; height: 16px; }
+.feeds .grp.on .chev { transform: rotate(90deg); }
+.feeds .src {
+  display: flex; flex-direction: column; gap: 11px;
+  padding: 4px 4px 14px 29px;
+}
+.src .line {
+  display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap;
+  font-size: 14px;
+}
+.src .pin {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--line); align-self: center;
+}
+.src .pin.ok { background: var(--dim); opacity: .45; }
+.src .pin.quiet { background: var(--star); }
+.src .pin.fail, .src .pin.muted { background: var(--hot); }
+.src a.nm { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+.src a.nm:hover { text-decoration: underline; }
+.src .tag {
+  color: var(--dim); font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.src .about { color: var(--dim); font-size: 13px; padding-left: 14px; }
+.src .about.warn { color: var(--warn); }
+.feeds .rest {
+  background: none; border: 0; color: var(--accent); font-size: 13.5px;
+  padding: 0; text-align: left; align-self: flex-start;
+}
+
 /* ------------------------------------------------------- нижняя навигация */
 /* Гостю ходить некуда, кроме ленты: панель из одной кнопки — не навигация,
    а полоса поперёк экрана. Разделы у него в шапке строкой рубрик. */
@@ -831,6 +885,7 @@ var S = {
   day: '', mark: '', fresh: 0, drawn: false, cursor: -1,
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
+  feedsOpen: {},        /* какие разделы источников раскрыты в «Настройках» */
   filters: [], pick: []
 };
 
@@ -939,6 +994,10 @@ var SUN_ICON = '<circle cx="12" cy="12" r="4.2"/>'
              + 'M7.1 16.9l-1.6 1.6"/>';
 
 var MOON_ICON = '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>';
+
+/* Стрелка у свёрнутого раздела источников: та же линия, что и у всех
+   значков, — поворачивается вниз, когда раздел раскрыт. */
+var CHEV_ICON = '<path d="m9.7 5.6 6.4 6.4-6.4 6.4"/>';
 
 /* Значки навигации — нижняя панель на телефоне и кружки в шапке. Рисуем их той
    же линией на той же сетке, что и значки разделов: эмодзи здесь несли каждый
@@ -2056,6 +2115,8 @@ function drawPanel() {
   folk.appendChild(list);
   box.appendChild(folk);
 
+  if (data.feeds) { box.appendChild(drawFeeds(data.feeds)); }
+
   var opts = el('div', 'box');
   opts.appendChild(el('h3', null, 'Настройки приложения'));
   opts.appendChild(el('div', 'facts', 'Часовой пояс: ' + data.tz));
@@ -2091,6 +2152,116 @@ function drawOption(opt) {
   box.appendChild(el('span', 'about', opt.about));
   return box;
 }
+
+/* ------------------------------------------------------------- источники */
+/* Откуда бот берёт новости: разделы, а в них ленты. Только для чтения —
+   список правят командой /feed в чате или файлом profiles.json на самой
+   машине бота; страница про него рассказывает, как и про всё остальное
+   в этом разделе. */
+function drawFeeds(data) {
+  var box = el('div', 'box');
+  box.appendChild(el('h3', null, 'Источники (' + data.total + ')'));
+
+  var facts = el('div', 'facts');
+  facts.appendChild(el('div', null, data.groups.length + ' ' +
+    plural(data.groups.length, 'раздел', 'раздела', 'разделов') +
+    (data.hn ? ' · плюс Hacker News' : '')));
+  if (data.bad) {
+    facts.appendChild(el('div', 'warn', data.bad + ' ' +
+      plural(data.bad, 'источник не отвечает', 'источника не отвечают',
+             'источников не отвечают')));
+  }
+  box.appendChild(facts);
+
+  var list = el('div', 'feeds');
+  data.groups.forEach(function (group) {
+    list.appendChild(drawFeedGroup(group, data.shown || 8));
+  });
+  box.appendChild(list);
+  return box;
+}
+
+function drawFeedGroup(group, shown) {
+  var box = el('div');
+  var open = !!S.feedsOpen[group.id];
+
+  var head = el('button', 'grp' + (open ? ' on' : ''));
+  head.type = 'button';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  head.appendChild(iconNode(group.id));
+  head.appendChild(el('span', 'nm', group.title));
+  head.appendChild(el('span', 'rate', String(group.count)));
+  var chev = el('span', 'chev');
+  chev.innerHTML = svgIcon(CHEV_ICON);
+  head.appendChild(chev);
+  box.appendChild(head);
+
+  var body = el('div', 'src' + (open ? '' : ' hide'));
+  box.appendChild(body);
+
+  /* Ленты рисуем при первом раскрытии, и не все сразу: разделов шестнадцать,
+     а лент в них под три сотни — складывать их в страницу целиком ради
+     одного раскрытого раздела незачем. */
+  var built = false;
+  function build() {
+    if (built) { return; }
+    built = true;
+    group.feeds.slice(0, shown).forEach(function (feed) {
+      body.appendChild(drawFeed(feed));
+    });
+    if (group.feeds.length <= shown) { return; }
+    var rest = group.feeds.slice(shown);
+    var more = el('button', 'rest', 'Ещё ' + rest.length + ' ' +
+      plural(rest.length, 'источник', 'источника', 'источников'));
+    more.type = 'button';
+    more.onclick = function () {
+      body.removeChild(more);
+      rest.forEach(function (feed) { body.appendChild(drawFeed(feed)); });
+    };
+    body.appendChild(more);
+  }
+  if (open) { build(); }
+
+  head.onclick = function () {
+    open = !open;
+    S.feedsOpen[group.id] = open;
+    if (open) { build(); }
+    head.className = 'grp' + (open ? ' on' : '');
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    body.className = 'src' + (open ? '' : ' hide');
+  };
+  return box;
+}
+
+function drawFeed(feed) {
+  var box = el('div');
+  var line = el('div', 'line');
+  var pin = el('span', 'pin ' + feed.state);
+  pin.title = FEED_WORD[feed.state] || '';
+  line.appendChild(pin);
+  /* Имя ведёт на сам фид: «откуда новости» — это в конце концов адрес,
+     и посмотреть его надо уметь, не заходя на сервер. */
+  var name = el('a', 'nm', feed.id);
+  name.href = feed.url;
+  name.title = feed.url;
+  name.target = '_blank';
+  name.rel = 'noopener noreferrer';
+  line.appendChild(name);
+  line.appendChild(el('span', 'tag', 't' + feed.tier + ' · ' + feed.category +
+    (feed.wire ? ' · агентство' : '')));
+  if (feed.custom) { line.appendChild(el('span', null, '✏️')); }
+  box.appendChild(line);
+
+  var note = feed.note + (feed.when ? ' · ' + feed.when : '');
+  box.appendChild(el('div', 'about' +
+    (feed.state === 'fail' || feed.state === 'muted' ? ' warn' : ''), note));
+  return box;
+}
+
+var FEED_WORD = {
+  ok: 'отвечает', fail: 'сбоит', muted: 'отключён на сутки',
+  quiet: 'отвечает, но новостей не даёт', new: 'ещё не опрашивался'
+};
 
 /* --------------------------------------------------------------- действия */
 /* Состояние приходит с каждым ответом, и вместе с ним — кто мы сегодня.
