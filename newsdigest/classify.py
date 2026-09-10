@@ -28,12 +28,12 @@ Guardian, phys.org, ScienceDaily, Nature и IEEE Spectrum в одной лент
 """
 from __future__ import annotations
 
-import json
 import re
 
 from . import trust
 from .config import CFG, log, now_iso
-from .llm import LLMError, as_list, llm_cost, llm_json
+from .llm import LLMError, as_list, llm_cost, llm_json, task
+from .textutil import lead_of
 from .profiles import PROFILES
 
 #: сколько слово весит, если нашлось в заголовке, а не в лиде
@@ -247,9 +247,8 @@ ROUTE = {
 }
 
 CLASSIFY_SYSTEM = """Ты раскладываешь новости по разделам новостного дайджеста.
-
-Доступные разделы (используй ТОЛЬКО эти идентификаторы):
-{sections}
+Список доступных разделов и сами новости придут следующим сообщением.
+Идентификатор раздела бери ТОЛЬКО из этого списка.
 
 Правила:
 - выбирай раздел по теме САМОЙ новости, а не по изданию, которое её выпустило;
@@ -258,7 +257,7 @@ CLASSIFY_SYSTEM = """Ты раскладываешь новости по раз�
 - если новость не подходит ни одному разделу, верни section "" и confidence 0.
 
 Ответь ТОЛЬКО валидным json вида:
-{{"items": [{{"id": 0, "section": "ai", "confidence": 0.9}}]}}
+{"items": [{"id": 0, "section": "ai", "confidence": 0.9}]}
 Верни ответ для КАЖДОГО входного id."""
 
 _patterns = {}
@@ -368,11 +367,11 @@ def ask_model(rows, topics):
 
     listing = "\n".join("- %s — %s" % (t, topic_title(t)) for t in topics)
     payload = [{"id": idx, "title": row["title"][:200],
-                "lead": (row["summary"] or "")[:200]}
+                "lead": lead_of(row["title"], row["summary"], 200)}
                for idx, row in enumerate(rows)]
     data, usage = llm_json(
-        CLASSIFY_SYSTEM.format(sections=listing),
-        "Новости (json):\n" + json.dumps(payload, ensure_ascii=False),
+        CLASSIFY_SYSTEM,
+        task("Новости", payload, "Разделы:\n" + listing),
         CFG["model_rank"], max_tokens=60 * len(payload) + 500)
     out = {}
     for entry in as_list(data):

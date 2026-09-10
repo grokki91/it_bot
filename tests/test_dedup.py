@@ -789,7 +789,7 @@ class TestBreakingEndToEnd(DedupCase):
         DedupCase.setUp(self)
         conn = storage.db()
         try:
-            for table in ("meta", "runs", "subscribers", "alerts"):
+            for table in ("meta", "runs", "subscribers", "alerts", "cards"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.add(conn, CHAT, role="member", title="тест")

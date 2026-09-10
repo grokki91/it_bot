@@ -43,11 +43,13 @@ from . import (config, dedup, factcheck, safety, sections, signals,
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint
 from .feedparse import parse_date
-from .llm import LLMError, llm_cost, rate_urgency, summarize
+from .llm import (LLMError, card_key, card_text, llm_cost, rate_urgency,
+                  summarize)
 from .pipeline import card_of, for_topic, fresh_rows
 from .rank import SentIndex, cluster, prescore, primary_of
 from .render import alert_bulletin, breaking_card, feedback_keyboard
-from .storage import db, log_run, meta_get, meta_set
+from .storage import (cards_known, db, log_run, meta_get, meta_set,
+                      remember_cards)
 from .telegram import tg_send
 
 #: сколько кандидатов максимум берём от одного читателя. Общий список группы
@@ -474,19 +476,28 @@ def card_for(conn, group, score, category, persona, cache):
     """Карточка срочного и её цена. Одну и ту же новость двум читателям группы
     пишем один раз: портрет у них общий, а язык обычно тоже. Не написалась —
     запасной заголовок тоже общий: модель лежит сразу для всех, и ходить к ней
-    заново на каждого читателя значит только тянуть время."""
-    key = (id(group), CFG["language"])
+    заново на каждого читателя значит только тянуть время.
+
+    Ключ здесь тот же, что и у выпуска (`llm.card_key`), поэтому написанное
+    для одной группы читателей достаётся следующей бесплатно: срочное
+    проверяется каждые несколько минут, и группы разбираются по очереди.
+    """
+    key = card_key(persona, CFG["language"], card_text(group))
     if key in cache:
         return cache[key], 0.0
-    try:
-        cards, usage = summarize([(group, score, category)], persona,
-                                 CFG["language"])
-        card, cost = cards.get(0), llm_cost(usage)
-    except LLMError as exc:
-        log.warning("Карточка для срочного не написалась (%s) — беру заголовок", exc)
-        card, cost = None, 0.0
+    written, cost = cards_known(conn, [key]).get(key), 0.0
+    if written is None:
+        try:
+            cards, usage = summarize([(group, score, category)], persona,
+                                     CFG["language"])
+            written, cost = cards.get(0), llm_cost(usage)
+            remember_cards(conn, [(key, written)])
+        except LLMError as exc:
+            log.warning("Карточка для срочного не написалась (%s) — беру заголовок",
+                        exc)
+            written = None
     main = primary_of(group)
-    card = card_of(card, main)
+    card = card_of(written, main)
     # запасной заголовок пришёл прямо из фида, да и модель на английском
     # источнике иногда оставляет его как есть — доводим до языка выпуска
     cost += translate.localize(conn, [card])

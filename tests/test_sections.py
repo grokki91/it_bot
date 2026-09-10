@@ -247,7 +247,7 @@ class DigestCase(unittest.TestCase):
     def setUp(self):
         conn = storage.db()
         for table in ("items", "sent", "leftover", "feedback", "meta", "runs",
-                      "subscribers"):
+                      "subscribers", "cards"):
             conn.execute("DELETE FROM %s" % table)
         conn.commit()
         conn.close()

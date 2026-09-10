@@ -26,12 +26,14 @@ from . import (config, dedup, factcheck, issueview, safety, sections,
                subscribers, threads, translate)
 from .config import CFG, local_now, log, now_iso
 from .feedback import persona_hint, weighted_prescore
-from .llm import LLMError, llm_cost, rank_clusters, summarize
+from .llm import (LLMError, card_key, card_text, llm_cost, rank_clusters,
+                  summarize)
 from .profiles import PROFILES, title, weight
 from .rank import SentIndex, cluster, primary_of, select
 from .render import feedback_keyboard, fit_blocks, issue_info
 from .sources import sources_for
-from .storage import db, log_run, meta_set, save_issue, save_leftover
+from .storage import (cards_known, db, log_run, meta_set, remember_cards,
+                      save_issue, save_leftover)
 from .telegram import plain, tg_send
 
 
@@ -394,14 +396,38 @@ def rank_all(shortlists, hint, stats) -> dict:
 
 
 def write_cards(conn, blocks, plan, stats):
-    """Просит модель написать карточки на весь выпуск и раскладывает их обратно."""
+    """Просит модель написать карточки на весь выпуск и раскладывает их обратно.
+
+    Спрашиваем только про то, чего в кэше нет. Одна и та же новость приходит
+    нескольким подписчикам с одинаковым набором разделов, а карточка у неё при
+    том же портрете читателя и том же языке одна — второй раз она стоила бы
+    ровно столько же, сколько первый, и слово в слово повторила бы первую.
+    """
     flat = [pick for _topic, picked in blocks for pick in picked]
-    try:
-        cards_map, usage = summarize(flat, sections.persona(plan), CFG["language"])
-        stats["cost"] += llm_cost(usage)
-    except LLMError as exc:
-        log.error("Саммари не удалось (%s) — публикую исходные заголовки", exc)
-        cards_map = {}
+    persona, language = sections.persona(plan), CFG["language"]
+    keys = [card_key(persona, language, card_text(group))
+            for group, _score, _cat in flat]
+    known = cards_known(conn, keys)
+    cards_map = {idx: known[key] for idx, key in enumerate(keys) if key in known}
+    todo = [idx for idx, key in enumerate(keys) if key not in known]
+    hits = len(keys) - len(todo)
+    if todo:
+        try:
+            written, usage = summarize([flat[idx] for idx in todo], persona,
+                                       language)
+            stats["cost"] += llm_cost(usage)
+        except LLMError as exc:
+            log.error("Саммари не удалось (%s) — публикую исходные заголовки", exc)
+            written = {}
+        fresh = {}
+        for place, card in written.items():
+            if 0 <= place < len(todo):
+                cards_map[todo[place]] = card
+                fresh[keys[todo[place]]] = card
+        remember_cards(conn, fresh.items())
+    if hits:
+        log.info("Карточки: написано %d, взято из кэша %d",
+                 len(cards_map) - hits, hits)
 
     out, idx = [], 0
     for topic, picked in blocks:
