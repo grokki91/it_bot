@@ -12,6 +12,7 @@ from . import config, redact
 from .config import CFG, log
 from .net import post_json
 from .rank import primary_of, voices
+from .textutil import lead_of
 
 
 class LLMError(RuntimeError):
@@ -37,43 +38,6 @@ def task(label: str, payload, *head) -> str:
     lines = [line for line in head if line]
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return "\n".join(lines + ["", "%s (json):" % label, body])
-
-
-#: Приглашение дочитать на сайте и подпись движка. Отрезаем только то, что
-#: начинает СВОЮ фразу: «рассказал подробнее о планах» — это текст новости, а
-#: «Событие случилось. Подробнее на сайте» — уже подпись.
-_TAIL_PHRASES = re.compile(
-    r"""(?isx) (?: ^ | (?<=[.!?…»)"']) ) \s*
-        (?: the\ post\b.{0,150}?appeared\ first\ on\b.{0,80}
-          | continue\ reading.{0,80}
-          | read\ (?:more|the\ full\ story).{0,60}
-          | читать\ (?:далее|дальше|полностью).{0,60}
-          | подробнее(?:\ на\ сайте)?.{0,60}
-          | share\ this:.*
-        ) $""")
-
-#: Метка обрыва, которой лента заканчивает урезанное описание.
-_TAIL_MARK = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…)$")
-
-
-def lead_of(item, limit: int = 300) -> str:
-    """Начало заметки для запроса к модели: без повтора заголовка и хвостов.
-
-    Половина лент кладёт в описание сначала сам заголовок слово в слово, а в
-    конец — «The post … appeared first on …» и приглашение читать дальше.
-    Модели это не сообщает ничего: заголовок она уже видит соседним полем.
-    Чистим ДО обрезки, поэтому в окно попадает суть события, а не служебный
-    текст, — и запрос выходит короче на ровном месте.
-    """
-    text = str(item.get("summary") or "").strip()
-    title = str(item.get("title") or "").strip()
-    if title and text[:len(title)].lower() == title.lower():
-        text = text[len(title):].lstrip(" .:;-—–|»)")
-    previous = None
-    while previous != text:            # хвостов бывает два подряд
-        previous = text
-        text = _TAIL_MARK.sub("", _TAIL_PHRASES.sub("", text).strip()).strip()
-    return text[:limit]
 
 
 def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
@@ -478,7 +442,7 @@ def rank_clusters(clusters, persona):
     for idx, group in enumerate(clusters):
         main = primary_of(group)
         payload.append({"id": idx, "title": main["title"],
-                        "lead": lead_of(main),
+                        "lead": lead_of(main["title"], main["summary"]),
                         "source": main["source_id"],
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
@@ -499,7 +463,7 @@ def rate_urgency(clusters, persona):
     for idx, group in enumerate(clusters):
         main = primary_of(group)
         payload.append({"id": idx, "title": main["title"],
-                        "lead": lead_of(main),
+                        "lead": lead_of(main["title"], main["summary"]),
                         "source": main["source_id"],
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
@@ -602,7 +566,7 @@ def judge_claims(claims):
 def card_text(group) -> str:
     """Текст события для карточки: голоса кластера подряд, каждый со своим
     источником. Он же — ключ кэша карточек, поэтому собирается одним местом."""
-    return " ".join("[%s] %s. %s" % (i["source_id"], i["title"], lead_of(i, 350))
+    return " ".join("[%s] %s. %s" % (i["source_id"], i["title"], lead_of(i["title"], i["summary"], 350))
                     for i in voices(group))[:1800]
 
 

@@ -13,7 +13,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import classify, config, llm, pipeline, storage  # noqa: E402
+from newsdigest import (classify, config, llm, pipeline,  # noqa: E402
+                        storage, textutil)
 
 from test_core import item  # noqa: E402
 from test_pipeline import CHAT, PipelineCase  # noqa: E402
@@ -22,52 +23,55 @@ from test_pipeline import CHAT, PipelineCase  # noqa: E402
 class TestLeadOf(unittest.TestCase):
     """Лид новости: платим за содержание, а не за служебный текст."""
 
+    def lead(self, title, summary, limit=300):
+        return textutil.lead_of(title, summary, limit)
+
     def test_a_repeated_title_is_dropped(self):
-        item = {"title": "Nvidia показала Rubin",
-                "summary": "Nvidia показала Rubin. Ускоритель выйдет весной."}
-        self.assertEqual(llm.lead_of(item), "Ускоритель выйдет весной.")
+        self.assertEqual(
+            self.lead("Nvidia показала Rubin",
+                      "Nvidia показала Rubin. Ускоритель выйдет весной."),
+            "Ускоритель выйдет весной.")
 
     def test_case_and_punctuation_do_not_save_the_repeat(self):
-        item = {"title": "Rust добавил async",
-                "summary": "RUST ДОБАВИЛ ASYNC — трейты приняты в stable."}
-        self.assertEqual(llm.lead_of(item), "трейты приняты в stable.")
+        self.assertEqual(
+            self.lead("Rust добавил async",
+                      "RUST ДОБАВИЛ ASYNC — трейты приняты в stable."),
+            "трейты приняты в stable.")
 
     def test_a_different_beginning_is_kept(self):
-        item = {"title": "Nvidia показала Rubin",
-                "summary": "Ускоритель выйдет весной, обещают вдвое больше памяти."}
-        self.assertEqual(llm.lead_of(item), item["summary"])
+        text = "Ускоритель выйдет весной, обещают вдвое больше памяти."
+        self.assertEqual(self.lead("Nvidia показала Rubin", text), text)
 
     def test_feed_tails_are_dropped(self):
         for tail in ("The post Что-то appeared first on Хабр.",
                      "Continue reading on our site",
                      "Читать далее",
+                     "Подробнее на сайте",
                      "[…]"):
-            item = {"title": "", "summary": "Событие случилось. " + tail}
-            self.assertEqual(llm.lead_of(item), "Событие случилось.", tail)
+            self.assertEqual(self.lead("", "Событие случилось. " + tail),
+                             "Событие случилось.", tail)
 
     def test_a_tail_word_inside_a_sentence_is_kept(self):
         """«Подробнее» бывает и словом из новости, а не подписью ленты."""
-        item = {"title": "", "summary": "Учёный рассказал подробнее о планах."}
-        self.assertEqual(llm.lead_of(item), item["summary"])
+        text = "Учёный рассказал подробнее о планах команды."
+        self.assertEqual(self.lead("", text), text)
 
     def test_two_tails_in_a_row_are_dropped(self):
-        item = {"title": "", "summary": "Событие случилось. Читать далее […]"}
-        self.assertEqual(llm.lead_of(item), "Событие случилось.")
+        self.assertEqual(self.lead("", "Событие случилось. Читать далее […]"),
+                         "Событие случилось.")
 
     def test_a_summary_that_is_only_the_title_becomes_empty(self):
-        """Заголовок модель и так видит соседним полем — платить за него дважды
+        """Заголовок модель и так видит рядом — платить за него дважды
         незачем."""
-        item = {"title": "Vim празднует тридцатилетие",
-                "summary": "Vim празднует тридцатилетие"}
-        self.assertEqual(llm.lead_of(item), "")
+        self.assertEqual(self.lead("Vim празднует тридцатилетие",
+                                   "Vim празднует тридцатилетие"), "")
 
     def test_the_limit_holds(self):
-        item = {"title": "", "summary": "я" * 900}
-        self.assertEqual(len(llm.lead_of(item)), 300)
-        self.assertEqual(len(llm.lead_of(item, 500)), 500)
+        self.assertEqual(len(self.lead("", "я" * 900)), 300)
+        self.assertEqual(len(self.lead("", "я" * 900, 500)), 500)
 
-    def test_an_empty_item_is_survivable(self):
-        self.assertEqual(llm.lead_of({}), "")
+    def test_nothing_at_all_is_survivable(self):
+        self.assertEqual(self.lead(None, None), "")
 
 
 class TestTask(unittest.TestCase):

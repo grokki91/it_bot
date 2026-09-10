@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from . import safety, trust
 from .config import CFG, WEIGHTS, now_iso
 from .feedparse import parse_date
-from .textutil import sim_sets
+from .textutil import lead_of, sim_sets
 
 
 def cluster(items, threshold):
@@ -167,7 +167,7 @@ def story(title, lead="") -> str:
     об одном ли событии речь. Заголовка обычно мало: «Коллеги прощаются» без
     первого абзаца не говорит даже, с кем прощаются."""
     title = str(title or "").strip()
-    lead = " ".join(str(lead or "").split())[:180].strip()
+    lead = lead_of(title, lead, 180)
     return "%s. %s" % (title, lead) if lead else title
 
 

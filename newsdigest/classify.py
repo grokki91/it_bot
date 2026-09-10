@@ -32,7 +32,8 @@ import re
 
 from . import trust
 from .config import CFG, log, now_iso
-from .llm import LLMError, as_list, lead_of, llm_cost, llm_json, task
+from .llm import LLMError, as_list, llm_cost, llm_json, task
+from .textutil import lead_of
 from .profiles import PROFILES
 
 #: сколько слово весит, если нашлось в заголовке, а не в лиде
@@ -366,7 +367,7 @@ def ask_model(rows, topics):
 
     listing = "\n".join("- %s — %s" % (t, topic_title(t)) for t in topics)
     payload = [{"id": idx, "title": row["title"][:200],
-                "lead": lead_of(row, 200)}
+                "lead": lead_of(row["title"], row["summary"], 200)}
                for idx, row in enumerate(rows)]
     data, usage = llm_json(
         CLASSIFY_SYSTEM,
