@@ -14,7 +14,7 @@ import urllib.error
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import net, sources  # noqa: E402
+from newsdigest import net, sources, storage  # noqa: E402
 
 
 class _Broken:
@@ -74,7 +74,7 @@ class CallersSurviveFailure(unittest.TestCase):
 
     def test_fetch_source_reports_http_0(self):
         src = ("bbc", "https://example.com/feed.xml", 1, "media")
-        got_src, items, error = sources.fetch_source(src)
+        got_src, items, _total, error = sources.fetch_source(src)
         self.assertIs(got_src, src)
         self.assertEqual(items, [])
         self.assertEqual(error, "HTTP 0")
@@ -86,6 +86,51 @@ class CallersSurviveFailure(unittest.TestCase):
 
     def test_fetch_hackernews_returns_nothing(self):
         self.assertEqual(sources.fetch_hackernews(keywords=["ai"]), [])
+
+
+def _feed(*dates) -> bytes:
+    items = "".join("<item><title>t%d</title><link>https://e.com/%d</link>"
+                    "<pubDate>%s</pubDate></item>" % (i, i, d)
+                    for i, d in enumerate(dates))
+    return ("<rss><channel>%s</channel></rss>" % items).encode("utf-8")
+
+
+class QuietIsNotBroken(unittest.TestCase):
+    """Блог без свежего — это не молчащая лента.
+
+    `window_hours` = 30, а `rust-blog` пишет раз в несколько недель. Если
+    считать «ноль свежего» поломкой, в отчёте окажутся исправные блоги, а
+    по-настоящему сломанный источник в этом списке потеряется.
+    """
+
+    def setUp(self):
+        self.real_open = net._open
+        self.addCleanup(setattr, net, "_open", self.real_open)
+
+    def serve(self, raw):
+        net._open = lambda url, **kw: (200, raw)
+        return sources.fetch_source(("blog", "https://e.com/feed", 1, "media"))
+
+    def test_stale_entries_are_counted_but_not_fresh(self):
+        _src, items, total, err = self.serve(_feed("Mon, 01 Jan 2024 10:00:00 GMT"))
+        self.assertEqual(err, "")
+        self.assertEqual(items, [])
+        self.assertEqual(total, 1)
+
+    def test_feed_without_entries_at_all_is_empty(self):
+        _src, items, total, err = self.serve(b"<rss><channel/></rss>")
+        self.assertEqual(err, "")
+        self.assertEqual((items, total), ([], 0))
+
+    def test_health_calls_stale_feed_ok_and_empty_feed_quiet(self):
+        conn = storage.db()
+        self.addCleanup(conn.close)
+        sources.mark_health(conn, "stale-blog", True, count=0, total=7)
+        sources.mark_health(conn, "dead-feed", True, count=0, total=0)
+        state = {row["source_id"]: sources.feed_state(row)
+                 for row in sources.health_map(conn).values()}
+        self.assertEqual(state["stale-blog"]["empty"], 0)
+        self.assertEqual(state["dead-feed"]["empty"], 1)
 
 
 if __name__ == "__main__":

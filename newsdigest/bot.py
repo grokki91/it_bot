@@ -488,7 +488,7 @@ def cmd_feeds(ctx):
     def job():
         ok, rows = 0, []
         with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
-            for src, items, err in pool.map(fetch_source, feeds):
+            for src, items, _total, err in pool.map(fetch_source, feeds):
                 if err:
                     rows.append("❌ %s — %s" % (esc(src[0]), esc(err[:50])))
                 else:
@@ -554,7 +554,7 @@ def cmd_feed(ctx):
             return "Не вышло: %s" % esc(exc)
 
         # проверяем сразу: молчащий фид лучше увидеть здесь, а не через сутки
-        _src, items, err = fetch_source(feed)
+        _src, items, _total, err = fetch_source(feed)
         if err:
             userprofiles.remove_feed(topic, feed[0])
             return ("Источник не отвечает (%s) — не добавляю.\n"

@@ -562,7 +562,9 @@ sqlite3 ~/.newsdigest/digest.db "UPDATE subscribers SET favorites='sports,space'
 подборку, только если ответили: `digest.py feeds --candidates --adopt`.
 
 **Молчащие источники** — те, что отвечают 200 и отдают ноль записей — видно в
-`status` после `quiet_after_empty` пустых обходов подряд.
+`status` после `quiet_after_empty` пустых обходов подряд. Пустая лента и лента
+без свежего — разные вещи: блог, который пишет раз в месяц, молчащим не
+считается, иначе в списке оказались бы исправные первоисточники.
 
 **Другая LLM** — в `config.py` поменять `llm_base`, `model_rank`,
 `model_summary`; ключ читается из `DEEPSEEK_API_KEY`. Протокол ожидается
