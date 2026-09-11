@@ -9,10 +9,12 @@
 справа справка о выпуске, популярные источники и темы. Левое меню — это только
 разделы: оно стоит карточкой, не прокручивается и всегда видно целиком, а если
 разделов больше, чем влезает в экран, список сам переходит на более плотный
-шаг. Всё служебное переехало в шапку: «Избранное» (звёздочка), «Уведомления»
-(колокольчик) — это список рассылок: когда пришла, сколько было новостей и
-пять главных ссылок, — и «Настройки» (человечек) — подписчики и значения
-настроек, только для чтения.
+шаг. В шапке осталось три значка, и больше там ничего не стоит: лупа,
+«Уведомления» (колокольчик) — список рассылок: когда пришла, сколько было
+новостей и пять главных ссылок, — и «Настройки» (человечек). Отдельного
+экрана «Избранное» на странице нет: 👍 остался под карточкой и по-прежнему
+уходит боту, но читать одно и то же двумя списками незачем — отмеченное
+руками лежит в «Сохранённых».
 
 Значок раздела в этом столбце нарисован линией, а не взят эмодзи (ICONS): у
 эмодзи свой цвет, и выбранный пункт от этого переставал читаться — синими в
@@ -23,43 +25,70 @@
 телефоне. Эмодзи там несли каждый свой цвет, и панель пестрила, — теперь и
 шапка, и панель, и столбец разделов выглядят одинаково.
 
-Под разделами стоит переключатель темы: светлая и тёмная, две кнопки, и
-нажатая подсвечена. Выбор лежит в браузере (`nd.theme`) и переживает закрытие
-вкладки; пока выбора нет, страница идёт за системной настройкой и слушает её
-дальше. Ставит тему крошечный скрипт в самой голове страницы — иначе тёмная
-страница успевала бы мигнуть белым. На телефоне столбца разделов нет, и та же
-кнопка стоит в шапке; на ней нарисовано, куда переключит.
+Тему выбирают в «Настройках», а не в шапке: в шапке кнопка стояла между
+поиском и рассылками — тремя разными делами подряд, — а выбирают тему раз и
+надолго. Положений три: светлая, тёмная и «как в системе»; последнее — не
+третья тема, а отсутствие выбора, и назвать его нужно, иначе вернуться к нему
+нечем. Выбор лежит в браузере (`nd.theme`) и переживает закрытие вкладки;
+пока его нет, страница идёт за системной настройкой и слушает её дальше.
+Ставит тему крошечный скрипт в самой голове страницы — иначе тёмная страница
+успевала бы мигнуть белым. Ради одной этой настройки экран «Настроек» открыт
+и гостю: тема — про то, как читателю смотреть, а не про службу бота. Там же
+стоит и вход для владельца — ключом в шапке пользуются один раз в жизни, а
+место он занимал постоянно.
 
-Строка поиска в шапке занимает не всю ширину: ищут раз в сеанс, а место рядом
-нужно постоянно. Позвать её можно с клавиатуры — Ctrl+K (на маке ⌘K) или `/`,
-как в почте и редакторах; о первом написано прямо в строке, и подсказка
-уступает место крестику «очистить», как только начали набирать.
+Строка поиска в шапке занимает не всю ширину и не всю высоту: ищут раз в
+сеанс, а место рядом нужно постоянно. Высота задана прямо — сорок пикселей на
+широком экране, сорок шесть на телефоне (меньше нельзя: с шрифтом мельче
+шестнадцати пикселей iOS приближает страницу к полю). Рамка в покое серая, а
+синей становится под курсором: до этого поле было обведено цветом, который в
+нём ничего не значил. Позвать строку можно с клавиатуры — Ctrl+K (на маке ⌘K)
+или `/`, как в почте и редакторах; о первом написано прямо в строке, и
+подсказка уступает место крестику «очистить», как только начали набирать.
 
-Кнопка «Фильтры» над лентой закрепляет разделы: можно оставить один, можно
+Кнопка «Темы» над лентой закрепляет разделы: можно оставить один, можно
 несколько («только наука, спорт и экономика») — и «Главное» покажет новости
 только из них. Выбранное видно плашками над лентой, снимается нажатием на
 плашку и переживает закрытие браузера: набор лежит в localStorage. Пока не
 выбрано ничего, полосы плашек нет вовсе — второй список разделов рядом с
-левым меню только мешал бы.
+левым меню только мешал бы; сколько тем закреплено, видно числом на самой
+кнопке.
+
+В списке тем первой строкой стоит «Все», и она отмечена, пока не выбрано
+ничего другого. Раньше это было правило — «ничего не отмечено, показываем
+всё», — и держать его приходилось в голове: список стоял пустой, и что именно
+сейчас в ленте, читателю никто не говорил. Состояние лучше показывать, чем
+объяснять. На телефоне список приезжает листом снизу, а не окном посередине:
+за окно посреди экрана не ухватишься, а лист закрывают движением вниз, как
+везде на телефоне.
 
 На телефоне левого меню нет, и разделы переехали в шапку строкой рубрик:
 они видны сразу, прокручиваются вбок, выбранная подсвечена и сама
 подтягивается к середине. Ряд под них освободил поиск — он свернулся до лупы
 рядом с колокольчиком и разворачивается нажатием на неё. Полем ввода
 пользуются раз в сеанс, разделами — постоянно, поэтому постоянный ряд достаётся
-разделам. Свёрнутый поиск уносит с собой и запрос: строка, ушедшая вместе с
-невидимым фильтром на ленте, хуже, чем её отсутствие.
+разделам. Развернувшись, строка занимает верхний ряд целиком: название и
+значки уходят, а слева встаёт стрелка — ею из поиска и выходят. Рубрики при
+этом остаются на месте: прятать их значило бы менять экран сильнее, чем
+просит одно нажатие на лупу. Свёрнутый поиск уносит с собой и запрос: строка,
+ушедшая вместе с невидимым фильтром на ленте, хуже, чем её отсутствие.
+
+Вид у страницы намеренно тихий: рамки в один пиксель и серые, синий — только
+там, где он что-то значит (выбранное, «Применить», число закреплённых тем),
+кружки значков без обводок. Это читалка, и заметнее всего на ней должны быть
+новости, а не её собственные кнопки.
 
 Ни строки ввода, ни кнопок «собрать», ни истории запусков здесь нет: боту
 командуют на самом VPS, а страница — читалка.
 
 Страница открыта всем, а служебное на ней — только владельцу. Гость видит
 новостной сайт: лента, разделы, поиск, популярные источники и темы. Ни
-уведомлений о рассылках, ни подписчиков, ни настроек, ни справки о выпуске
-справа, ни кнопок 👍/👎/🔖 под карточками у него нет — и не потому, что они
-спрятаны стилями: `web.py` этих данных ему не отдаёт, а всякий POST, кроме
-входа, ему закрыт. Владелец нажимает ключ в шапке, вводит пароль — и страница
-становится прежней: рассылки, подписчики, настройки, отметки.
+уведомлений о рассылках, ни подписчиков, ни настроек бота, ни справки о
+выпуске справа, ни кнопок 👍/👎/🔖 под карточками у него нет — и не потому,
+что они спрятаны стилями: `web.py` этих данных ему не отдаёт, а всякий POST,
+кроме входа, ему закрыт. Из «Настроек» гостю достаётся одно оформление.
+Владелец нажимает там «Войти», вводит пароль — и страница становится
+прежней: рассылки, подписчики, настройки, отметки.
 
 Карточка — это заголовок и текст новости: по одному заголовку не понять, о чём
 речь, а ходить за этим на сайт источника читатель не нанимался. Текст занимает
@@ -122,6 +151,7 @@ PAGE = """<!doctype html>
   --tint: #e8effd; --warn: #b45309; --star: #f5a524;
   --hot: #e5484d; --hot-tint: #fff1f1; --hot-ring: rgba(229, 72, 77, .16);
   --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --ring: rgba(47, 111, 237, .16);
   --tone-l: 40%; --tone-s: 68%;
 }
 :root[data-theme="dark"] {
@@ -131,6 +161,7 @@ PAGE = """<!doctype html>
   --tint: #1c2740; --warn: #fbbf24; --star: #fbbf24;
   --hot: #ff6b6f; --hot-tint: #241417; --hot-ring: rgba(255, 107, 111, .22);
   --shadow: none;
+  --ring: rgba(91, 141, 255, .26);
   --tone-l: 68%; --tone-s: 62%;
 }
 * { box-sizing: border-box; }
@@ -140,6 +171,9 @@ body {
         "Helvetica Neue", Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
+/* Пока открыт лист тем, страница под ним стоит: прокрутка пальцем должна
+   двигать список тем, а не ленту позади него. */
+body.locked { overflow: hidden; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 button { font: inherit; cursor: pointer; color: inherit; }
@@ -163,7 +197,13 @@ input[type=password], input[type=text] {
   width: 100%; padding: 12px 14px; border-radius: 12px; font: inherit;
   border: 1px solid var(--line); background: var(--bg); color: var(--ink);
 }
-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Толстая обводка в два пикселя обводила поле снаружи и спорила с его же
+   рамкой. Теперь синей становится сама рамка, а вокруг ложится мягкий ободок:
+   видно не хуже, а шуму меньше. */
+input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
+}
 .primary {
   background: var(--accent); color: var(--accent-ink); border: 0;
   border-radius: 12px; padding: 12px 16px; width: 100%; margin-top: 12px;
@@ -194,12 +234,18 @@ header {
 /* Строка поиска не тянется на всю шапку: ищут раз в сеанс, а место рядом с
    разделами и значками нужно постоянно. Ширины хватает на запрос из трёх-
    четырёх слов, а подсказка справа говорит, чем строку позвать с клавиатуры,
-   не целясь мышью. */
+   не целясь мышью.
+
+   Высота задана прямо, а не сложена из отступов: поле в сорок пикселей стоит
+   в шапке ровно и не отнимает у ленты целую карточку. Рамка в покое серая —
+   синей она становится только под курсором: до того поле было обведено
+   цветом, которого в нём ничего не значило. */
 .search { flex: 0 1 380px; position: relative; min-width: 0; }
 .search input {
-  background: var(--soft); border-color: transparent;
-  padding-left: 38px; padding-right: 66px; border-radius: 12px;
+  height: 40px; padding: 0 64px 0 38px; font-size: 15px;
+  background: var(--soft); border: 1px solid var(--line); border-radius: 11px;
 }
+.search input:focus { background: var(--card); }
 .search .lens {
   position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
   color: var(--dim); pointer-events: none; display: flex;
@@ -213,10 +259,12 @@ header {
   background: var(--card); white-space: nowrap;
 }
 .search .clear {
-  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-  background: none; border: 0; color: var(--dim); padding: 6px 8px;
-  border-radius: 8px;
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 50%;
+  background: none; border: 0; color: var(--dim); padding: 0; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
 }
+.search .clear:hover { background: var(--bg); color: var(--ink); }
 /* Рубрики в шапке — телефонная замена левому меню: на узком экране места на
    список разделов нет, а строка поиска занимала целый ряд ради того, чем
    пользуются раз в сеанс. Поиск ушёл под лупу, ряд достался рубрикам: они
@@ -235,22 +283,29 @@ header {
   color: var(--ink); border-radius: 999px; padding: 6px 13px; font-size: 13.5px;
   white-space: nowrap;
 }
+/* Выбранная рубрика подсвечена так же, как выбранный раздел в столбце слева:
+   мягкая заливка и синяя подпись. Сплошная синяя таблетка спорила бы и с
+   карточками, и с «Применить» — единственной кнопкой, где синий цвет и правда
+   означает «главное действие». */
 .rubrics button.on {
-  background: var(--accent); border-color: var(--accent);
-  color: var(--accent-ink); font-weight: 600;
+  background: var(--tint); border-color: var(--accent); color: var(--accent);
+  font-weight: 600;
 }
-#find { display: none; }
-.tools { display: flex; gap: 8px; margin-left: auto; }
+/* Лупа и стрелка «назад» — телефонные: на широком экране строка поиска стоит
+   в шапке целиком, и звать её неоткуда. */
+#find, #back { display: none; }
+.tools { display: flex; gap: 2px; margin-left: auto; }
+/* Каждый значок стоял в своей рамке, и ряд кружков в шапке читался как панель
+   приборов. Рамки нет: подложка проявляется под курсором, а открытый экран
+   отмечен мягкой заливкой и синим значком. */
 .icon {
-  position: relative; width: 42px; height: 42px; border-radius: 50%;
-  background: var(--card); border: 1px solid var(--line); font-size: 17px;
-  display: flex; align-items: center; justify-content: center;
+  position: relative; width: 38px; height: 38px; border-radius: 50%;
+  background: none; border: 1px solid transparent; color: var(--dim);
+  font-size: 17px; display: flex; align-items: center; justify-content: center;
 }
-.icon.on { border-color: var(--accent); color: var(--accent); }
+.icon:hover { background: var(--soft); color: var(--ink); }
+.icon.on { background: var(--tint); color: var(--accent); }
 .icon svg { width: 18px; height: 18px; }
-/* Тема на широком экране переключается в столбце разделов; в шапке кнопка
-   нужна только там, где столбца нет, — на телефоне. */
-#theme { display: none; }
 .icon .badge {
   position: absolute; top: -2px; right: -2px; min-width: 18px; height: 18px;
   padding: 0 5px; border-radius: 9px; background: #e5484d; color: #fff;
@@ -292,26 +347,6 @@ header {
   flex: none;
 }
 .side.d4 .foot { display: none; }
-/* Тема — под разделами, а не в настройках: это про то, как читателю смотреть,
-   а не про службу бота, и владельцем для этого быть не нужно. Две кнопки, а
-   не одна с переключением: видно не только куда нажать, но и что сейчас. */
-.themes {
-  display: flex; justify-content: center; gap: 8px; flex: none;
-  border-top: 1px solid var(--line);
-  margin-top: var(--foot-pad); padding-top: var(--foot-pad);
-}
-.tgl {
-  width: 34px; height: 34px; border-radius: 50%; flex: none;
-  border: 1px solid var(--line); background: var(--bg); color: var(--dim);
-  display: flex; align-items: center; justify-content: center;
-}
-.tgl svg { width: 17px; height: 17px; }
-.tgl:hover { color: var(--ink); }
-.tgl.on {
-  background: var(--tint); border-color: var(--accent); color: var(--accent);
-}
-.side.d3 .tgl, .side.d4 .tgl { width: 28px; height: 28px; }
-.side.d3 .tgl svg, .side.d4 .tgl svg { width: 15px; height: 15px; }
 /* Крайний случай: разделов столько, что не спасает и самый плотный шаг.
    Прокрутка тут — меньшее зло, чем разделы, срезанные краем экрана. */
 .side.roomy nav { overflow-y: auto; }
@@ -338,10 +373,23 @@ header {
 .head .meta {
   color: var(--dim); font-size: 13px; margin-left: auto; text-align: right;
 }
+/* Выбор тем — не главное действие на экране, а способ подрезать ленту:
+   сплошная синяя кнопка над каждой страницей кричала громче самих новостей.
+   Кнопка обычная, с нейтральной рамкой, а синим отмечено только число
+   закреплённых тем — то, что и правда стоит заметить. */
 .tune {
-  background: var(--accent); color: var(--accent-ink); border: 0;
-  border-radius: 12px; padding: 10px 16px; font-weight: 600; font-size: 14px;
-  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  background: var(--card); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 11px; padding: 8px 13px; font-weight: 600; font-size: 14px;
+}
+.tune:hover { background: var(--soft); }
+.tune .ico { display: flex; align-items: center; color: var(--dim); }
+.tune .ico svg { width: 17px; height: 17px; }
+.tune.on .ico { color: var(--accent); }
+.tune .cnt {
+  min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); text-align: center;
+  font-size: 11.5px; line-height: 19px; font-weight: 700;
 }
 /* плашки — это закреплённые фильтры, а не второй список разделов: разделы и
    так стоят слева. Фильтров не выбрано — полосы нет вовсе. Выбрано много —
@@ -358,15 +406,16 @@ header {
   border-radius: 999px; padding: 8px 16px; font-size: 14px; white-space: nowrap;
 }
 .chips button.on {
-  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  background: var(--tint); border-color: var(--accent); color: var(--accent);
   font-weight: 600;
 }
-.chips button .x { margin-left: 8px; opacity: .75; font-weight: 400; }
+.chips button .x { margin-left: 8px; opacity: .7; font-weight: 400; }
 
-/* ----------------------------------------------------------------- фильтры */
-/* Выбор разделов ленты: подложка на весь экран и панель по центру. Отмечают
-   галочками, а лента меняется по «Применить» — чтобы набор из трёх разделов
-   не собирался тремя запросами к базе */
+/* ------------------------------------------------------------------- темы */
+/* Выбор тем ленты: подложка на весь экран, а на ней панель. На широком экране
+   она стоит по центру, на телефоне — листом снизу, у самого большого пальца.
+   Отмечают галочками, а лента меняется по «Применить»: набор из трёх тем не
+   должен собираться тремя запросами к базе. */
 .sheet {
   display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0;
   z-index: 40; background: rgba(16, 24, 40, .45); padding: 20px;
@@ -379,11 +428,15 @@ header {
   display: flex; flex-direction: column;
   box-shadow: 0 14px 44px rgba(16, 24, 40, .3);
 }
+/* Шапка листа — и заголовок, и ручка: на телефоне за неё тянут вниз, чтобы
+   закрыть, поэтому она не прокручивается вместе со списком. */
+.pane .grab { flex: none; }
+.pane .grip { display: none; }
 .pane h3 { font-size: 17px; }
 .pane .hint { color: var(--dim); font-size: 13px; margin: 6px 0 0; }
 .pick {
   display: flex; flex-direction: column; gap: 2px; margin: 14px 0 16px;
-  overflow-y: auto;
+  overflow-y: auto; flex: 0 1 auto;
 }
 .pick button {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
@@ -392,9 +445,15 @@ header {
 }
 .pick button:hover { background: var(--soft); }
 .pick button.on { background: var(--tint); color: var(--accent); font-weight: 600; }
+/* «Все» стоит первой строкой и отчёркнута от разделов: это не ещё одна тема,
+   а вся лента целиком. */
+.pick .all { margin-bottom: 8px; }
+.pick .bar {
+  height: 1px; background: var(--line); margin: 0 10px 8px; flex: none;
+}
 .pick .tick {
   width: 20px; height: 20px; border-radius: 6px; flex: none;
-  border: 1.5px solid var(--line); background: var(--bg); color: transparent;
+  border: 1px solid var(--line); background: var(--bg); color: transparent;
   display: flex; align-items: center; justify-content: center; font-size: 12px;
 }
 .pick button.on .tick {
@@ -492,8 +551,8 @@ header {
 .cover {
   width: 116px; height: 96px; border-radius: 12px; flex: none;
   display: flex; align-items: center; justify-content: center; font-size: 34px;
-  background: linear-gradient(140deg, hsl(var(--h) 62% 62%),
-                                      hsl(var(--h) 58% 38%));
+  background: linear-gradient(140deg, hsl(var(--h) 44% 64%),
+                                      hsl(var(--h) 40% 42%));
 }
 /* Выбранная с клавиатуры карточка. Обводка, а не заливка: у срочного своя
    рамка и свой фон, и подсветка выбора не должна с ними спорить */
@@ -547,7 +606,12 @@ header {
   color: var(--ink); border-radius: 11px; padding: 10px; font-size: 14px;
   font-weight: 500;
 }
-.ghost.wide { width: 100%; margin-top: 12px; }
+.ghost.wide {
+  width: 100%; margin-top: 12px; display: flex; align-items: center;
+  justify-content: center; gap: 8px;
+}
+.ghost .ico { display: flex; color: var(--dim); }
+.ghost .ico svg { width: 17px; height: 17px; }
 .rows { display: flex; flex-direction: column; gap: 10px; }
 .rows button {
   display: flex; align-items: center; gap: 10px; background: none; border: 0;
@@ -610,6 +674,25 @@ header {
 
 /* --------------------------------------------------------------- настройки */
 #panel { display: flex; flex-direction: column; gap: 12px; }
+/* Тема переехала сюда из шапки: в шапке она стояла рядом с поиском и
+   уведомлениями — тремя разными делами подряд, — а выбирают её раз и надолго.
+   Три кнопки в ряд, и нажата та, что сейчас: видно не только куда нажать, но
+   и что выбрано. «Как в системе» — это отсутствие выбора, и назвать его тоже
+   нужно: иначе вернуться к нему нечем. */
+.looks { display: flex; gap: 8px; }
+.looks button {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  gap: 7px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 8px; font-size: 13px; color: var(--dim);
+}
+.looks button .ico { display: flex; }
+.looks button .ico svg { width: 19px; height: 19px; }
+.looks button:hover { color: var(--ink); }
+.looks button.on {
+  background: var(--tint); border-color: var(--accent); color: var(--accent);
+  font-weight: 600;
+}
 .opts { display: flex; flex-direction: column; gap: 12px; }
 .opt { font-size: 14px; line-height: 1.45; }
 .opt .nm {
@@ -704,6 +787,10 @@ body.guest .tabs { display: none; }
   color: #fff; font-size: 10px; line-height: 16px; font-weight: 700;
 }
 
+@keyframes rise {
+  from { transform: translateY(100%); } to { transform: none; }
+}
+
 #toast {
   position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
   background: var(--ink); color: var(--bg); padding: 11px 18px;
@@ -721,29 +808,45 @@ body.guest .tabs { display: none; }
   header { padding: 8px 12px calc(8px + env(safe-area-inset-top)); }
   .brand { width: auto; font-size: 16px; }
   /* Строка поиска свёрнута до лупы в шапке и разворачивается по нажатию на
-     неё; пока ищут — рубрики уступают строке свой ряд, чтобы шапка не
-     съедала пол-экрана. */
+     неё. Развернувшись, она занимает весь ряд: название и значки уходят, а
+     слева встаёт стрелка — ею из поиска и выходят. Рубрики остаются на месте:
+     они и в поиске нужны, а прятать их значило бы менять экран сильнее, чем
+     просит одно нажатие на лупу. */
   #find { display: flex; }
   .search { display: none; }
-  header.finding .search {
-    display: block; order: 3; flex-basis: 100%; margin-top: 8px;
-  }
+  header.finding #back { display: flex; }
+  header.finding .brand, header.finding .tools { display: none; }
+  /* Основа нулевая, а не «по содержимому»: на узком экране поле с основой в
+     380 пикселей не помещалось рядом со стрелкой и переносилось на свой ряд
+     — ровно то, от чего поиск и убирали. */
+  header.finding .search { display: block; flex: 1 1 0; }
   /* На телефоне подсказка про Ctrl+K врёт: клавиатуры с Ctrl там нет, а место
      в строке она занимает. Освободившееся место отдаём самому запросу. */
   .search .kbd { display: none; }
-  .search input { padding-right: 40px; }
+  /* Шестнадцать пикселей — порог, ниже которого iOS приближает страницу к
+     полю; поле от этого становится выше, а не ниже. */
+  .search input { height: 46px; font-size: 16px; padding-right: 42px; }
   .rubrics { display: flex; }
-  header.finding .rubrics { display: none; }
+  /* Окно фильтров на телефоне — лист снизу: панель по центру экрана держать
+     не за что, а до листа дотягивается большой палец. Тянут за шапку листа:
+     потянули вниз — ушёл. */
+  .sheet { padding: 0; align-items: flex-end; }
+  .pane {
+    max-width: none; max-height: 80vh; border-radius: 20px 20px 0 0;
+    border-bottom: 0;
+    padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+    transition: transform .2s ease; animation: rise .22s ease-out;
+  }
+  .pane .grab { touch-action: none; }
+  .pane .grip {
+    display: block; width: 40px; height: 4px; border-radius: 2px;
+    background: var(--line); margin: 4px auto 12px;
+  }
   .shell { grid-template-columns: minmax(0, 1fr); padding: 14px 12px 88px;
            gap: 0; }
   .side { display: none; }
   /* без нижней панели незачем и место под неё */
   body.guest .shell { padding-bottom: 20px; }
-  /* «Избранное» на телефоне живёт в нижней панели — в шапке звезда только
-     теснила бы поиск. Место освободилось под тему: столбца разделов, где она
-     стоит на широком экране, здесь нет. */
-  #star { display: none; }
-  #theme { display: flex; }
   .tabs { display: flex; }
   .head { flex-wrap: wrap; }
   .head h1 { font-size: 23px; }
@@ -766,7 +869,12 @@ body.guest .tabs { display: none; }
   .news h2 { font-size: 16px; }
   .cover { width: 56px; height: 56px; font-size: 22px; border-radius: 10px; }
   .head h1 { font-size: 21px; }
-  .tune { padding: 9px 12px; font-size: 13px; }
+  .tune { padding: 8px 11px; font-size: 13px; }
+}
+/* Кому движение мешает — тому его и не показываем. Стоит последним: правило
+   должно перебить выезд листа, объявленный в телефонных стилях выше. */
+@media (prefers-reduced-motion: reduce) {
+  .pane { animation: none; transition: none; }
 }
 </style>
 </head>
@@ -787,6 +895,8 @@ body.guest .tabs { display: none; }
 <div id="app">
   <header id="hdr">
     <div class="top">
+      <button class="icon" id="back" type="button" onclick="hideSearch()"
+              title="Выйти из поиска" aria-label="Выйти из поиска"></button>
       <div class="brand" id="brand" role="button" tabindex="0"
            title="На главную" onclick="home()"
            onkeydown="if (event.key === 'Enter' || event.key === ' ')
@@ -806,14 +916,10 @@ body.guest .tabs { display: none; }
       <div class="tools">
         <button class="icon" id="find" onclick="toggleSearch()"
                 title="Поиск" aria-label="Поиск"></button>
-        <button class="icon" id="star" onclick="go('liked')"
-                title="Избранное"></button>
         <button class="icon" id="bell" onclick="go('alerts')"
                 title="Уведомления"></button>
-        <button class="icon" id="theme" onclick="flipTheme()"
-                aria-label="Сменить тему"></button>
-        <button class="icon" id="who" onclick="whoTap()"
-                title="Настройки"></button>
+        <button class="icon" id="who" onclick="go('tools')"
+                title="Настройки" aria-label="Настройки"></button>
       </div>
     </div>
     <nav class="rubrics" id="rubrics"></nav>
@@ -822,14 +928,6 @@ body.guest .tabs { display: none; }
   <div class="shell">
     <aside class="side">
       <nav id="nav"></nav>
-      <div class="themes" role="group" aria-label="Тема оформления">
-        <button type="button" class="tgl" id="lightTheme"
-                onclick="setTheme('light')" title="Светлая тема"
-                aria-label="Светлая тема"></button>
-        <button type="button" class="tgl" id="darkTheme"
-                onclick="setTheme('dark')" title="Тёмная тема"
-                aria-label="Тёмная тема"></button>
-      </div>
       <div class="foot">© Дайджест<br>Все права защищены</div>
     </aside>
 
@@ -837,7 +935,8 @@ body.guest .tabs { display: none; }
       <div class="head">
         <h1 id="title">Главное</h1>
         <div class="meta" id="meta"></div>
-        <button class="tune" id="tune" onclick="openFilters()">⚙ Фильтры</button>
+        <button class="tune" id="tune" type="button"
+                onclick="openFilters()"></button>
       </div>
       <div class="chips" id="chips"></div>
       <div id="list"></div>
@@ -859,10 +958,13 @@ body.guest .tabs { display: none; }
 </div>
 
 <div id="picker" class="sheet" onclick="backdrop(event)">
-  <div class="pane">
-    <h3>Фильтры ленты</h3>
-    <p class="hint">Отметьте разделы, которые хотите видеть в «Главном».
-       Можно несколько. Ничего не отмечено — показываем все.</p>
+  <div class="pane" id="pane">
+    <div class="grab" id="grab">
+      <div class="grip" aria-hidden="true"></div>
+      <h3>Темы</h3>
+      <p class="hint">Выберите темы для главной. Можно несколько,
+         а «Все» — это вся лента целиком.</p>
+    </div>
     <div class="pick" id="pick"></div>
     <div class="pair">
       <button class="ghost" type="button" onclick="clearPick()">Сбросить</button>
@@ -892,19 +994,28 @@ var S = {
 /* Владелец ли смотрит, решает не страница, а ответ сервера: свои экраны она
    рисует по `state.admin`, а данные для них всё равно приходят только по
    паролю. Соврать себе `S.admin = true` в консоли можно — увидеть от этого
-   нечего: сервер отдаст 401. */
+   нечего: сервер отдаст 401.
+
+   Отдельного экрана «Избранное» здесь нет: 👍 остался под карточкой и
+   по-прежнему уходит боту — он на нём учится, — но читать одно и то же двумя
+   списками незачем. Отмеченное руками лежит в «Сохранённых», и одного такого
+   списка достаточно. */
 var TABS = [
   { id: 'news',   icon: 'home',     name: 'Главная' },
   { id: 'saved',  icon: 'bookmark', name: 'Сохранённые', admin: true },
-  { id: 'liked',  icon: 'star',     name: 'Избранное', admin: true },
   { id: 'alerts', icon: 'bell',     name: 'Уведомления', admin: true },
   { id: 'tools',  icon: 'gear',     name: 'Настройки', admin: true }
 ];
 
-/* Гостю доступна одна лента: остальное — про рассылки и настройки бота. */
-function allowed(view) { return S.admin || view === 'news'; }
+/* Гостю доступна лента и «Настройки»: в настройках лежит тема оформления, а
+   это про то, как читателю смотреть, — владельцем для этого быть не нужно.
+   Служебное в том же экране гостю просто не рисуется, и сервер его данных
+   всё равно не отдаёт. */
+function allowed(view) {
+  return S.admin || view === 'news' || view === 'tools';
+}
 
-var NAMES = { news: 'Главное', saved: 'Сохранённые', liked: 'Избранное',
+var NAMES = { news: 'Главное', saved: 'Сохранённые',
               alerts: 'Уведомления', tools: 'Настройки' };
 
 /* ------------------------------------------------------------- значки */
@@ -995,6 +1106,15 @@ var SUN_ICON = '<circle cx="12" cy="12" r="4.2"/>'
 
 var MOON_ICON = '<path d="M20.4 13.6A8.6 8.6 0 0 1 10.4 3.6a8.6 8.6 0 1 0 10 10z"/>';
 
+/* «Как в системе» — круг, закрашенный наполовину: одна и та же картинка
+   говорит и про светлую тему, и про тёмную. */
+var AUTO_ICON = '<circle cx="12" cy="12" r="8.4"/>'
+              + '<path d="M12 3.6a8.4 8.4 0 0 1 0 16.8z" fill="currentColor" '
+              + 'stroke="none"/>';
+
+/* Стрелка влево: выход из поиска на телефоне. */
+var BACK_ICON = '<path d="M19.4 12H4.6"/><path d="m11 18.4-6.4-6.4L11 5.6"/>';
+
 /* Стрелка у свёрнутого раздела источников: та же линия, что и у всех
    значков, — поворачивается вниз, когда раздел раскрыт. */
 var CHEV_ICON = '<path d="m9.7 5.6 6.4 6.4-6.4 6.4"/>';
@@ -1008,8 +1128,6 @@ var UI_ICONS = {
   home: ICONS[''],
   bookmark: '<path d="M6.8 3.8h10.4a1.2 1.2 0 0 1 1.2 1.2v15.2L12 16.6l-6.4 3.6'
     + 'V5a1.2 1.2 0 0 1 1.2-1.2z"/>',
-  star: '<path d="m12 3.6 2.6 5.4 5.9.9-4.3 4.1 1 5.9L12 17.1l-5.2 2.8 1-5.9'
-    + '-4.3-4.1 5.9-.9z"/>',
   bell: '<path d="M12 3.4a5.7 5.7 0 0 0-5.7 5.7c0 4.2-1.5 5.7-1.5 5.7h14.4'
     + 's-1.5-1.5-1.5-5.7A5.7 5.7 0 0 0 12 3.4z"/>'
     + '<path d="M10.2 18a2.1 2.1 0 0 0 3.6 0"/>',
@@ -1018,7 +1136,10 @@ var UI_ICONS = {
   user: '<circle cx="12" cy="8.4" r="3.7"/>'
     + '<path d="M4.9 20.2a7.1 7.1 0 0 1 14.2 0"/>',
   key: '<circle cx="8.2" cy="12" r="3.9"/><path d="M12.1 12h8.3"/>'
-    + '<path d="M17.2 12v3.2M20.4 12v2.4"/>'
+    + '<path d="M17.2 12v3.2M20.4 12v2.4"/>',
+  /* воронка у кнопки «Темы»: она подрезает ленту, а не настраивает бота, и
+     значок «шестерёнки» тут читался бы как второй вход в настройки */
+  filter: '<path d="M3.8 5.6h16.4l-6.4 7.5v5.7l-3.6-2.1v-3.6z"/>'
 };
 
 function svgIcon(body) { return ICON_HEAD + body + '</svg>'; }
@@ -1070,11 +1191,6 @@ function hideLogin() {
   $('login').className = '';
   $('app').className = 'on';
   startTimer();
-}
-
-/* Кнопка в шапке: владельцу — настройки, гостю — вход. */
-function whoTap() {
-  if (S.admin) { go('tools'); } else { openLogin(); }
 }
 
 function login(event) {
@@ -1153,7 +1269,7 @@ function toast(text) {
   toastTimer = setTimeout(function () { box.className = ''; }, 2600);
 }
 
-function isNews(view) { return view === 'news' || view === 'saved' || view === 'liked'; }
+function isNews(view) { return view === 'news' || view === 'saved'; }
 
 /* Цвет квадратика источника: от его имени, чтобы не прыгал между заходами. */
 function hueOf(name) {
@@ -1206,8 +1322,8 @@ function chronological() {
 
 S.filters = loadFilters();
 
-/* Фильтры работают в «Главном»: в разделе читатель уже выбрал, что смотреть,
-   а «Сохранённые» и «Избранное» он отмечал руками — там резать нечего. */
+/* Темы подрезают «Главное»: в разделе читатель уже выбрал, что смотреть, а
+   «Сохранённые» он отмечал руками — там резать нечего. */
 function filtering() {
   return S.view === 'news' && !S.section && S.filters.length > 0;
 }
@@ -1260,7 +1376,9 @@ function go(view, section) {
   window.scrollTo(0, 0);
   paint();
   if (isNews(view)) { loadNews(true); }
-  if (view === 'tools') { loadTools(); }
+  /* «Настройки» открыты и гостю — ради темы оформления, — но служебное в них
+     спрашивать нечего: сервер ответит гостю 401. */
+  if (view === 'tools' && S.admin) { loadTools(); }
 }
 
 /* Клик по логотипу — возврат на главную: чистый поиск и общая лента. */
@@ -1282,8 +1400,7 @@ function paint() {
   $('panel').className = S.view === 'tools' ? '' : 'hide';
   $('title').textContent = S.section ? sectionName(S.section) : NAMES[S.view];
   drawIcons();
-  $('tune').textContent = S.filters.length
-    ? '⚙ Фильтры · ' + S.filters.length : '⚙ Фильтры';
+  drawTune();
   markSearch();
   drawMeta();
   drawNav();
@@ -1294,19 +1411,34 @@ function paint() {
   if (S.view === 'tools') { drawPanel(); }
 }
 
-/* Значки в шапке. У гостя от них остаётся один: ключ — вход для владельца.
-   «Избранное» и «Уведомления» ему не показываем — там отметки и рассылки
-   владельца, и сервер их всё равно не отдаст. */
+/* Значки в шапке. Их тут три, и больше не нужно: лупа, колокольчик и
+   настройки. «Уведомления» гостю не показываем — там рассылки владельца, и
+   сервер их всё равно не отдаст; вход в настройках, там же и тема. */
 function drawIcons() {
-  document.body.className = S.admin ? '' : 'guest';
-  $('star').className = 'icon' + (S.admin ? '' : ' hide')
-                      + (S.view === 'liked' ? ' on' : '');
+  document.body.classList.toggle('guest', !S.admin);
   $('bell').className = 'icon' + (S.admin ? '' : ' hide')
                       + (S.view === 'alerts' ? ' on' : '');
   var who = $('who');
   who.className = 'icon' + (S.view === 'tools' ? ' on' : '');
-  who.innerHTML = svgIcon(S.admin ? UI_ICONS.user : UI_ICONS.key);
-  who.title = S.admin ? 'Настройки' : 'Войти';
+  who.innerHTML = svgIcon(S.admin ? UI_ICONS.user : UI_ICONS.gear);
+}
+
+/* Кнопка над лентой: воронка, слово «Темы» и число закреплённых. Число — не
+   украшение: по нему видно, что лента сейчас подрезана, даже когда полоса
+   плашек уехала за край экрана. */
+function drawTune() {
+  var box = $('tune');
+  box.innerHTML = '';
+  /* над уведомлениями и настройками темам делать нечего: там не лента */
+  box.className = 'tune' + (S.filters.length ? ' on' : '')
+                + (isNews(S.view) ? '' : ' hide');
+  box.appendChild(uiIcon('filter'));
+  box.appendChild(el('span', null, 'Темы'));
+  if (S.filters.length) {
+    box.appendChild(el('span', 'cnt', S.filters.length));
+  }
+  box.title = S.filters.length
+    ? 'Выбрано тем: ' + S.filters.length : 'Выбрать темы для главной';
 }
 
 function sectionName(id) {
@@ -1492,20 +1624,57 @@ function drawChips() {
   }
 }
 
-/* ------------------------------------------------------- выбор фильтров */
-/* Отмечают галочками, а лента меняется по «Применить»: набор из трёх
-   разделов не должен собираться тремя запросами к базе. */
+/* ---------------------------------------------------------- выбор тем */
+/* Отмечают галочками, а лента меняется по «Применить»: набор из трёх тем не
+   должен собираться тремя запросами к базе. На телефоне это лист снизу, на
+   широком экране — панель по центру; разметка у них одна. */
 function openFilters() {
   S.pick = S.filters.slice();
   $('picker').className = 'sheet on';
+  /* пока лист открыт, лента под ним не ездит: прокрутка большим пальцем
+     должна двигать список тем, а не то, что осталось позади */
+  document.body.classList.add('locked');
   drawPick();
 }
 
-function closeFilters() { $('picker').className = 'sheet'; }
+function closeFilters() {
+  $('picker').className = 'sheet';
+  document.body.classList.remove('locked');
+  $('pane').style.transform = '';
+}
 
 /* нажали мимо панели — закрываем, ничего не меняя */
 function backdrop(event) {
   if (event.target === $('picker')) { closeFilters(); }
+}
+
+/* Лист снизу закрывают тем же движением, что и всюду на телефоне: потянули
+   вниз — ушёл. Тянем за шапку листа, а не за весь лист: под ней список тем,
+   и он должен прокручиваться сам. Пальца не хватило до половины — лист
+   возвращается на место. */
+var DRAG = { on: false, from: 0, by: 0 };
+
+function dragStart(event) {
+  if (!event.touches || event.touches.length !== 1) { return; }
+  DRAG.on = true;
+  DRAG.from = event.touches[0].clientY;
+  DRAG.by = 0;
+  $('pane').style.transition = 'none';
+}
+
+function dragMove(event) {
+  if (!DRAG.on) { return; }
+  DRAG.by = Math.max(0, event.touches[0].clientY - DRAG.from);
+  $('pane').style.transform = 'translateY(' + DRAG.by + 'px)';
+}
+
+function dragEnd() {
+  if (!DRAG.on) { return; }
+  DRAG.on = false;
+  var pane = $('pane');
+  pane.style.transition = '';
+  pane.style.transform = '';
+  if (DRAG.by > 90) { closeFilters(); }
 }
 
 function togglePick(id) {
@@ -1522,26 +1691,41 @@ function applyPick() {
   setFilters(S.pick.slice());
 }
 
+/* Первой строкой — «Все», и она отмечена, пока не выбрано ничего другого.
+   Раньше это было правило: «ничего не отмечено — показываем всё». Правило
+   работало, но держать его приходилось в голове: список стоял пустой, и что
+   именно сейчас в ленте, читателю никто не говорил. Теперь состояние видно
+   строкой, а не подсказкой под заголовком. */
 function drawPick() {
   var box = $('pick');
   box.innerHTML = '';
   var live = S.menu.filter(function (entry) { return !!entry.id; });
   if (!live.length) {
     box.appendChild(el('div', 'hint',
-      'Разделы появятся здесь, когда придёт первый выпуск.'));
+      'Темы появятся здесь, когда придёт первый выпуск.'));
     return;
   }
+  var all = menuEntry('');
+  box.appendChild(pickRow('', 'Все', all ? all.count : 0, !S.pick.length,
+                          clearPick, 'all'));
+  box.appendChild(el('div', 'bar'));
   live.forEach(function (entry) {
-    var on = S.pick.indexOf(entry.id) >= 0;
-    var button = el('button', on ? 'on' : '');
-    button.type = 'button';
-    button.appendChild(el('span', 'tick', '✓'));
-    button.appendChild(iconNode(entry.id));
-    button.appendChild(el('span', 'nm', entry.title));
-    if (entry.count) { button.appendChild(el('span', 'num', entry.count)); }
-    button.onclick = function () { togglePick(entry.id); };
-    box.appendChild(button);
+    box.appendChild(pickRow(entry.id, entry.title, entry.count,
+                            S.pick.indexOf(entry.id) >= 0,
+                            function () { togglePick(entry.id); }));
   });
+}
+
+function pickRow(id, name, count, on, act, extra) {
+  var button = el('button', (on ? 'on' : '') + (extra ? ' ' + extra : ''));
+  button.type = 'button';
+  button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  button.appendChild(el('span', 'tick', '✓'));
+  button.appendChild(iconNode(id));
+  button.appendChild(el('span', 'nm', name));
+  if (count) { button.appendChild(el('span', 'num', count)); }
+  button.onclick = act;
+  return button;
 }
 
 /* ----------------------------------------------------------------- лента */
@@ -1623,7 +1807,7 @@ function drawEmpty() {
     box.appendChild(el('div', null,
       'По запросу «' + S.q + '» в вашей ленте пусто. Ищется только то, что ' +
       'вам уже приходило.' + (filtering()
-        ? ' И только в выбранных разделах — снимите плашки, чтобы искать по ' +
+        ? ' И только в выбранных темах — снимите плашки, чтобы искать по ' +
           'всей ленте.' : '')));
     return box;
   }
@@ -1632,17 +1816,11 @@ function drawEmpty() {
     box.appendChild(el('div', null, 'Нажмите 🔖 под новостью — она окажется здесь.'));
     return box;
   }
-  if (S.view === 'liked') {
-    box.appendChild(el('b', null, 'Ничего не отмечено'));
-    box.appendChild(el('div', null,
-      'Нажмите 👍 под новостью: так бот поймёт, что вам интересно.'));
-    return box;
-  }
   if (filtering()) {
-    box.appendChild(el('b', null, 'По вашим фильтрам пусто'));
+    box.appendChild(el('b', null, 'По выбранным темам пусто'));
     box.appendChild(el('div', null,
-      'В выбранных разделах новостей пока нет. Снимите плашку или наберите ' +
-      'другие разделы — кнопка «Фильтры» над лентой.'));
+      'В выбранных темах новостей пока нет. Снимите плашку или выберите ' +
+      'другие — кнопка «Темы» над лентой.'));
     return box;
   }
   box.appendChild(el('b', null, 'Здесь пока пусто'));
@@ -1969,42 +2147,52 @@ function clearSearch() {
 /* Светлая или тёмная — выбор читателя, а не настройка бота: он лежит в
    браузере и никуда не уходит. Пока выбора нет, идём за системой и слушаем
    её дальше: сменился системный вид — сменился и наш. Сам атрибут ставит
-   скрипт в голове страницы, здесь только его правка руками. */
+   скрипт в голове страницы, здесь только его правка руками.
+
+   Выбирают в «Настройках»: в шапке кнопка стояла между поиском и рассылками
+   — тремя разными делами подряд, — а тему выбирают раз и надолго. */
 var THEME = 'nd.theme';
 
-function theme() {
-  return document.documentElement.getAttribute('data-theme') === 'dark'
-       ? 'dark' : 'light';
-}
+/* «Как в системе» — это не третья тема, а отсутствие выбора: записи в
+   браузере нет, и страница слушает системную настройку. Назвать его всё
+   равно нужно, иначе к нему нечем вернуться. */
+var LOOKS = [
+  { id: 'light', name: 'Светлая', icon: SUN_ICON },
+  { id: 'dark', name: 'Тёмная', icon: MOON_ICON },
+  { id: 'auto', name: 'Как в системе', icon: AUTO_ICON }
+];
 
 function chosenTheme() {
   try { return localStorage.getItem(THEME) || ''; } catch (err) { return ''; }
 }
 
+function systemDark() {
+  return !!(window.matchMedia
+         && window.matchMedia('(prefers-color-scheme: dark)').matches);
+}
+
 function setTheme(name) {
-  var pick = name === 'dark' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', pick);
-  try { localStorage.setItem(THEME, pick); } catch (err) { }
+  var pick = name === 'light' || name === 'dark' ? name : 'auto';
+  try {
+    if (pick === 'auto') { localStorage.removeItem(THEME); }
+    else { localStorage.setItem(THEME, pick); }
+  } catch (err) { }
+  document.documentElement.setAttribute('data-theme',
+    pick === 'auto' ? (systemDark() ? 'dark' : 'light') : pick);
   drawTheme();
 }
 
-function flipTheme() { setTheme(theme() === 'dark' ? 'light' : 'dark'); }
-
-/* В столбце разделов стоят обе кнопки, и нажатая подсвечена: видно не только
-   куда нажать, но и что сейчас. В шапке (это телефон, столбца там нет) кнопка
-   одна, и на ней нарисовано, куда переключит, — иначе она читалась бы как
-   «сейчас день», а не «сделать ночь». */
+/* Кнопки стоят в «Настройках» и рисуются вместе с этим экраном: открыт другой
+   — отмечать нечего, и это не ошибка. */
 function drawTheme() {
-  var now = theme();
-  var light = $('lightTheme');
-  var dark = $('darkTheme');
-  light.className = 'tgl' + (now === 'light' ? ' on' : '');
-  dark.className = 'tgl' + (now === 'dark' ? ' on' : '');
-  light.innerHTML = svgIcon(SUN_ICON);
-  dark.innerHTML = svgIcon(MOON_ICON);
-  var head = $('theme');
-  head.innerHTML = svgIcon(now === 'dark' ? SUN_ICON : MOON_ICON);
-  head.title = now === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  var row = $('looks');
+  if (!row) { return; }
+  var now = chosenTheme() || 'auto';
+  Array.prototype.forEach.call(row.children, function (node) {
+    var on = node.getAttribute('data-look') === now;
+    node.className = on ? 'on' : '';
+    node.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 
 function watchTheme() {
@@ -2103,8 +2291,17 @@ function drawLink(link, mark) {
 function drawPanel() {
   var box = $('panel'), data = S.tools;
   box.innerHTML = '';
+  /* Оформление — первым и для всех: это про то, как читателю смотреть, а не
+     про службу бота. Гостю на этом экран и кончается — дальше вход. */
+  box.appendChild(drawLook());
+  if (!S.admin) {
+    box.appendChild(drawEntry());
+    drawTheme();
+    return;
+  }
   if (!data) {
     box.appendChild(el('div', 'empty', 'Читаю настройки…'));
+    drawTheme();
     return;
   }
 
@@ -2128,6 +2325,47 @@ function drawPanel() {
   out.onclick = logout;
   opts.appendChild(out);
   box.appendChild(opts);
+  drawTheme();
+}
+
+/* Тема оформления: три кнопки в ряд, и нажата та, что выбрана. */
+function drawLook() {
+  var box = el('div', 'box');
+  box.appendChild(el('h3', null, 'Оформление'));
+  box.appendChild(el('div', 'facts',
+    'Выбор лежит в этом браузере и переживает закрытие вкладки.'));
+  var row = el('div', 'looks');
+  row.id = 'looks';
+  LOOKS.forEach(function (look) {
+    var button = el('button');
+    button.type = 'button';
+    button.setAttribute('data-look', look.id);
+    var ico = el('span', 'ico');
+    ico.innerHTML = svgIcon(look.icon);
+    button.appendChild(ico);
+    button.appendChild(el('span', null, look.name));
+    button.onclick = function () { setTheme(look.id); };
+    row.appendChild(button);
+  });
+  box.appendChild(row);
+  return box;
+}
+
+/* Вход для владельца. Он стоит здесь, а не значком в шапке: ключом в шапке
+   гость пользуется один раз в жизни, а место занимал постоянно. */
+function drawEntry() {
+  var box = el('div', 'box');
+  box.appendChild(el('h3', null, 'Вход для владельца'));
+  box.appendChild(el('div', 'facts',
+    'Уведомления о рассылках, подписчики, источники и настройки бота — ' +
+    'после входа. Новости читаются и без него.'));
+  var button = el('button', 'ghost wide');
+  button.type = 'button';
+  button.appendChild(uiIcon('key'));
+  button.appendChild(el('span', null, 'Войти'));
+  button.onclick = openLogin;
+  box.appendChild(button);
+  return box;
 }
 
 var ROLES = { owner: '👑', member: '•', pending: '⏳' };
@@ -2321,11 +2559,10 @@ function repaint(press) {
     if (parts[1] !== press.hash) { return; }
     node.className = 'act' + (press.pressed && press.pressed[parts[0]] ? ' on' : '');
   });
-  /* из закладок и избранного карточка уходит сразу: читатель только что
-     снял отметку, ради которой она тут и была */
+  /* из закладок карточка уходит сразу: читатель только что снял отметку,
+     ради которой она тут и была */
   var card = $('n' + press.hash);
-  var gone = (S.view === 'saved' && press.pressed && !press.pressed.save)
-          || (S.view === 'liked' && press.pressed && !press.pressed.up);
+  var gone = S.view === 'saved' && press.pressed && !press.pressed.save;
   if (card && gone) {
     card.remove();
     if (!$('list').childNodes.length) { $('list').appendChild(drawEmpty()); }
@@ -2478,10 +2715,19 @@ var MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform
                                       || navigator.userAgent || '');
 $('lens').innerHTML = svgIcon(LENS_ICON);
 $('find').innerHTML = svgIcon(LENS_ICON);
-$('star').innerHTML = svgIcon(UI_ICONS.star);
+$('back').innerHTML = svgIcon(BACK_ICON);
 $('bell').innerHTML = svgIcon(UI_ICONS.bell);
 $('who').innerHTML = svgIcon(UI_ICONS.user);
 $('kbd').textContent = MAC ? '⌘K' : 'Ctrl K';
+
+/* Лист тем закрывают движением вниз. Слушаем шапку листа, а не весь лист:
+   списку под ней нужно прокручиваться самому. */
+var grab = $('grab');
+grab.addEventListener('touchstart', dragStart);
+grab.addEventListener('touchmove', dragMove);
+grab.addEventListener('touchend', dragEnd);
+grab.addEventListener('touchcancel', dragEnd);
+
 drawTheme();
 watchTheme();
 

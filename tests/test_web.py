@@ -502,7 +502,7 @@ class TestNoCommands(WebCase):
 
 
 class TestPageLook(WebCase):
-    """Как страница выглядит: значки разделов, тема и быстрый поиск.
+    """Как страница выглядит: значки разделов, тема, поиск и выбор тем.
 
     Проверяем не красоту, а то, что ломается не глядя: заведённый раздел без
     значка, потерянный переключатель темы, забытый Ctrl+K.
@@ -532,9 +532,49 @@ class TestPageLook(WebCase):
         self.assertIn('stroke="currentColor"', page)
 
     def test_theme_is_switched_on_the_page(self):
+        """Переключатель темы живёт в «Настройках» и знает три положения:
+        светлая, тёмная и «как в системе». Третье — не тема, а отказ от
+        выбора: без него к системной настройке не вернуться."""
         _code, page = self.ask("/")
-        self.assertIn("setTheme('light')", page)
-        self.assertIn("setTheme('dark')", page)
+        self.assertIn("Оформление", page)
+        self.assertIn("setTheme(look.id)", page)
+        for look in ("'light'", "'dark'", "'auto'"):
+            self.assertIn("{ id: %s" % look, page)
+        self.assertIn("localStorage.removeItem(THEME)", page)
+
+    def test_theme_is_not_a_button_in_the_header(self):
+        """Шапка не резиновая: тему выбирают раз и надолго, а место рядом с
+        поиском и рассылками нужно постоянно."""
+        _code, page = self.ask("/")
+        head = page.split('<div class="tools">', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("Тема", head)
+        self.assertNotIn("flipTheme", page)
+
+    def test_the_page_has_no_favourites_of_its_own(self):
+        """«Избранное» со страницы убрано: отмеченное руками лежит в
+        «Сохранённых», и одного такого списка достаточно. Сам 👍 остался —
+        он уходит боту и правит выпуск."""
+        _code, page = self.ask("/")
+        self.assertNotIn("id: 'liked'", page)
+        self.assertNotIn("name: 'Избранное'", page)
+        self.assertNotIn("go('liked')", page)
+        self.assertIn("actButton('👍', 'up'", page)
+
+    def test_topics_are_picked_with_an_explicit_all(self):
+        """«Ничего не отмечено — показываем все» было правилом, которое
+        читателю приходилось держать в голове. Теперь это строка «Все»:
+        видно, что именно сейчас в ленте."""
+        _code, page = self.ask("/")
+        self.assertIn("pickRow('', 'Все'", page)
+        self.assertIn("!S.pick.length", page)
+
+    def test_search_keeps_the_rubrics_and_a_way_back(self):
+        """Развёрнутый поиск не уносит с собой рубрики, а выйти из него можно
+        стрелкой слева — не только тем же нажатием на лупу."""
+        _code, page = self.ask("/")
+        self.assertIn('id="back"', page)
+        self.assertIn('onclick="hideSearch()"', page)
+        self.assertNotIn("header.finding .rubrics { display: none; }", page)
 
     def test_chosen_theme_stays_in_the_browser(self):
         """Тема — дело читателя: серверу о ней знать нечего, а браузер помнит
