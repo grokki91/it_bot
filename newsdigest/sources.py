@@ -18,17 +18,23 @@ from .textutil import canonical_url, signature, url_hash
 
 
 def fetch_source(src):
-    """(id, url, tier, category) -> (src, items, error). Не бросает исключений."""
+    """(id, url, tier, category) -> (src, items, total, error).
+
+    `items` — свежее за `window_hours`, `total` — сколько записей в ленте было
+    вообще. Различать их обязательно: блог, который пишет раз в две недели,
+    отдаёт полную ленту и ноль свежего, и это нормальная работа, а не поломка.
+    Исключений не бросает.
+    """
     source_id, url, tier, category = src
     try:
         status, raw = http_get(url)
         if status in (403, 405, 429, 451):      # похоже на защиту от ботов — пробуем ещё
             status, raw = http_get(url, ua=CFG["fallback_user_agent"])
         if status != 200 or not raw:
-            return src, [], "HTTP %s" % status
+            return src, [], 0, "HTTP %s" % status
         entries = parse_feed(raw)
     except Exception as exc:  # noqa: BLE001 — падение источника не роняет прогон
-        return src, [], "%s: %s" % (type(exc).__name__, exc)
+        return src, [], 0, "%s: %s" % (type(exc).__name__, exc)
 
     window = datetime.now(timezone.utc) - timedelta(hours=CFG["window_hours"])
     out = []
@@ -49,7 +55,7 @@ def fetch_source(src):
             "sig": signature(title + " " + body[:250]),
             "social": 0.0,
         })
-    return src, out, ""
+    return src, out, len(entries), ""
 
 
 def fetch_hackernews(keywords=None):
@@ -112,7 +118,7 @@ def is_muted(conn, source_id) -> bool:
         (source_id,)).fetchone())
 
 
-def mark_health(conn, source_id, ok, err="", count=0):
+def mark_health(conn, source_id, ok, err="", count=0, total=None):
     """Отметка о состоянии источника.
 
     «ok» — это не только «HTTP 200»: фид, который отвечает двухсоткой и отдаёт
@@ -120,8 +126,15 @@ def mark_health(conn, source_id, ok, err="", count=0):
     News, когда перестаёт работать поисковый синтаксис, и лента, у которой
     сменился адрес. Поэтому пустые ответы считаются отдельно и видны
     в `digest.py status`.
+
+    Пусто — это ноль записей В ЛЕНТЕ (`total`), а не ноль свежих (`count`).
+    Разница принципиальная: `rust-blog` пишет раз в несколько недель и почти
+    всегда отдаёт ноль свежего за 30 часов — если считать это молчанием, в
+    отчёте окажутся полтора десятка исправных блогов, а сломанный `who-news`
+    потеряется среди них. `total=None` — счёта не было, считаем по старому.
     """
-    if ok and not count:
+    seen = count if total is None else total
+    if ok and not seen:
         conn.execute(
             "INSERT INTO health(source_id, ok_at, fails, last_count, empty, empty_at) "
             "VALUES (?,?,0,0,1,?) ON CONFLICT(source_id) DO UPDATE SET "
@@ -161,14 +174,14 @@ def collect(topics=None, wire_only=False) -> dict:
 
     rows = []
     with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
-        for src, items, err in pool.map(fetch_source, sources):
+        for src, items, total, err in pool.map(fetch_source, sources):
             if err:
                 stats["failed"] += 1
                 mark_health(conn, src[0], False, err)
                 log.warning("%s: %s", src[0], err)
             else:
                 stats["ok"] += 1
-                mark_health(conn, src[0], True, count=len(items))
+                mark_health(conn, src[0], True, count=len(items), total=total)
                 rows.extend(items)
 
     # Hacker News на быстрой полосе не нужен: он не агентство, а форум, и на

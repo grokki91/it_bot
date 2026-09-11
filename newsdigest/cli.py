@@ -241,9 +241,9 @@ def cmd_feeds(args):
     print("Проверяю %d источников...\n" % len(feeds))
     silent = []
     with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
-        for src, items, err in pool.map(fetch_source, feeds):
+        for src, items, total, err in pool.map(fetch_source, feeds):
             mark = "ok  " if not err else "FAIL"
-            if not err and not items:
+            if not err and not total:
                 mark, _ = "ПУСТО", silent.append(src[0])
             print("  [%-4s] %-20s %3d свежих  %s"
                   % (mark, src[0], len(items), err[:60]))
@@ -251,8 +251,8 @@ def cmd_feeds(args):
         # 200 и ноль записей — не ошибка, но и не работа: так выглядит лента,
         # у которой сменился адрес или сломался поисковый синтаксис
         print("\nОтвечают, но ничего не отдают: %s" % ", ".join(silent))
-        print("Возможно, у ленты просто нет свежего за %d ч — но если это"
-              " повторяется, проверьте адрес." % CFG["window_hours"])
+        print("Лента пуста целиком, а не просто без свежего за %d ч:"
+              " проверьте адрес." % CFG["window_hours"])
     return 0
 
 
@@ -271,7 +271,7 @@ def check_candidates(adopt=False):
 
     def check(row):
         topic, source_id, url, tier, category, why = row
-        _src, items, err = fetch_source((source_id, url, tier, category))
+        _src, items, _total, err = fetch_source((source_id, url, tier, category))
         return row, items, err
 
     alive, dead = [], []
@@ -310,7 +310,7 @@ def check_candidates(adopt=False):
 def check_one_feed(url):
     """Годится ли эта ссылка в источники. Печатает первые заголовки."""
     src = ("проверка", url, 2, "media")
-    _src, items, err = fetch_source(src)
+    _src, items, _total, err = fetch_source(src)
     # адрес печатаем без пароля и ключей: этот вывод копируют в issue
     shown = redact.safe_url(url)
     if err:
