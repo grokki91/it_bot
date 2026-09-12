@@ -38,7 +38,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Скрипт кладут и рядом с проектом, и отдельным файлом в /tmp — чтобы снять
+# отчёт, не трогая рабочее дерево (иначе автообновление увидит правки и встанет).
+# Поэтому пакет ищем сначала рядом с собой, а потом в текущем каталоге.
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT if (_ROOT / "newsdigest").is_dir() else Path.cwd()))
 
 from newsdigest import config, factcheck, profiles, redact, safety  # noqa: E402
 from newsdigest import sections, sources, trust, userprofiles      # noqa: E402
