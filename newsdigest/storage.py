@@ -938,9 +938,25 @@ def meta_set(conn, key, value):
     conn.commit()
 
 
+#: сколько прогонов КАЖДОГО вида храним. Счёт раздельный не для красоты:
+#: срочное проверяется раз в 15 минут, выпуск выходит дважды в сутки, и при
+#: общем потолке проверки срочного вытирали историю выпусков за полтора дня.
+#: `report` после этого отвечал на вопрос «стало лучше или хуже» по вчерашнему
+#: дню, а расход за неделю показывал расход за вечер.
+KEEP_RUNS = 200
+
+
 def log_run(conn, kind, status, stats):
     conn.execute("INSERT INTO runs(kind, at, status, stats) VALUES (?,?,?,?)",
                  (kind, now_iso(), status, json.dumps(stats, ensure_ascii=False)))
-    conn.execute("DELETE FROM runs WHERE id NOT IN "
-                 "(SELECT id FROM runs ORDER BY id DESC LIMIT 200)")
+    conn.execute("DELETE FROM runs WHERE kind=? AND id NOT IN "
+                 "(SELECT id FROM runs WHERE kind=? ORDER BY id DESC LIMIT ?)",
+                 (kind, kind, KEEP_RUNS))
+    conn.commit()
+
+
+def clear_health(conn, source_id) -> None:
+    """Забыть, что источник сбоил. Зовётся после переезда ленты: счётчик
+    сбоев держит её заглушённой сутки, а адрес уже другой."""
+    conn.execute("DELETE FROM health WHERE source_id=?", (str(source_id),))
     conn.commit()

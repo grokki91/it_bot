@@ -25,7 +25,7 @@ from .pipeline import build_and_send, build_section
 from .profiles import PROFILES, label, profile
 from .profiles import title as topic_title       # 'title' занято чатами в setup
 from .sources import all_feeds, collect, fetch_source
-from .storage import db
+from .storage import clear_health, db
 from .telegram import tg_call, tg_detect_chat
 
 
@@ -237,6 +237,8 @@ def cmd_feeds(args):
         return check_one_feed(args.url)
     if getattr(args, "candidates", False):
         return check_candidates(getattr(args, "adopt", False))
+    if getattr(args, "broken", False):
+        return check_broken(getattr(args, "adopt", False))
     feeds = all_feeds(wire_only=getattr(args, "wire", False))
     print("Проверяю %d источников...\n" % len(feeds))
     silent = []
@@ -304,6 +306,136 @@ def check_candidates(adopt=False):
             print("  пропускаю %s: %s" % (source_id, exc))
     print("\nДобавлено в %s: %d источник(ов)." % (PROFILES_FILE, added))
     print("Перезапустите демон, чтобы он их увидел.")
+    return 0
+
+
+def broken_sources(conn) -> list:
+    """Кто сломан: сбоит подряд или отвечает пустотой. Сначала худшие.
+
+    Сбоящий и молчащий — одна беда с разных сторон: в выпуске этой ленты нет.
+    Разница в том, что первую видно в `status`, а вторая отвечает 200 и не
+    попадает в список проблемных вовсе.
+    """
+    feeds = {f[0]: f for f in all_feeds(topics=list(PROFILES))}
+    out = []
+    for row in conn.execute("SELECT * FROM health"):
+        source_id = row["source_id"]
+        if source_id not in feeds:
+            continue
+        fails, empty = row["fails"] or 0, row["empty"] or 0
+        if fails < CFG["mute_after_fails"] and empty < CFG["quiet_after_empty"]:
+            continue
+        out.append({"id": source_id, "feed": feeds[source_id], "fails": fails,
+                    "empty": empty, "never": not (row["ok_at"] or ""),
+                    "err": row["err"] or ""})
+    # ни разу не отвечавшие — первыми: это не сбой, это неверный адрес
+    return sorted(out, key=lambda r: (not r["never"], -r["fails"], -r["empty"]))
+
+
+def why_dead(err) -> str:
+    """Подсказка по коду ответа. Переезд и блокировка лечатся по-разному."""
+    if "403" in err or "429" in err:
+        return ("сайт закрыт от роботов (или просит реже) — смена адреса не"
+                " поможет, нужен другой источник о том же")
+    if "404" in err:
+        return "адрес не существует: лента переехала или её убрали"
+    if "HTTP 0" in err:
+        return "до сайта не достучались: домен, DNS или TLS"
+    if "ParseError" in err:
+        return "по адресу лежит не фид, а что-то другое (обычно HTML)"
+    return ""
+
+
+def check_broken(adopt=False):
+    """Ленты, которые перестали отвечать: проверить адрес и поискать переезд.
+
+    Список фидов стареет молча. Лента отвечает 404 полгода, источник заглушён
+    сутки, потом пробуется снова — и так до бесконечности: в выпуске его нет,
+    а в глаза это не бросается. Здесь всё сломанное собрано в одно место, и
+    рядом с каждым проверены известные адреса, куда оно могло переехать
+    (`candidates.REPLACEMENTS`).
+    """
+    conn = db()
+    try:
+        rows = broken_sources(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("Сломанных источников нет.")
+        return 0
+
+    never = sum(1 for row in rows if row["never"])
+    print("Сломанных источников: %d (из них ни разу не отвечали: %d)\n"
+          % (len(rows), never))
+
+    jobs = []
+    for row in rows:
+        feed = row["feed"]
+        jobs.append((row["id"], feed[1], "нынешний адрес"))
+        for url, why in candidates.replacements_for(row["id"]):
+            jobs.append((row["id"], url, why))
+
+    def probe(job):
+        source_id, url, why = job
+        feed = {r["id"]: r["feed"] for r in rows}[source_id]
+        _src, items, total, err = fetch_source((source_id, url, feed[2], feed[3]))
+        return source_id, url, why, len(items), total, err
+
+    found = {}
+    results = {}
+    with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
+        for source_id, url, why, fresh, total, err in pool.map(probe, jobs):
+            results.setdefault(source_id, []).append((url, why, fresh, total, err))
+
+    for row in rows:
+        state = "не отвечал ни разу" if row["never"] else "перестал отвечать"
+        print("  %-22s %s, сбоев подряд: %d, пустых обходов: %d"
+              % (row["id"], state, row["fails"], row["empty"]))
+        for url, why, fresh, total, err in results.get(row["id"], []):
+            alive = not err and total > 0
+            print("    [%s] %-34s %s"
+                  % (" ok " if alive else "FAIL", why[:34],
+                     "%d записей, %d свежих" % (total, fresh) if alive
+                     else (err or "лента пуста")[:44]))
+            if alive and why != "нынешний адрес" and row["id"] not in found:
+                found[row["id"]] = url
+        if not results.get(row["id"]):
+            continue
+        current = results[row["id"]][0]
+        if not current[4] and current[3] > 0:
+            print("    Адрес живой: сбой был временным, источник вернётся сам.")
+        elif row["id"] not in found:
+            hint = why_dead(current[4] or row["err"])
+            if hint:
+                print("    %s" % hint)
+        print()
+
+    if not found:
+        print("Живых замен не нашлось. Где помечено «закрыт от роботов» —"
+              " ищите замену источнику: %s feeds --candidates" % PROG)
+        return 0
+
+    print("Нашлась замена для %d источник(ов)." % len(found))
+    if not adopt:
+        for source_id, url in sorted(found.items()):
+            print("  %-22s -> %s" % (source_id, redact.safe_url(url)[:70]))
+        print("\nПрописать: %s feeds --broken --adopt" % PROG)
+        return 0
+
+    conn = db()
+    try:
+        for source_id, url in sorted(found.items()):
+            try:
+                userprofiles.replace_feed(source_id, url)
+            except ValueError as exc:
+                print("  пропускаю %s: %s" % (source_id, exc))
+                continue
+            clear_health(conn, source_id)   # счётчик сбоев про старый адрес
+            print("  %-22s -> %s" % (source_id, redact.safe_url(url)[:70]))
+    finally:
+        conn.close()
+    print("\nЗаписано в %s. Перезапустите демон, чтобы он это увидел."
+          % PROFILES_FILE)
     return 0
 
 
@@ -548,13 +680,23 @@ def cmd_status(_args):
     breaking_report(conn, week)
 
     print("\n=== Проблемные источники ===")
-    bad = list(conn.execute("SELECT source_id, fails, err FROM health WHERE fails > 0 "
-                            "ORDER BY fails DESC LIMIT 15"))
+    bad = list(conn.execute("SELECT source_id, fails, err, ok_at FROM health "
+                            "WHERE fails > 0 ORDER BY fails DESC LIMIT 15"))
     if not bad:
         print("  нет — все источники отвечают")
+    # «сбоев подряд: 31» у ленты, которая не отвечала НИ РАЗУ, и у той, что
+    # сломалась вчера, выглядит одинаково, а чинится по-разному: первой нужен
+    # другой адрес, вторая вернётся сама
     for row in bad:
-        print("  %-22s сбоев подряд: %-3d %s"
-              % (row["source_id"], row["fails"], (row["err"] or "")[:55]))
+        print("  %-22s сбоев подряд: %-3d %-9s %s"
+              % (row["source_id"], row["fails"],
+                 "НИ РАЗУ" if not (row["ok_at"] or "") else "",
+                 (row["err"] or "")[:46]))
+    never = sum(1 for row in bad if not (row["ok_at"] or ""))
+    if never:
+        print("  «НИ РАЗУ» — лента не отвечала с самого начала: адрес неверный"
+              " или сайт закрыт от роботов.")
+        print("  Проверить адреса и поискать переезд: %s feeds --broken" % PROG)
 
     # Фид, который отвечает 200 и отдаёт ноль записей, ошибкой не считается —
     # и раньше выпадал из выпуска молча. Такой источник надо увидеть глазами
@@ -787,8 +929,11 @@ def build_parser():
                        help="только быструю полосу: агентства и службы оповещения")
     feeds.add_argument("--candidates", action="store_true",
                        help="проверить источники-кандидаты, которых ещё нет")
+    feeds.add_argument("--broken", action="store_true",
+                       help="сломанные ленты: проверить адрес и поискать переезд")
     feeds.add_argument("--adopt", action="store_true",
-                       help="с --candidates: добавить в профили тех, кто ответил")
+                       help="с --candidates или --broken: прописать в профили"
+                            " то, что ответило")
     feeds.set_defaults(func=cmd_feeds)
     sub.add_parser("topics", help="разделы и их источники").set_defaults(
         func=cmd_topics)

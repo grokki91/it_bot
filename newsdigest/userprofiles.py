@@ -196,6 +196,44 @@ def add_feed(topic: str, url: str, tier=2, category="media", source_id="") -> tu
     return (source_id, url, tier, category)
 
 
+def topic_of(source_id: str):
+    """Тема и кортеж источника по его имени. Нет такого — ("", None)."""
+    for name, body in PROFILES.items():
+        for feed in body.get("feeds") or ():
+            if feed[0] == source_id:
+                return name, feed
+    return "", None
+
+
+def replace_feed(source_id: str, url: str) -> tuple:
+    """Меняет АДРЕС источника, сохраняя его имя, tier и категорию.
+
+    Имя источника — ключ ко всему остальному: по нему берётся класс и доверие
+    из `trust.SOURCE_META`, по нему считается история в `sent` и здоровье в
+    `health`. Поэтому переезд ленты — это правка адреса, а не новый источник:
+    добавленный заново AP вернулся бы незнакомцем, которому верят по tier, и
+    перестал бы быть быстрой полосой.
+    """
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("нужна ссылка на фид, начинающаяся с http:// или https://")
+    topic, feed = topic_of(source_id)
+    if not topic:
+        raise ValueError("источника %s нет ни в одной теме" % source_id)
+
+    data = read()
+    patch = _patch(data, topic)
+    feeds = [list(_feed_tuple(f)) for f in (patch.get("feeds") or [])
+             if _feed_tuple(f)[0] != source_id]
+    feeds.append([source_id, url, feed[2], feed[3]])
+    patch["feeds"] = feeds
+    patch["remove_feeds"] = [x for x in (patch.get("remove_feeds") or [])
+                             if x != source_id]
+    write(data)
+    apply()
+    return (source_id, url, feed[2], feed[3])
+
+
 def remove_feed(topic: str, source_id: str) -> bool:
     """Убирает источник — и добавленный руками, и встроенный."""
     source_id = (source_id or "").strip()
