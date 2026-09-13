@@ -1151,6 +1151,17 @@ class TestFeedDays(WebCase):
         self.assertTrue(data["items"][0]["iso"])
 
     def at_hour(self, url_hash, title, when):
+        """`when` — МЕСТНОЕ время читателя, а в базе `sent_at` лежит в UTC:
+        так его пишет бот (`now_iso`) и так же разбирает обратно страница.
+
+        Раньше сюда клалось местное время как есть, и страница перечитывала
+        его как UTC — прибавляя пояс второй раз. В Риге (UTC+3) всё, что
+        отправлено после девяти вечера, уезжало на сутки вперёд, и тест
+        «Сегодня и Вчера названы» падал вечером, а утром проходил.
+        """
+        now = datetime.now(timezone.utc)
+        stamp = (when - (to_local(now) - now.replace(tzinfo=None))
+                 ).replace(tzinfo=timezone.utc)
         conn = storage.db()
         try:
             conn.execute(
@@ -1158,7 +1169,7 @@ class TestFeedDays(WebCase):
                 "source_id,category,section,headline,summary,digest_date,sent_at)"
                 " VALUES (?,?,?,?,?,?,'media','ai',?,'',?,?)",
                 (OWNER, url_hash, "", title, "https://example.com/" + url_hash,
-                 "theverge", title, when.date().isoformat(), when.isoformat()))
+                 "theverge", title, when.date().isoformat(), stamp.isoformat()))
             conn.commit()
         finally:
             conn.close()

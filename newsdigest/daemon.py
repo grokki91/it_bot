@@ -21,8 +21,9 @@ from .bot import Worker, drain_backlog, poll_forever
 from .config import CFG, HOME, LOG_FILE, log, tz_label
 from .feedparse import parse_date
 from .pipeline import build_and_send
-from .sources import collect
+from .sources import archive_stale, collect
 from .storage import db, meta_get
+from .telegram import tg_send
 
 TICK_SECONDS = 60
 
@@ -73,6 +74,34 @@ def urgent_job(subs, wire=False):
     return job
 
 
+def retire_silent() -> None:
+    """Убрать в архив то, что молчит неделями, и сказать об этом владельцу.
+
+    Молчащий источник — не авария, которую надо чинить немедленно: он просто
+    перестал существовать, и чинится это не ожиданием, а заменой. Поэтому
+    сообщение одно и по делу: кого убрали, почему и чем это лечится. Без него
+    архив стал бы тихой свалкой, а раздел незаметно остался бы без источника.
+    """
+    conn = db()
+    try:
+        gone = archive_stale(conn)
+    finally:
+        conn.close()
+    if not gone or not config.TG_CHAT:
+        return
+    lines = ["🗄 <b>Источники убраны в архив</b>", ""]
+    for row in gone:
+        lines.append("· <b>%s</b> — %s (%s)"
+                     % (row["source_id"], row["reason"], row["topic"] or "?"))
+    lines += ["", "Они больше не опрашиваются, но не потеряны.",
+              "Проверить, не ожили ли: <code>digest.py feeds --archive</code>",
+              "Поискать замену: <code>digest.py feeds --candidates</code>"]
+    try:
+        tg_send(config.TG_CHAT, "\n".join(lines))
+    except Exception as exc:  # noqa: BLE001 — почта важнее, чем её доставка
+        log.warning("Не смог сообщить об архиве: %s", exc)
+
+
 def tick(worker) -> None:
     """Один заход планировщика: решает, что запустить, и уходит."""
     conn = db()
@@ -109,6 +138,7 @@ def tick(worker) -> None:
         # срочное ищем сразу после сбора: свежие материалы уже в базе
         def job():
             collect()
+            retire_silent()          # сразу после обхода: здоровье только что обновлено
             urgent_job(waiting)()
         worker.submit("collect", job)
     elif need_wire:

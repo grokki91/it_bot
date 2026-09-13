@@ -175,7 +175,35 @@ CREATE TABLE IF NOT EXISTS health (
     -- поисковый синтаксис у витрины Google News), раньше считался здоровым:
     -- HTTP-ошибки нет — значит всё в порядке. Так теряются источники.
     empty      INTEGER NOT NULL DEFAULT 0,
-    empty_at   TEXT
+    empty_at   TEXT,
+    -- когда начался НЫНЕШНИЙ провал: первая неудача после последнего успеха.
+    -- `fails` считает попытки, а вопрос «сколько недель его нет» задаётся о
+    -- времени: при обходе раз в четыре часа тридцать сбоев — это и пять дней,
+    -- и месяц, смотря сколько раз демон перезапускали
+    fail_since TEXT NOT NULL DEFAULT ''
+);
+
+-- Архив источников: то, что молчит неделями, из обхода убрано, но не забыто.
+--
+-- Лента, которой нет месяц, не чинится ожиданием: домен продан, издание
+-- закрылось, сайт закрылся от роботов. Держать её в обходе — это шесть
+-- бесполезных запросов в сутки и строка в списке проблемных, на которую
+-- перестают смотреть. Но и удалять нельзя: сайты возвращаются, а вместе с
+-- адресом ушли бы tier, категория и раздел, в котором лента жила.
+--
+-- Поэтому здесь лежит всё, что нужно, чтобы вернуть источник одной командой
+-- (`feeds --archive --restore`), и то, зачем он вообще был нужен.
+CREATE TABLE IF NOT EXISTS archive (
+    source_id    TEXT PRIMARY KEY,
+    topic        TEXT NOT NULL DEFAULT '',
+    url          TEXT NOT NULL DEFAULT '',
+    tier         INTEGER NOT NULL DEFAULT 2,
+    category     TEXT NOT NULL DEFAULT 'media',
+    -- почему убрали: «не отвечает 21 дн.» или «отвечает пустотой 16 дн.»
+    reason       TEXT NOT NULL DEFAULT '',
+    err          TEXT NOT NULL DEFAULT '',
+    silent_since TEXT NOT NULL DEFAULT '',
+    at           TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -525,6 +553,7 @@ def upgrade(conn) -> None:
     add_news_card(conn)
     add_breaking_mark(conn)
     add_item_section(conn)
+    add_fail_since(conn)
     add_favorites(conn)
     add_empty_feed_counter(conn)
     add_link_safety(conn)
@@ -594,6 +623,18 @@ def add_empty_feed_counter(conn) -> None:
         return                      # новая база: колонки придут из SCHEMA
     ensure_column(conn, "health", "empty", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "health", "empty_at", "TEXT")
+
+
+def add_fail_since(conn) -> None:
+    """Когда начался нынешний провал источника (архив молчащих лент).
+
+    Без этой колонки «не отвечает две недели» не отличить от «не отвечает
+    два дня, но демон перезапускали часто»: `fails` считает попытки, а не
+    время.
+    """
+    if not table_exists(conn, "health"):
+        return                      # новая база: колонка придёт из SCHEMA
+    ensure_column(conn, "health", "fail_since", "TEXT NOT NULL DEFAULT ''")
 
 
 def add_item_section(conn) -> None:
@@ -938,9 +979,51 @@ def meta_set(conn, key, value):
     conn.commit()
 
 
+#: сколько прогонов КАЖДОГО вида храним. Счёт раздельный не для красоты:
+#: срочное проверяется раз в 15 минут, выпуск выходит дважды в сутки, и при
+#: общем потолке проверки срочного вытирали историю выпусков за полтора дня.
+#: `report` после этого отвечал на вопрос «стало лучше или хуже» по вчерашнему
+#: дню, а расход за неделю показывал расход за вечер.
+KEEP_RUNS = 200
+
+
 def log_run(conn, kind, status, stats):
     conn.execute("INSERT INTO runs(kind, at, status, stats) VALUES (?,?,?,?)",
                  (kind, now_iso(), status, json.dumps(stats, ensure_ascii=False)))
-    conn.execute("DELETE FROM runs WHERE id NOT IN "
-                 "(SELECT id FROM runs ORDER BY id DESC LIMIT 200)")
+    conn.execute("DELETE FROM runs WHERE kind=? AND id NOT IN "
+                 "(SELECT id FROM runs WHERE kind=? ORDER BY id DESC LIMIT ?)",
+                 (kind, kind, KEEP_RUNS))
+    conn.commit()
+
+
+def archive_put(conn, row) -> None:
+    """Убирает источник в архив. Повторный вызов обновляет причину."""
+    conn.execute(
+        "INSERT INTO archive(source_id, topic, url, tier, category, reason, err,"
+        " silent_since, at) VALUES (:source_id,:topic,:url,:tier,:category,"
+        ":reason,:err,:silent_since,:at) ON CONFLICT(source_id) DO UPDATE SET "
+        "reason=excluded.reason, err=excluded.err, url=excluded.url",
+        dict(row, at=now_iso()))
+    conn.commit()
+
+
+def archive_rows(conn) -> list:
+    """Всё, что лежит в архиве. Свежеубранное — первым."""
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM archive ORDER BY at DESC")]
+    except sqlite3.OperationalError:
+        return []                   # база от прошлой версии: архива ещё нет
+
+
+def archive_drop(conn, source_id) -> None:
+    """Забыть запись архива — источник вернулся в обход."""
+    conn.execute("DELETE FROM archive WHERE source_id=?", (str(source_id),))
+    conn.commit()
+
+
+def clear_health(conn, source_id) -> None:
+    """Забыть, что источник сбоил. Зовётся после переезда ленты: счётчик
+    сбоев держит её заглушённой сутки, а адрес уже другой."""
+    conn.execute("DELETE FROM health WHERE source_id=?", (str(source_id),))
     conn.commit()

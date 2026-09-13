@@ -149,6 +149,27 @@ CANDIDATES = {
          "обновления Steam из первых рук"),
     ],
 
+    # Скамейка на случай, когда лента раздела умирает совсем. У «здоровья» и
+    # «политики» её не было вовсе, а обе потеряли по источнику: Harvard Health
+    # и NIH отвечают 404 и 403, AP — потерянным доменом.
+    "health": [
+        ("medlineplus", "https://medlineplus.gov/feeds/news_en.xml", 1, "policy",
+         "новости здоровья от NIH, доступные без защиты от роботов"),
+        ("mayo-clinic", "https://newsnetwork.mayoclinic.org/feed/", 1, "research",
+         "клиника первого ряда: разборы, а не советы из интернета"),
+        ("harvard-chan", "https://hsph.harvard.edu/news/feed/", 1, "research",
+         "школа общественного здоровья взамен умершего Harvard Health"),
+    ],
+
+    "politics": [
+        ("npr-news", "https://feeds.npr.org/1001/rss.xml", 2, "media",
+         "широкая новостная лента взамен выпавшего AP"),
+        ("france24", "https://www.france24.com/en/rss", 2, "media",
+         "ещё один независимый издатель для консенсуса по срочному"),
+        ("pbs-world", "https://www.pbs.org/newshour/feeds/rss/world", 2, "media",
+         "общественное вещание США: мир без таблоидного уклона"),
+    ],
+
     "robots": [
         ("nvidia-robotics", "https://blogs.nvidia.com/blog/category/robotics/feed/",
          1, "labs", "платформы для робототехники"),
@@ -156,6 +177,134 @@ CANDIDATES = {
          "крупнейший производитель дронов"),
     ],
 }
+
+
+#: Куда переехала лента, которая перестала отвечать.
+#:
+#: Отдельно от CANDIDATES, потому что это не новый источник, а тот же самый по
+#: новому адресу: имя сохраняется, и вместе с ним класс, доверие и быстрая
+#: полоса из `trust.SOURCE_META`. Заменить адрес — не то же самое, что добавить
+#: ленту заново.
+#:
+#: Адреса здесь — ПРЕДПОЛОЖЕНИЯ, а не проверенные ссылки: у фида нет способа
+#: сообщить, куда он переехал, и угадывать приходится по тому, как устроены
+#: адреса на сайте издания. Поэтому ни одна из них не попадает в работу сама.
+#: `feeds --broken` стучится по всем подряд и показывает, что ответило;
+#: `--adopt` прописывает в профиль первый ответивший. Неверная догадка не
+#: стоит ничего: она просто не отвечает.
+#:
+#: HTTP 403 сюда обычно не лечится: это не переезд, а защита от роботов —
+#: сайт видит запрос из дата-центра и закрывается. Смена адреса тут не поможет,
+#: нужен другой источник о том же (см. CANDIDATES).
+REPLACEMENTS = {
+    # --- ИИ ---
+    "the-batch": (
+        ("https://www.deeplearning.ai/the-batch/rss.xml", "rss.xml вместо feed/"),
+        ("https://info.deeplearning.ai/rss.xml", "рассылка на поддомене"),
+    ),
+    "venturebeat": (
+        ("https://venturebeat.com/feed/", "общая лента вместо раздела"),
+        ("https://venturebeat.com/category/ai/feed/atom/", "atom того же раздела"),
+    ),
+    "bair-berkeley": (
+        ("https://bair.berkeley.edu/blog/atom.xml", "atom вместо rss"),
+        ("https://bair.berkeley.edu/feed.xml", "лента в корне блога"),
+    ),
+
+    # --- софт ---
+    "infoworld": (
+        ("https://www.infoworld.com/feed/", "лента без index.rss"),
+        ("https://www.infoworld.com/category/software-development/feed/",
+         "лента профильного раздела"),
+    ),
+
+    # --- наука и медицина ---
+    "nature-news": (
+        ("https://www.nature.com/nature.rss", "настоящий фид журнала"),
+        ("https://www.nature.com/subjects/news/nature.rss", "лента новостей"),
+    ),
+    "nih-news": (
+        ("https://www.nih.gov/news-events/news-releases/feed", "лента пресс-релизов"),
+        ("https://science.nih.gov/rss", "научная лента NIH"),
+    ),
+    "harvard-health": (
+        ("https://www.health.harvard.edu/blog/feed/", "со слешем на конце"),
+        ("https://www.health.harvard.edu/rss", "общая лента издания"),
+    ),
+    "ema": (
+        ("https://www.ema.europa.eu/en/rss/news", "лента новостей агентства"),
+        ("https://www.ema.europa.eu/en/news/rss.xml", "rss в разделе новостей"),
+    ),
+    "nice": (
+        ("https://www.nice.org.uk/guidance/rss", "лента рекомендаций"),
+        ("https://www.nice.org.uk/news/rss", "лента новостей"),
+    ),
+    "cochrane": (
+        ("https://www.cochranelibrary.com/rss/reviews", "лента обзоров"),
+    ),
+
+    # --- климат ---
+    "wmo": (
+        ("https://wmo.int/rss.xml", "лента в корне сайта"),
+        ("https://public.wmo.int/en/rss.xml", "прежний публичный адрес"),
+    ),
+    "noaa-climate": (
+        ("https://www.climate.gov/news-features/feed", "лента раздела"),
+        ("https://www.climate.gov/rss.xml", "лента в корне"),
+    ),
+    "noaa-news": (
+        ("https://www.noaa.gov/rss.xml", "лента в корне"),
+        ("https://www.noaa.gov/media-release/feed", "лента пресс-релизов"),
+    ),
+    "carbonbrief": (
+        ("https://www.carbonbrief.org/feed", "без слеша на конце"),
+    ),
+
+    # --- экономика ---
+    "eurostat": (
+        ("https://ec.europa.eu/eurostat/api/dissemination/rss/en/euro_indicators.rss",
+         "подчёркивание вместо дефиса"),
+        ("https://ec.europa.eu/eurostat/api/dissemination/rss/en/news-release.rss",
+         "лента пресс-релизов"),
+    ),
+    "imf": (
+        ("https://www.imf.org/external/rss/feeds.aspx?category=News", "прежняя лента"),
+        ("https://www.imf.org/en/News/RSS?Language=ENG", "тот же адрес, другой регистр"),
+    ),
+    "nbp": (
+        ("https://nbp.pl/feed/", "лента без языкового префикса"),
+        ("https://nbp.pl/en/rss/", "rss вместо feed"),
+    ),
+
+    # --- политика ---
+    "ap-topnews": (
+        ("https://apnews.com/hub/ap-top-news.rss", "лента раздела на сайте"),
+        ("https://apnews.com/index.rss", "общая лента"),
+        ("https://feeds.apnews.com/apnews/topnews", "прежний адрес без rss/"),
+    ),
+
+    # --- железо, кино, игры, роботы ---
+    "notebookcheck": (
+        ("https://www.notebookcheck-ru.com/index.php?type=100&tx_ttnews[type]=rss",
+         "лента движка сайта"),
+        ("https://www.notebookcheck.net/News.0.html?type=100", "английская лента"),
+    ),
+    "vulture": (
+        ("https://www.vulture.com/rss/all.xml", "общая лента издания"),
+        ("https://feeds.feedburner.com/nymag/vulture", "лента через feedburner"),
+    ),
+    "xbox-wire": (
+        ("https://news.xbox.com/en-us/feed/atom/", "atom вместо rss"),
+    ),
+    "dronelife": (
+        ("https://dronelife.com/feed/atom/", "atom вместо rss"),
+    ),
+}
+
+
+def replacements_for(source_id) -> tuple:
+    """Куда мог переехать этот источник. Ничего не известно — пустой список."""
+    return REPLACEMENTS.get(str(source_id), ())
 
 
 def all_candidates(topics=None) -> list:
