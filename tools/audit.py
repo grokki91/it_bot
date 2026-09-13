@@ -266,13 +266,21 @@ def funnel(conn, days) -> None:
                     if row["n"] >= 20 and sid not in sent),
                    key=lambda kv: -kv[1])
     if noise:
-        part("Собираем, но не показываем ни разу")
+        part("Собираем, но под своим именем не показываем ни разу")
+        seen = absorbed(conn, [sid for sid, _n in noise[:TOP]], since)
+        print("  %-22s %7s %16s   %s"
+              % ("источник", "собр.", "событие показано", "класс"))
         for source_id, got in noise[:TOP]:
-            print("  %-22s материалов %-5d доверие %.2f  класс %s"
-                  % (source_id[:22], got, trust.trust(source_id),
-                     trust.kind(source_id)))
-        print("  Это не обязательно плохая лента: раздел мог быть не в плане"
-              " или её материал всегда проигрывает по баллу.")
+            hit, total = seen.get(source_id, (0, 0))
+            print("  %-22s %7d %9d %5.0f%%   %-11s доверие %.2f"
+                  % (source_id[:22], got, hit, 100.0 * share(hit, total),
+                     trust.kind(source_id), trust.trust(source_id)))
+        print("  «Событие показано» — материал доехал до читателя, но лицом"
+              " кластера стал другой издатель.")
+        print("  Высокая доля — лента работает как задумано: пересказ и"
+              " пресс-релиз не должны быть лицом.")
+        print("  Доля у нуля — её событий в выпуске не было вовсе: вот эту"
+              " ленту и надо разбирать.")
 
     polled = {f[0] for topic in sources.topics_in_use(conn)
               for f in PROFILES.get(topic, {}).get("feeds", [])}
@@ -280,6 +288,48 @@ def funnel(conn, days) -> None:
     if dry:
         print("\n  Опрашиваются, но ни одного материала за период: %d лент — %s"
               % (len(dry), ", ".join(dry[:TOP])))
+
+
+def absorbed(conn, source_ids, since) -> dict:
+    """Сколько материалов источника ВСЁ-ТАКИ дошли до читателя — но под именем
+    другого издателя. Возвращает {источник: (дошло, всего)}.
+
+    `sent.source_id` — это лицо кластера (`rank.primary_of`), а не список всех,
+    кто об этом событии написал. Поэтому «ноль показов» у ленты значит одно из
+    двух, и путать их нельзя: её событий не было в выпуске вовсе — или были, но
+    ссылку дали тому, кто эту же новость проверял. Первую надо чинить или
+    убирать, вторая работает ровно как задумано (`trust.demoted` не пускает
+    пересказ и пресс-релиз в лицо кластера).
+
+    Сравниваем по сигнатурам, тем же порогом, что и склейка. Чтобы не гонять
+    все материалы против всей истории, показанное разложено в обратный индекс:
+    слово -> кто его упоминал.
+    """
+    rows = [(row["sig"] or "").split() for row in conn.execute(
+        "SELECT sig FROM sent WHERE sent_at > ? AND sig != ''", (since,))]
+    index = defaultdict(set)
+    for at, words in enumerate(rows):
+        for word in words:
+            index[word].add(at)
+    shown = [set(words) for words in rows]
+
+    out = {}
+    for source_id in source_ids:
+        hit = total = 0
+        for row in conn.execute(
+                "SELECT sig FROM items WHERE source_id = ? AND fetched_at > ?"
+                " AND sig != ''", (source_id, since)):
+            words = set((row["sig"] or "").split())
+            if not words:
+                continue
+            total += 1
+            near = set()
+            for word in words:
+                near.update(index.get(word, ()))
+            if any(sim_sets(words, shown[at]) >= CFG["similarity"] for at in near):
+                hit += 1
+        out[source_id] = (hit, total)
+    return out
 
 
 def ranking(conn, days) -> None:
@@ -538,6 +588,11 @@ def credibility(conn, days) -> None:
             (safety.UNSAFE, ago(min(days, CFG["keep_items_days"]))))
     for row in bad[:TOP]:
         print("  забраковано у %-22s %d" % (row["source_id"][:22], row["n"]))
+    why = q(conn, "SELECT safe_why, COUNT(*) n FROM items WHERE safe = ?"
+                  " AND fetched_at > ? GROUP BY safe_why ORDER BY n DESC",
+            (safety.UNSAFE, ago(min(days, CFG["keep_items_days"]))))
+    for row in why[:TOP]:
+        print("    %-52s %d" % (clean(row["safe_why"], 52), row["n"]))
 
 
 def runs(conn, days) -> None:

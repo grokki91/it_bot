@@ -120,6 +120,36 @@ class AuditCase(unittest.TestCase):
         self.assertNotIn("777", text)
         self.assertIn("чат-1", text)
 
+    def test_an_event_shown_under_another_name_is_counted(self):
+        """«Ноль показов» — это две разные беды, и путать их нельзя.
+
+        Пересказ, который не стал лицом кластера, до читателя ДОШЁЛ: событие
+        в выпуске было, просто ссылку дали тому, кто его проверял. А лента,
+        чьих событий в выпуске не было вовсе, — это расход впустую. Первую
+        трогать не надо, вторую надо разбирать.
+        """
+        self.seed()
+        conn = self.conn
+        title = "Событие 0: чипы, модели и деньги"          # оно же в `sent`
+        conn.execute(
+            "INSERT INTO items(url_hash,url,source_id,tier,category,title,"
+            "summary,published_at,fetched_at,sig,social,state,section,route_conf,"
+            "safe,safe_why) VALUES ('a1','https://ag.example/1','агрегатор',3,"
+            "'media',?,'',?,?,?,0,'new','ai',0.5,'ok','')",
+            (title, ago(3), ago(2), signature(title)))
+        other = "Совсем про другое: погода, дожди и грибы"
+        conn.execute(
+            "INSERT INTO items(url_hash,url,source_id,tier,category,title,"
+            "summary,published_at,fetched_at,sig,social,state,section,route_conf,"
+            "safe,safe_why) VALUES ('a2','https://no.example/2','молчун',3,"
+            "'media',?,'',?,?,?,0,'new','ai',0.5,'ok','')",
+            (other, ago(3), ago(2), signature(other)))
+        conn.commit()
+
+        seen = audit.absorbed(conn, ["агрегатор", "молчун"], ago(24 * 7))
+        self.assertEqual(seen["агрегатор"], (1, 1))   # событие показано
+        self.assertEqual(seen["молчун"], (0, 1))      # не доехало вовсе
+
     def test_missing_database(self):
         code = audit.main(["--db", os.path.join(ROOT, "нет-такой-базы.db")])
         self.assertEqual(code, 1)
