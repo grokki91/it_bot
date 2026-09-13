@@ -337,6 +337,12 @@ SOURCE_META = {
     "criterion":          {"kind": "trade", "strict": True},
     "nintendo-pr":        {"kind": "pr", "strict": True},
     "valve-steam":        {"kind": "pr", "strict": True},
+    "medlineplus":        {"kind": "primary", "strict": True},
+    "mayo-clinic":        {"kind": "primary", "strict": True},
+    "harvard-chan":       {"kind": "primary", "strict": True},
+    "npr-news":           {"kind": "independent", "wire": True},
+    "france24":           {"kind": "independent", "wire": True},
+    "pbs-world":          {"kind": "independent"},
     "nvidia-robotics":    {"kind": "pr", "strict": True},
     "dji":                {"kind": "pr", "strict": True},
 }

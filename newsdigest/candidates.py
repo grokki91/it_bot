@@ -149,6 +149,27 @@ CANDIDATES = {
          "обновления Steam из первых рук"),
     ],
 
+    # Скамейка на случай, когда лента раздела умирает совсем. У «здоровья» и
+    # «политики» её не было вовсе, а обе потеряли по источнику: Harvard Health
+    # и NIH отвечают 404 и 403, AP — потерянным доменом.
+    "health": [
+        ("medlineplus", "https://medlineplus.gov/feeds/news_en.xml", 1, "policy",
+         "новости здоровья от NIH, доступные без защиты от роботов"),
+        ("mayo-clinic", "https://newsnetwork.mayoclinic.org/feed/", 1, "research",
+         "клиника первого ряда: разборы, а не советы из интернета"),
+        ("harvard-chan", "https://hsph.harvard.edu/news/feed/", 1, "research",
+         "школа общественного здоровья взамен умершего Harvard Health"),
+    ],
+
+    "politics": [
+        ("npr-news", "https://feeds.npr.org/1001/rss.xml", 2, "media",
+         "широкая новостная лента взамен выпавшего AP"),
+        ("france24", "https://www.france24.com/en/rss", 2, "media",
+         "ещё один независимый издатель для консенсуса по срочному"),
+        ("pbs-world", "https://www.pbs.org/newshour/feeds/rss/world", 2, "media",
+         "общественное вещание США: мир без таблоидного уклона"),
+    ],
+
     "robots": [
         ("nvidia-robotics", "https://blogs.nvidia.com/blog/category/robotics/feed/",
          1, "labs", "платформы для робототехники"),
