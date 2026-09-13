@@ -139,21 +139,99 @@ def mark_health(conn, source_id, ok, err="", count=0, total=None):
             "INSERT INTO health(source_id, ok_at, fails, last_count, empty, empty_at) "
             "VALUES (?,?,0,0,1,?) ON CONFLICT(source_id) DO UPDATE SET "
             "ok_at=excluded.ok_at, fails=0, last_count=0, empty=health.empty+1, "
-            "empty_at=COALESCE(NULLIF(health.empty_at,''), excluded.empty_at)",
+            "empty_at=COALESCE(NULLIF(health.empty_at,''), excluded.empty_at), "
+            "fail_since=''",
             (source_id, now_iso(), now_iso()))
     elif ok:
         conn.execute(
             "INSERT INTO health(source_id, ok_at, fails, last_count) VALUES (?,?,0,?) "
             "ON CONFLICT(source_id) DO UPDATE SET ok_at=excluded.ok_at, fails=0, "
-            "last_count=excluded.last_count, empty=0, empty_at=NULL",
+            "last_count=excluded.last_count, empty=0, empty_at=NULL, fail_since=''",
             (source_id, now_iso(), count))
     else:
         conn.execute(
-            "INSERT INTO health(source_id, err, err_at, fails) VALUES (?,?,?,1) "
+            "INSERT INTO health(source_id, err, err_at, fails, fail_since) "
+            "VALUES (?,?,?,1,?) "
             "ON CONFLICT(source_id) DO UPDATE SET err=excluded.err, "
-            "err_at=excluded.err_at, fails=health.fails+1",
-            (source_id, err[:200], now_iso()))
+            "err_at=excluded.err_at, fails=health.fails+1, "
+            # первый сбой после успеха, а не последний: отсюда и считается,
+            # сколько недель источника нет
+            "fail_since=COALESCE(NULLIF(health.fail_since,''), excluded.fail_since)",
+            (source_id, err[:200], now_iso(), now_iso()))
     conn.commit()
+
+
+def silent_days(row) -> tuple:
+    """Сколько дней источник молчит и почему. (дней, причина, с какого дня).
+
+    Два разных молчания. Первое — не отвечает вовсе: HTTP-ошибка, и счёт идёт
+    от первого сбоя после последнего успеха (`fail_since`). Второе — отвечает
+    двухсоткой и пустотой: лента жива, но в ней ничего нет (`empty_at`), и
+    это тоже выпадение из выпуска, только тихое.
+    """
+    if not row:
+        return 0, "", ""
+    now = datetime.now(timezone.utc)
+    best = (0, "", "")
+    for stamp, empty in ((row["fail_since"] if "fail_since" in row.keys()
+                          else "", False), (row["empty_at"], True)):
+        since = parse_date(stamp or "")
+        if not since:
+            continue
+        days = (now - since).days
+        if empty and (row["empty"] or 0) < CFG["quiet_after_empty"]:
+            continue                # пока это просто тихая неделя, а не поломка
+        if days > best[0]:
+            best = (days, "отвечает пустотой" if empty else "не отвечает", stamp)
+    return best
+
+
+def stale_rows(conn, days=None) -> list:
+    """Источники, молчащие дольше срока. Их пора убрать из обхода."""
+    days = CFG["archive_after_days"] if days is None else days
+    if not days:
+        return []
+    feeds = {f[0]: f for f in all_feeds(topics=list(PROFILES))}
+    out = []
+    for row in conn.execute("SELECT * FROM health"):
+        feed = feeds.get(row["source_id"])
+        if feed is None:
+            continue
+        quiet, why, since = silent_days(row)
+        if quiet < days:
+            continue
+        out.append({"source_id": feed[0], "topic": "", "url": feed[1],
+                    "tier": feed[2], "category": feed[3],
+                    "reason": "%s %d дн." % (why, quiet),
+                    "err": (row["err"] or "")[:200], "silent_since": since})
+    return sorted(out, key=lambda r: r["source_id"])
+
+
+def archive_stale(conn, days=None) -> list:
+    """Убирает в архив то, что молчит дольше срока. Возвращает убранное.
+
+    Зовётся после обхода. Лента, которой нет две недели, не чинится
+    ожиданием — это шесть бесполезных запросов в сутки и строка в списке
+    проблемных, на которую перестают смотреть. В архиве она не пропадает:
+    `feeds --archive` проверяет, не ожило ли что-нибудь, и возвращает.
+    """
+    from . import userprofiles          # ниже по уровню: профили знают о нас
+    from .storage import archive_put, clear_health
+
+    gone = []
+    for row in stale_rows(conn, days):
+        try:
+            topic, _feed = userprofiles.archive_feed(row["source_id"])
+        except ValueError as exc:
+            log.warning("Не убрал %s в архив: %s", row["source_id"], exc)
+            continue
+        row["topic"] = topic
+        archive_put(conn, row)
+        clear_health(conn, row["source_id"])   # счёт пойдёт заново, если вернётся
+        log.warning("Источник %s убран в архив: %s", row["source_id"],
+                    row["reason"])
+        gone.append(row)
+    return gone
 
 
 def collect(topics=None, wire_only=False) -> dict:

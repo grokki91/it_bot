@@ -25,7 +25,7 @@ from .pipeline import build_and_send, build_section
 from .profiles import PROFILES, label, profile
 from .profiles import title as topic_title       # 'title' занято чатами в setup
 from .sources import all_feeds, collect, fetch_source
-from .storage import clear_health, db
+from .storage import archive_drop, archive_rows, clear_health, db
 from .telegram import tg_call, tg_detect_chat
 
 
@@ -239,6 +239,8 @@ def cmd_feeds(args):
         return check_candidates(getattr(args, "adopt", False))
     if getattr(args, "broken", False):
         return check_broken(getattr(args, "adopt", False))
+    if getattr(args, "archive", False):
+        return check_archive(getattr(args, "restore", False))
     feeds = all_feeds(wire_only=getattr(args, "wire", False))
     print("Проверяю %d источников...\n" % len(feeds))
     silent = []
@@ -431,6 +433,89 @@ def check_broken(adopt=False):
                 print("  пропускаю %s: %s" % (source_id, exc))
                 continue
             clear_health(conn, source_id)   # счётчик сбоев про старый адрес
+            print("  %-22s -> %s" % (source_id, redact.safe_url(url)[:70]))
+    finally:
+        conn.close()
+    print("\nЗаписано в %s. Перезапустите демон, чтобы он это увидел."
+          % PROFILES_FILE)
+    return 0
+
+
+def check_archive(restore=False):
+    """Архив: что убрано из обхода и не ожило ли оно.
+
+    Источник уезжает сюда сам, когда молчит дольше `archive_after_days`, — и
+    остаётся здесь со всем, что нужно для возвращения: адресом, tier,
+    категорией и темой. Сайты возвращаются: домен выкупают обратно, защиту от
+    роботов ослабляют, лента переезжает на новый адрес. Эта команда и есть
+    тот самый проход по архиву — проверить и вернуть.
+    """
+    conn = db()
+    try:
+        rows = archive_rows(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("Архив пуст: дольше %d дн. пока никто не молчал."
+              % CFG["archive_after_days"])
+        return 0
+
+    print("В архиве: %d источник(ов). Проверяю, не ожили ли...\n" % len(rows))
+    index = {row["source_id"]: row for row in rows}
+    jobs = [(row["source_id"], row["url"], "адрес из архива") for row in rows]
+    for row in rows:
+        for url, why in candidates.replacements_for(row["source_id"]):
+            jobs.append((row["source_id"], url, why))
+
+    def probe(job):
+        source_id, url, why = job
+        row = index[source_id]
+        _src, items, total, err = fetch_source(
+            (source_id, url, row["tier"], row["category"]))
+        return source_id, url, why, len(items), total, err
+
+    alive, results = {}, {}
+    with ThreadPoolExecutor(max_workers=CFG["concurrency"]) as pool:
+        for source_id, url, why, fresh, total, err in pool.map(probe, jobs):
+            results.setdefault(source_id, []).append((url, why, fresh, total, err))
+
+    for row in rows:
+        print("  %-22s %-10s %s, в архиве с %s"
+              % (row["source_id"][:22], row["topic"][:10], row["reason"],
+                 (row["at"] or "")[:10]))
+        for url, why, fresh, total, err in results.get(row["source_id"], []):
+            ok = not err and total > 0
+            print("    [%s] %-26s %s"
+                  % (" ok " if ok else "FAIL", why[:26],
+                     "%d записей, %d свежих" % (total, fresh) if ok
+                     else (err or "лента пуста")[:44]))
+            if ok and row["source_id"] not in alive:
+                alive[row["source_id"]] = url
+        print()
+
+    if not alive:
+        print("Ожившего нет. Замену искать: %s feeds --candidates" % PROG)
+        return 0
+
+    print("Ожило: %d." % len(alive))
+    if not restore:
+        for source_id, url in sorted(alive.items()):
+            print("  %-22s %s" % (source_id, redact.safe_url(url)[:70]))
+        print("\nВернуть в строй: %s feeds --archive --restore" % PROG)
+        return 0
+
+    conn = db()
+    try:
+        for source_id, url in sorted(alive.items()):
+            row = index[source_id]
+            try:
+                userprofiles.restore_feed(row["topic"], source_id, url,
+                                          row["tier"], row["category"])
+            except ValueError as exc:
+                print("  пропускаю %s: %s" % (source_id, exc))
+                continue
+            archive_drop(conn, source_id)
+            clear_health(conn, source_id)
             print("  %-22s -> %s" % (source_id, redact.safe_url(url)[:70]))
     finally:
         conn.close()
@@ -931,6 +1016,11 @@ def build_parser():
                        help="проверить источники-кандидаты, которых ещё нет")
     feeds.add_argument("--broken", action="store_true",
                        help="сломанные ленты: проверить адрес и поискать переезд")
+    feeds.add_argument("--archive", action="store_true",
+                       help="архив: кто убран из обхода за долгое молчание"
+                            " и не ожил ли")
+    feeds.add_argument("--restore", action="store_true",
+                       help="с --archive: вернуть в строй тех, кто ожил")
     feeds.add_argument("--adopt", action="store_true",
                        help="с --candidates или --broken: прописать в профили"
                             " то, что ответило")

@@ -71,6 +71,14 @@ CFG = {
                                    # больше сотни, а упираются они в сеть, а не в CPU
     "max_per_feed":     30,        # сколько записей брать из одного фида
     "mute_after_fails": 5,         # после N сбоев подряд источник молчит сутки
+    "archive_after_days": 14,      # [env ND_ARCHIVE_AFTER] сколько дней
+                                   # молчания, прежде чем убрать источник из
+                                   # обхода. Лента, которой нет две недели, не
+                                   # чинится ожиданием: домен продан, издание
+                                   # закрылось, сайт закрылся от роботов. Она
+                                   # не удаляется, а уезжает в архив, откуда
+                                   # возвращается одной командой. 0 — не
+                                   # убирать никогда
     "quiet_after_empty": 6,        # после стольких пустых обходов подряд фид
                                    # попадает в «молчащие» в `status`. Ошибки
                                    # нет — он отвечает 200 и ноль записей, — но
@@ -330,6 +338,7 @@ ENV_MAP = {
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_CHAT_REPLY": ("chat_reply", str),
+    "ND_ARCHIVE_AFTER": ("archive_after_days", int),
     "ND_TG_VIEW": ("tg_view", str),
     "ND_FEEDBACK": ("feedback_buttons",
                     lambda v: str(v).lower() in ("1", "true", "yes")),
