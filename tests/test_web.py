@@ -1645,6 +1645,100 @@ class TestNewsLanguage(WebCase):
         self.assertEqual(card["title"], self.RUSSIAN % 0)
 
 
+class TestBehindProxy(WebCase):
+    """Страница за обратным прокси: TLS и настоящий адрес гостя — от него.
+
+    Сам сервер шифровать не умеет: 443 и сертификат держит nginx
+    (`digest.py site`), а сюда запрос доходит по http внутри машины. Что
+    снаружи он был https, знает только прокси — и говорит заголовком.
+    Верим ему, лишь когда владелец сам включил ND_WEB_PROXY: иначе те же
+    заголовки пришлёт любой гость.
+    """
+
+    def setUp(self):
+        WebCase.setUp(self)
+        self.saved_proxy = CFG["web_proxy"]
+        CFG["web_proxy"] = True
+
+    def tearDown(self):
+        CFG["web_proxy"] = self.saved_proxy
+        WebCase.tearDown(self)
+
+    def headers(self, path, body=None, headers=None):
+        """Ответ вместе с заголовками: cookie здесь и проверяем."""
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        request = urllib.request.Request(self.base + path, data=data,
+                                         method="POST" if data else "GET")
+        request.add_header("Content-Type", "application/json")
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as res:
+                return res.status, res.headers
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers
+
+    def login_cookie(self, proto="https"):
+        code, info = self.headers("/api/login", {"token": TOKEN},
+                                  {"X-Forwarded-Proto": proto})
+        self.assertEqual(code, 200)
+        return info.get("Set-Cookie") or ""
+
+    # -------------------------------------------------------------- cookie
+    def test_cookie_of_a_tls_visit_is_marked_secure(self):
+        # без Secure браузер отдаст её и по http — а по http ходить уже нечему
+        self.assertIn("; Secure", self.login_cookie())
+
+    def test_cookie_of_a_plain_visit_is_not(self):
+        self.assertNotIn("Secure", self.login_cookie("http"))
+
+    def test_logout_erases_the_same_cookie(self):
+        self.cookie = self.login_cookie().split(";", 1)[0]
+        code, info = self.headers("/api/logout", {},
+                                  {"Cookie": self.cookie,
+                                   "X-Forwarded-Proto": "https"})
+        self.assertEqual(code, 200)
+        self.assertIn("Max-Age=0", info.get("Set-Cookie"))
+        self.assertIn("; Secure", info.get("Set-Cookie"))
+
+    def test_only_the_first_proxy_in_the_chain_is_read(self):
+        self.assertIn("; Secure", self.login_cookie("https, http"))
+
+    # ----------------------------------------------------------------- RSS
+    def test_feed_links_to_itself_by_https(self):
+        code, _ctype, body = self.raw("/rss", {"Host": "news.example.org",
+                                               "X-Forwarded-Proto": "https"})
+        self.assertEqual(code, 200)
+        self.assertIn("<link>https://news.example.org</link>", body)
+
+    def test_the_forged_host_is_still_refused(self):
+        _code, _ctype, body = self.raw("/rss", {"Host": 'zlo"><script>',
+                                                "X-Forwarded-Proto": "https"})
+        self.assertNotIn("zlo", body)
+
+    # ------------------------------------------------------- адрес гостя
+    def test_wrong_passwords_are_counted_per_visitor(self):
+        for _ in range(5):
+            self.headers("/api/login", {"token": "не тот"},
+                         {"X-Forwarded-For": "203.0.113.7"})
+        code, _info = self.headers("/api/login", {"token": "не тот"},
+                                   {"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(code, 429)                 # этот гость подождёт
+        code, _info = self.headers("/api/login", {"token": "не тот"},
+                                   {"X-Forwarded-For": "203.0.113.8"})
+        self.assertEqual(code, 403)                 # соседу его блокировка не мешает
+
+    def test_without_the_proxy_the_headers_mean_nothing(self):
+        """ND_WEB_PROXY выключен — заголовки пишет кто угодно, и им не верят."""
+        CFG["web_proxy"] = False
+        self.assertNotIn("Secure", self.login_cookie())
+        for n in range(6):
+            code, _info = self.headers("/api/login", {"token": "не тот"},
+                                       {"X-Forwarded-For": "203.0.113.%d" % n})
+        # адрес в заголовке каждый раз новый, но считают по настоящему сокету
+        self.assertEqual(code, 429)
+
+
 class TestOutwardLinks(unittest.TestCase):
     """Адреса приходят из чужих фидов — на страницу пускаем только http(s)."""
 
