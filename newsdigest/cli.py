@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -1006,11 +1007,7 @@ server {{
 }}
 
 server {{
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    # nginx старше 1.25 этой строки не знает: уберите её, а в обе строки
-    # listen выше допишите http2 (`listen 443 ssl http2;`)
-    http2 on;
+{listen}
     server_name {domain};
 
     ssl_certificate     {certdir}/fullchain.pem;
@@ -1049,6 +1046,51 @@ server {{
 }}
 """
 
+#: «nginx/1.18.0 (Ubuntu)» — версия в выводе самого nginx
+NGINX_VERSION = re.compile(r"nginx/(\d+)\.(\d+)\.(\d+)")
+
+#: с этой версии http2 включают отдельной директивой, а не словом в listen
+HTTP2_DIRECTIVE = (1, 25, 1)
+
+
+def nginx_version():
+    """Версия установленного nginx или None, если его тут нет.
+
+    `nginx -v` печатает версию в stderr и ничего не запускает — это самая
+    безобидная из его команд, root для неё не нужен.
+    """
+    binary = shutil.which("nginx")
+    if not binary:
+        return None
+    try:
+        out = subprocess.run([binary, "-v"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = NGINX_VERSION.search((out.stderr + out.stdout).decode("utf-8", "replace"))
+    return tuple(int(part) for part in found.groups()) if found else None
+
+
+def listen_443(version) -> str:
+    """Строки listen для 443 — в том виде, который поймёт ЭТОТ nginx.
+
+    До 1.25.1 http2 включали словом в самой listen, после — отдельной
+    директивой, а старое написание объявили устаревшим. Перепутать нельзя:
+    nginx не запустится вовсе, а вместе с ним не поднимется и то, что уже
+    стоит на этой машине. Версии не видно (nginx не установлен) — пишем по
+    старому: его понимают обе.
+    """
+    if version and version >= HTTP2_DIRECTIVE:
+        return ("    listen 443 ssl;\n"
+                "    listen [::]:443 ssl;\n"
+                "    # nginx %s: http2 включается отдельной директивой\n"
+                "    http2 on;" % ".".join(str(p) for p in version))
+    seen = ("nginx %s" % ".".join(str(p) for p in version) if version
+            else "nginx не найден, пишем совместимо")
+    return ("    # %s: http2 включается словом в listen\n"
+            "    listen 443 ssl http2;\n"
+            "    listen [::]:443 ssl http2;" % seen)
+
+
 #: домен как его знает DNS. Строку из командной строки в конфиг nginx пускаем
 #: только целиком совпавшую с этим образцом: там она станет директивой
 DOMAIN = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
@@ -1082,7 +1124,9 @@ def cmd_site(args):
 
     port = int(args.port or CFG["web_port"])
     host = str(args.host or "127.0.0.1")
+    version = nginx_version()
     conf = SITE_TEMPLATE.format(domain=domain, host=host, port=port, prog=PROG,
+                                listen=listen_443(version),
                                 certdir="/etc/letsencrypt/live/" + domain)
     HOME.mkdir(parents=True, exist_ok=True)
     # Имя файла без домена: путь мелькает в подсказках, в логах и в issue,
@@ -1092,6 +1136,9 @@ def cmd_site(args):
     print(conf)
     print("Файл сохранён: %s\n" % path)
 
+    if version is None:
+        print("nginx на этой машине не найден — конфиг написан в совместимом\n"
+              "  виде, он подойдёт любой версии. Ставить: шаг 2.\n")
     print("Порядок (root нужен только на команды с sudo):")
     print("  1) A-запись домена должна вести на IP этого VPS:")
     print("       dig +short %s" % domain)

@@ -33,10 +33,39 @@ class SiteCase(unittest.TestCase):
     def config(self, argv=()):
         return self.run_cmd(["site", "--domain", DOMAIN] + list(argv))
 
+    # ---------------------------------------------------------------- http2
+    # Написание http2 менялось: до nginx 1.25.1 это слово в самой listen,
+    # после — отдельная директива. Ошибиться нельзя: nginx не запустится
+    # вовсе, а с ним ляжет и всё остальное, что стоит на машине.
+    def test_old_nginx_gets_http2_inside_listen(self):
+        self.assertEqual(cli.listen_443((1, 18, 0)).count("ssl http2;"), 2)
+        self.assertNotIn("http2 on;", cli.listen_443((1, 18, 0)))
+
+    def test_new_nginx_gets_the_directive(self):
+        lines = cli.listen_443((1, 27, 0))
+        self.assertIn("http2 on;", lines)
+        self.assertNotIn("ssl http2;", lines)
+
+    def test_the_version_of_the_change_counts_as_new(self):
+        self.assertIn("http2 on;", cli.listen_443((1, 25, 1)))
+        self.assertIn("ssl http2;", cli.listen_443((1, 25, 0)))
+
+    def test_without_nginx_the_compatible_form_is_written(self):
+        # версии не видно — пишем так, как поймут обе
+        self.assertIn("ssl http2;", cli.listen_443(None))
+
+    def test_the_config_follows_the_installed_nginx(self):
+        saved = cli.nginx_version
+        cli.nginx_version = lambda: (1, 18, 0)
+        try:
+            self.assertIn("listen 443 ssl http2;", self.config())
+        finally:
+            cli.nginx_version = saved
+
     # ------------------------------------------------------------- сам конфиг
     def test_https_port_is_open_and_http_only_redirects(self):
         text = self.config()
-        self.assertIn("listen 443 ssl;", text)
+        self.assertIn("listen 443 ssl", text)
         self.assertIn("return 301 https://$host$request_uri;", text)
 
     def test_certificate_is_taken_from_letsencrypt_by_domain(self):
