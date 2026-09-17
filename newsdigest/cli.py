@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -1006,11 +1007,7 @@ server {{
 }}
 
 server {{
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    # nginx старше 1.25 этой строки не знает: уберите её, а в обе строки
-    # listen выше допишите http2 (`listen 443 ssl http2;`)
-    http2 on;
+{listen}
     server_name {domain};
 
     ssl_certificate     {certdir}/fullchain.pem;
@@ -1049,6 +1046,56 @@ server {{
 }}
 """
 
+#: «nginx/1.18.0 (Ubuntu)» — версия в выводе самого nginx
+NGINX_VERSION = re.compile(r"nginx/(\d+)\.(\d+)\.(\d+)")
+
+#: с этой версии http2 включают отдельной директивой, а не словом в listen
+HTTP2_DIRECTIVE = (1, 25, 1)
+
+
+def nginx_version():
+    """Версия установленного nginx или None, если его тут нет.
+
+    `nginx -v` печатает версию в stderr и ничего не запускает — это самая
+    безобидная из его команд, root для неё не нужен.
+    """
+    binary = shutil.which("nginx")
+    if not binary:
+        return None
+    try:
+        out = subprocess.run([binary, "-v"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = NGINX_VERSION.search((out.stderr + out.stdout).decode("utf-8", "replace"))
+    return tuple(int(part) for part in found.groups()) if found else None
+
+
+def listen_443(version) -> str:
+    """Строки listen для 443 — в том виде, который поймёт ЭТОТ nginx.
+
+    До 1.25.1 http2 включали словом в самой listen, после — отдельной
+    директивой, а старое написание объявили устаревшим. Перепутать нельзя:
+    nginx не запустится вовсе, а вместе с ним не поднимется и то, что уже
+    стоит на этой машине. Версии не видно (nginx не установлен) — пишем по
+    старому: его понимают обе.
+    """
+    if version and version >= HTTP2_DIRECTIVE:
+        return ("    listen 443 ssl;\n"
+                "    listen [::]:443 ssl;\n"
+                "    # nginx %s: http2 включается отдельной директивой\n"
+                "    http2 on;" % ".".join(str(p) for p in version))
+    seen = ("nginx %s" % ".".join(str(p) for p in version) if version
+            else "nginx не найден, пишем совместимо")
+    return ("    # %s: http2 включается словом в listen\n"
+            "    listen 443 ssl http2;\n"
+            "    listen [::]:443 ssl http2;" % seen)
+
+
+def cert_ready(domain) -> bool:
+    """Есть ли уже сертификат для домена — тот, на который ссылается конфиг."""
+    return Path("/etc/letsencrypt/live/%s/fullchain.pem" % domain).exists()
+
+
 #: домен как его знает DNS. Строку из командной строки в конфиг nginx пускаем
 #: только целиком совпавшую с этим образцом: там она станет директивой
 DOMAIN = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
@@ -1082,7 +1129,9 @@ def cmd_site(args):
 
     port = int(args.port or CFG["web_port"])
     host = str(args.host or "127.0.0.1")
+    version = nginx_version()
     conf = SITE_TEMPLATE.format(domain=domain, host=host, port=port, prog=PROG,
+                                listen=listen_443(version),
                                 certdir="/etc/letsencrypt/live/" + domain)
     HOME.mkdir(parents=True, exist_ok=True)
     # Имя файла без домена: путь мелькает в подсказках, в логах и в issue,
@@ -1092,6 +1141,15 @@ def cmd_site(args):
     print(conf)
     print("Файл сохранён: %s\n" % path)
 
+    ready = cert_ready(domain)
+    if not ready:
+        print("Сертификата для домена ещё нет — конфиг в nginx ставить рано:\n"
+              "  он ссылается на /etc/letsencrypt/live/%s/, и с ним `nginx -t`\n"
+              "  не пройдёт, а сломанный конфиг не даст работать и certbot.\n"
+              "  Сначала шаги 1-3.\n" % domain)
+    if version is None:
+        print("nginx на этой машине не найден — конфиг написан в совместимом\n"
+              "  виде, он подойдёт любой версии. Ставить: шаг 2.\n")
     print("Порядок (root нужен только на команды с sudo):")
     print("  1) A-запись домена должна вести на IP этого VPS:")
     print("       dig +short %s" % domain)
@@ -1107,7 +1165,16 @@ def cmd_site(args):
     print("  7) проверить: curl -I https://%s/" % domain)
     print("\nСертификат продлевает сам certbot: systemctl status certbot.timer")
 
-    if args.apply_env:
+    if args.apply_env and not ready and not args.force:
+        # Эти две строки уводят страницу внутрь машины, и отдавать её наружу
+        # становится некому: прокси без сертификата не запустится. Человек
+        # остаётся и без https, и без прежнего адреса — молчать нельзя.
+        print("\nENV НЕ ТРОНУТ: сертификата ещё нет, а без него прокси не\n"
+              "  поднимется. Уведи мы страницу на %s прямо сейчас — она\n"
+              "  пропала бы отовсюду. Повторите команду после шага 5, когда\n"
+              "  `nginx -t` пройдёт (или --force, если знаете, что делаете)."
+              % host)
+    elif args.apply_env:
         write_env({"ND_WEB_HOST": host, "ND_WEB_PROXY": "1"})
         print("\nВ %s записано: ND_WEB_HOST=%s, ND_WEB_PROXY=1." % (ENV_FILE, host))
         print("Страница уйдёт с внешнего адреса внутрь машины — снаружи её")
@@ -1230,6 +1297,8 @@ def build_parser():
                       help="порт страницы; по умолчанию ND_WEB_PORT")
     site.add_argument("--apply-env", action="store_true",
                       help="сразу записать в env ND_WEB_HOST и ND_WEB_PROXY=1")
+    site.add_argument("--force", action="store_true",
+                      help="записать env, даже если сертификата ещё нет")
     site.set_defaults(func=cmd_site)
     return parser
 
