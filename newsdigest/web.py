@@ -21,6 +21,13 @@
 
 Сервер — из стандартной библиотеки, поднимается нитью внутри демона.
 Пароль владельца (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
+
+Шифрования сервер не умеет и не будет: сертификаты, их обновление и 443-й
+порт — дело обратного прокси (`digest.py site` печатает для него конфиг).
+Тогда ставят `ND_WEB_PROXY=1`, и страница начинает верить его заголовкам:
+`X-Forwarded-Proto` (по нему cookie уходит с `Secure`, а ссылки в RSS — с
+https) и `X-Forwarded-For` (по нему видно настоящего гостя, а не сам прокси).
+Без прокси этим заголовкам верить нельзя — их пишет кто угодно.
 """
 from __future__ import annotations
 
@@ -109,6 +116,13 @@ def same(given, expected) -> bool:
     """Сравнение без утечки времени. Через байты: пароль бывает и кириллицей."""
     return hmac.compare_digest(str(given).encode("utf-8"),
                                str(expected).encode("utf-8"))
+
+
+def cookie(value: str, max_age: int, secure: bool) -> str:
+    """Заголовок Set-Cookie. За TLS добавляем Secure: по http такую не отдадут."""
+    out = "%s=%s; Max-Age=%d; Path=/; HttpOnly; SameSite=Lax" % (
+        COOKIE, value, max_age)
+    return out + "; Secure" if secure else out
 
 
 def cookie_value(secret: str) -> str:
@@ -426,6 +440,34 @@ class Site(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         return parsed.path.rstrip("/") or "/", urllib.parse.parse_qs(parsed.query)
 
+    def _secure(self) -> bool:
+        """Пришёл ли запрос по https. Знает об этом только прокси — он и скажет.
+
+        Заголовок клиентский, подделать его ничего не стоит, поэтому смотрим
+        на него, лишь когда владелец сам сказал, что прокси есть
+        (`ND_WEB_PROXY=1`). Прокси ставит заголовок заново на каждом запросе,
+        так что от гостя он не доходит.
+        """
+        if not CFG["web_proxy"]:
+            return False
+        proto = (self.headers.get("X-Forwarded-Proto") or "").strip()
+        # прокси бывает не один — тогда в заголовке список, наш он первый
+        return proto.split(",")[0].strip().lower() == "https"
+
+    def _client_ip(self) -> str:
+        """Адрес гостя. За прокси в соединении виден сам прокси, а не гость.
+
+        Без прокси адрес берём из сокета: заголовку тут верить нельзя, иначе
+        подбор пароля пойдёт с новой «строчкой» на каждую попытку и счётчик
+        неверных паролей перестанет кого-либо тормозить.
+        """
+        if CFG["web_proxy"]:
+            forwarded = (self.headers.get("X-Forwarded-For") or "").strip()
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first[:64]
+        return self.client_address[0]
+
     def _rss(self, query) -> str:
         """Лента в RSS. Раздел и поиск — из адреса, остальное как на странице."""
         section = sections.resolve((query.get("section") or [""])[0])
@@ -433,7 +475,8 @@ class Site(BaseHTTPRequestHandler):
         conn = db()
         try:
             return rss.feed(conn, chat_id(), section, search,
-                            host=self.headers.get("Host") or "")
+                            host=self.headers.get("Host") or "",
+                            secure=self._secure())
         finally:
             conn.close()
 
@@ -462,7 +505,7 @@ class Site(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------------- вход
     def _login(self, data):
-        ip = self.client_address[0]
+        ip = self._client_ip()
         fails, until = _FAILS.get(ip, (0, 0.0))
         if time.time() < until:
             self._json({"error": "слишком много попыток, подождите минуту"}, 429)
@@ -470,9 +513,8 @@ class Site(BaseHTTPRequestHandler):
         if same(data.get("token") or "", token()):
             _FAILS.pop(ip, None)
             self._json({"ok": True}, headers=[(
-                "Set-Cookie",
-                "%s=%s; Max-Age=%d; Path=/; HttpOnly; SameSite=Lax"
-                % (COOKIE, cookie_value(token()), COOKIE_MAX_AGE))])
+                "Set-Cookie", cookie(cookie_value(token()), COOKIE_MAX_AGE,
+                                     self._secure()))])
             return
         time.sleep(1)          # подбор пароля со скоростью раз в секунду
         fails += 1
@@ -537,8 +579,7 @@ class Site(BaseHTTPRequestHandler):
                 return
             if path == "/api/logout":
                 self._json({"ok": True}, headers=[(
-                    "Set-Cookie",
-                    "%s=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax" % COOKIE)])
+                    "Set-Cookie", cookie("", 0, self._secure()))])
                 return
             if path == "/api/react":
                 self._json(press(data.get("data", "")))
@@ -572,6 +613,12 @@ def announce(server) -> None:
     log.info("Страница открыта: http://%s:%d/ — новости видны всем без пароля, "
              "служебное только владельцу: пароль в %s (ND_WEB_TOKEN)",
              shown, port, ENV_FILE)
+    if CFG["web_proxy"]:
+        log.info("Страница за обратным прокси: наружу её отдаёт он (443, TLS), "
+                 "заголовкам X-Forwarded-* от него верим")
+    elif host not in ("127.0.0.1", "::1"):
+        log.info("Шифрования тут нет: пароль и cookie идут по открытому http. "
+                 "Свой домен с сертификатом — `digest.py site`")
 
 
 def start_background(worker=None):

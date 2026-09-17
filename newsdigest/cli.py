@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -168,7 +169,12 @@ def cmd_doctor(_args):
     print("Новостей     : по %d на раздел (до %d за выпуск), порог важности %.1f"
           % (CFG["per_section"], CFG["per_section"] * len(plan), CFG["min_score"]))
     print("Модели       :", CFG["model_rank"], "/", CFG["model_summary"])
-    if CFG["web"]:
+    if CFG["web"] and CFG["web_proxy"]:
+        print("Страница     : наружу её отдаёт обратный прокси по https "
+              "(пароль владельца: %s, ND_WEB_TOKEN)" % ENV_FILE)
+        print("               сама слушает %s:%s — снаружи туда ходить не должны"
+              % (CFG["web_host"], CFG["web_port"]))
+    elif CFG["web"]:
         print("Страница     : http://%s:%s/ (новости всем, служебное по "
               "паролю: %s, ND_WEB_TOKEN)"
               % ("<ip-вашего-vps>" if CFG["web_host"] == "0.0.0.0"
@@ -580,8 +586,10 @@ def cmd_web(args):
     print("Открывать: http://<ip-вашего-vps>:%s/\n"
           % (args.port or CFG["web_port"]))
     print("Это обычный HTTP без шифрования — пускайте только себя.")
-    print("Безопаснее так: ND_WEB_HOST=127.0.0.1 и ssh -L %s:localhost:%s user@vps\n"
+    print("Безопаснее так: ND_WEB_HOST=127.0.0.1 и ssh -L %s:localhost:%s user@vps"
           % (args.port or CFG["web_port"], args.port or CFG["web_port"]))
+    print("А чтобы сайт открывали все и по https — свой домен и прокси перед "
+          "страницей: `python3 %s site --domain <ваш-домен>`\n" % PROG)
     serve(Worker().start(), args.host, args.port)
     return 0
 
@@ -981,6 +989,141 @@ def cmd_autoupdate(args):
     return 0
 
 
+SITE_TEMPLATE = """# News digest: сайт наружу по https, страница живёт на {host}:{port}.
+#
+# Сгенерировано `python3 {prog} site` — правьте копию, а не этот файл:
+# команду запускают снова после каждой смены домена или порта.
+#
+# Порт 80 нужен не для сайта, а для проверки сертификата: Let's Encrypt
+# ходит за ней по http. Всё остальное с него уводим на 443.
+server {{
+    listen 80;
+    listen [::]:80;
+    server_name {domain};
+
+    location /.well-known/acme-challenge/ {{ root /var/www/html; }}
+    location / {{ return 301 https://$host$request_uri; }}
+}}
+
+server {{
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    # nginx старше 1.25 этой строки не знает: уберите её, а в обе строки
+    # listen выше допишите http2 (`listen 443 ssl http2;`)
+    http2 on;
+    server_name {domain};
+
+    ssl_certificate     {certdir}/fullchain.pem;
+    ssl_certificate_key {certdir}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # Год — обычный срок для HSTS. Пока не уверены, что https навсегда,
+    # поставьте max-age=300: откатиться потом будет нечем.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # Новости — это текст, и его много: сжатие экономит трафик читателю.
+    gzip on;
+    gzip_types application/json application/rss+xml application/manifest+json
+               text/css text/html image/svg+xml;
+
+    # Страница шлёт крохи, большому телу взяться неоткуда.
+    client_max_body_size 128k;
+
+    location / {{
+        proxy_pass http://{host}:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # По этим двум заголовкам страница понимает, что она за TLS
+        # (cookie уходит с Secure) и кто именно ошибся паролем.
+        # Ставим их сами на каждом запросе — присланному гостем грош цена.
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }}
+}}
+"""
+
+#: домен как его знает DNS. Строку из командной строки в конфиг nginx пускаем
+#: только целиком совпавшую с этим образцом: там она станет директивой
+DOMAIN = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+                    r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
+
+
+def cmd_site(args):
+    """Конфиг обратного прокси: сайт на своём домене, 443 и сертификат.
+
+    Сам бот шифровать не умеет и уметь не будет: сертификаты, их обновление и
+    привилегированный порт — работа nginx, который на VPS обычно уже стоит.
+    Эта команда только печатает для него конфиг, ничего не устанавливая и не
+    трогая: root нужен ровно на копирование файла и перезапуск, как и у
+    `service`.
+
+    Домен нигде в коде не лежит — его называют здесь или в ND_SITE_DOMAIN.
+    """
+    # Домен называют по-разному: и «example.org», и целой ссылкой из адресной
+    # строки браузера. Приводим к тому виду, в котором его знает DNS.
+    domain = str(args.domain or os.environ.get("ND_SITE_DOMAIN") or "").strip()
+    if "//" in domain:
+        domain = domain.split("//", 1)[1]
+    domain = domain.split("/", 1)[0].strip().rstrip(".").lower()
+    if not domain:
+        print("Не назван домен. Так:\n  python3 %s site --domain <ваш-домен>\n"
+              "или задайте ND_SITE_DOMAIN." % PROG)
+        return 2
+    if len(domain) > 253 or not DOMAIN.match(domain):
+        print("«%s» не похоже на домен — конфиг не собран." % domain)
+        return 2
+
+    port = int(args.port or CFG["web_port"])
+    host = str(args.host or "127.0.0.1")
+    conf = SITE_TEMPLATE.format(domain=domain, host=host, port=port, prog=PROG,
+                                certdir="/etc/letsencrypt/live/" + domain)
+    HOME.mkdir(parents=True, exist_ok=True)
+    # Имя файла без домена: путь мелькает в подсказках, в логах и в issue,
+    # а домен — дело владельца, и внутри конфига его достаточно.
+    path = HOME / "nginx-site.conf"
+    path.write_text(conf, encoding="utf-8")
+    print(conf)
+    print("Файл сохранён: %s\n" % path)
+
+    print("Порядок (root нужен только на команды с sudo):")
+    print("  1) A-запись домена должна вести на IP этого VPS:")
+    print("       dig +short %s" % domain)
+    print("  2) sudo apt install -y nginx certbot python3-certbot-nginx")
+    print("  3) sudo certbot certonly --nginx -d %s" % domain)
+    print("     (сертификат берут ДО подключения конфига: без файлов в")
+    print("      /etc/letsencrypt/live/... nginx с ним не запустится)")
+    print("  4) sudo cp %s /etc/nginx/conf.d/newsdigest.conf" % path)
+    print("  5) sudo nginx -t && sudo systemctl reload nginx")
+    print("  6) наружу пускаем только 80 и 443, страницу — внутрь:")
+    print("       sudo ufw allow 80,443/tcp && sudo ufw delete allow %d/tcp"
+          % port)
+    print("  7) проверить: curl -I https://%s/" % domain)
+    print("\nСертификат продлевает сам certbot: systemctl status certbot.timer")
+
+    if args.apply_env:
+        write_env({"ND_WEB_HOST": host, "ND_WEB_PROXY": "1"})
+        print("\nВ %s записано: ND_WEB_HOST=%s, ND_WEB_PROXY=1." % (ENV_FILE, host))
+        print("Страница уйдёт с внешнего адреса внутрь машины — снаружи её")
+        print("отдаёт только прокси. Применится после перезапуска:")
+        print("  sudo systemctl restart newsdigest")
+    else:
+        print("\nПосле шага 5 допишите в %s две строки и перезапустите демона:"
+              % ENV_FILE)
+        print("  ND_WEB_HOST=%s   # снаружи по порту %d больше не пускаем" % (host, port))
+        print("  ND_WEB_PROXY=1   # верить X-Forwarded-* от прокси")
+        print("  sudo systemctl restart newsdigest")
+        print("(то же самое сделает `python3 %s site --domain ... --apply-env`)"
+              % PROG)
+    return 0
+
+
 def build_parser():
     # Общие флаги вынесены в родителя, чтобы работали в ЛЮБОЙ позиции:
     # и `digest.py --log-file daemon`, и `digest.py daemon --log-file`.
@@ -1076,6 +1219,18 @@ def build_parser():
     auto.add_argument("--service", default="newsdigest",
                       help="имя юнита демона (newsdigest)")
     auto.set_defaults(func=cmd_autoupdate)
+
+    site = sub.add_parser("site", help="конфиг nginx: свой домен, 443 и "
+                                       "сертификат перед страницей")
+    site.add_argument("--domain", default="",
+                      help="домен сайта; по умолчанию ND_SITE_DOMAIN")
+    site.add_argument("--host", default="127.0.0.1",
+                      help="адрес страницы для прокси (127.0.0.1)")
+    site.add_argument("--port", type=int, default=0,
+                      help="порт страницы; по умолчанию ND_WEB_PORT")
+    site.add_argument("--apply-env", action="store_true",
+                      help="сразу записать в env ND_WEB_HOST и ND_WEB_PROXY=1")
+    site.set_defaults(func=cmd_site)
     return parser
 
 
