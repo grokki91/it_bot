@@ -33,6 +33,15 @@ class SiteCase(unittest.TestCase):
     def config(self, argv=()):
         return self.run_cmd(["site", "--domain", DOMAIN] + list(argv))
 
+    def with_cert(self, ready, argv=()):
+        """Тот же конфиг, но при известном ответе «сертификат уже есть?»."""
+        saved = cli.cert_ready
+        cli.cert_ready = lambda domain: ready
+        try:
+            return self.config(argv)
+        finally:
+            cli.cert_ready = saved
+
     # ---------------------------------------------------------------- http2
     # Написание http2 менялось: до nginx 1.25.1 это слово в самой listen,
     # после — отдельная директива. Ошибиться нельзя: nginx не запустится
@@ -131,21 +140,46 @@ class SiteCase(unittest.TestCase):
             self.assertIn("не похоже на домен", text)
 
     # ------------------------------------------------------------------ env
+    def applied(self, argv, ready=True):
+        """Что команда записала в env (перехватываем, файла не трогаем)."""
+        written = {}
+        saved_write, saved_cert = cli.write_env, cli.cert_ready
+        cli.write_env = lambda values: written.update(values)
+        cli.cert_ready = lambda domain: ready
+        try:
+            text = self.config(argv)
+        finally:
+            cli.write_env, cli.cert_ready = saved_write, saved_cert
+        return written, text
+
     def test_env_is_left_alone_unless_asked(self):
         text = self.config()
         self.assertIn("ND_WEB_PROXY=1", text)      # сказано, но не сделано
         self.assertNotIn("записано", text)
 
     def test_apply_env_puts_the_page_behind_the_proxy(self):
-        written = {}
-        saved = cli.write_env
-        cli.write_env = lambda values: written.update(values)
-        try:
-            self.config(["--apply-env"])
-        finally:
-            cli.write_env = saved
+        written, _text = self.applied(["--apply-env"])
         self.assertEqual(written.get("ND_WEB_HOST"), "127.0.0.1")
         self.assertEqual(written.get("ND_WEB_PROXY"), "1")
+
+    def test_without_a_certificate_env_is_not_touched(self):
+        # иначе страница уйдёт на localhost, а отдавать её наружу будет некому:
+        # прокси без сертификата не запустится — и она пропадёт отовсюду
+        written, text = self.applied(["--apply-env"], ready=False)
+        self.assertEqual(written, {})
+        self.assertIn("ENV НЕ ТРОНУТ", text)
+
+    def test_force_applies_env_anyway(self):
+        written, _text = self.applied(["--apply-env", "--force"], ready=False)
+        self.assertEqual(written.get("ND_WEB_PROXY"), "1")
+
+    # --------------------------------------------------------- порядок шагов
+    def test_a_missing_certificate_is_said_out_loud(self):
+        text = self.with_cert(False)
+        self.assertIn("ставить рано", text)
+
+    def test_with_a_certificate_nothing_is_nagged(self):
+        self.assertNotIn("ставить рано", self.with_cert(True))
 
 
 if __name__ == "__main__":

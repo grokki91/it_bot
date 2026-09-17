@@ -1091,6 +1091,11 @@ def listen_443(version) -> str:
             "    listen [::]:443 ssl http2;" % seen)
 
 
+def cert_ready(domain) -> bool:
+    """Есть ли уже сертификат для домена — тот, на который ссылается конфиг."""
+    return Path("/etc/letsencrypt/live/%s/fullchain.pem" % domain).exists()
+
+
 #: домен как его знает DNS. Строку из командной строки в конфиг nginx пускаем
 #: только целиком совпавшую с этим образцом: там она станет директивой
 DOMAIN = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
@@ -1136,6 +1141,12 @@ def cmd_site(args):
     print(conf)
     print("Файл сохранён: %s\n" % path)
 
+    ready = cert_ready(domain)
+    if not ready:
+        print("Сертификата для домена ещё нет — конфиг в nginx ставить рано:\n"
+              "  он ссылается на /etc/letsencrypt/live/%s/, и с ним `nginx -t`\n"
+              "  не пройдёт, а сломанный конфиг не даст работать и certbot.\n"
+              "  Сначала шаги 1-3.\n" % domain)
     if version is None:
         print("nginx на этой машине не найден — конфиг написан в совместимом\n"
               "  виде, он подойдёт любой версии. Ставить: шаг 2.\n")
@@ -1154,7 +1165,16 @@ def cmd_site(args):
     print("  7) проверить: curl -I https://%s/" % domain)
     print("\nСертификат продлевает сам certbot: systemctl status certbot.timer")
 
-    if args.apply_env:
+    if args.apply_env and not ready and not args.force:
+        # Эти две строки уводят страницу внутрь машины, и отдавать её наружу
+        # становится некому: прокси без сертификата не запустится. Человек
+        # остаётся и без https, и без прежнего адреса — молчать нельзя.
+        print("\nENV НЕ ТРОНУТ: сертификата ещё нет, а без него прокси не\n"
+              "  поднимется. Уведи мы страницу на %s прямо сейчас — она\n"
+              "  пропала бы отовсюду. Повторите команду после шага 5, когда\n"
+              "  `nginx -t` пройдёт (или --force, если знаете, что делаете)."
+              % host)
+    elif args.apply_env:
         write_env({"ND_WEB_HOST": host, "ND_WEB_PROXY": "1"})
         print("\nВ %s записано: ND_WEB_HOST=%s, ND_WEB_PROXY=1." % (ENV_FILE, host))
         print("Страница уйдёт с внешнего адреса внутрь машины — снаружи её")
@@ -1277,6 +1297,8 @@ def build_parser():
                       help="порт страницы; по умолчанию ND_WEB_PORT")
     site.add_argument("--apply-env", action="store_true",
                       help="сразу записать в env ND_WEB_HOST и ND_WEB_PROXY=1")
+    site.add_argument("--force", action="store_true",
+                      help="записать env, даже если сертификата ещё нет")
     site.set_defaults(func=cmd_site)
     return parser
 
