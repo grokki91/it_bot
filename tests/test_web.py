@@ -1138,7 +1138,11 @@ class TestFeedDays(WebCase):
         self.assertEqual(found, ["%d %s" % (when.day, render.MONTHS[when.month - 1])])
 
     def test_news_of_one_day_share_a_mark(self):
-        when = to_local(datetime.now(timezone.utc)) - timedelta(days=2)
+        # полдень, а не «сейчас минус двое суток»: вторая новость на три часа
+        # раньше первой, и ночью такая пара перескакивала через полночь — тест
+        # падал с часу до трёх ночи по поясу бота и проходил всё остальное время
+        when = (to_local(datetime.now(timezone.utc)) - timedelta(days=2)
+                ).replace(hour=12, minute=0, second=0, microsecond=0)
         self.at_hour("d4", "Первая", when)
         self.at_hour("d5", "Вторая", when - timedelta(hours=3))
         days = {day for day, _name in self.marks()}

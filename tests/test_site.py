@@ -86,6 +86,13 @@ class SiteCase(unittest.TestCase):
         # без этого места certbot не продлит сертификат: проверка ходит на 80
         self.assertIn("location /.well-known/acme-challenge/", self.config())
 
+    def test_html_is_not_listed_among_gzip_types(self):
+        # nginx сжимает text/html всегда, а на повтор ворчит в `nginx -t`
+        text = self.config()
+        listed = text.split("gzip_types", 1)[1].split(";", 1)[0]
+        self.assertIn("application/rss+xml", listed)
+        self.assertNotIn("text/html", listed)
+
     def test_page_is_proxied_to_itself(self):
         text = self.config(["--port", "8123"])
         self.assertIn("proxy_pass http://127.0.0.1:8123;", text)

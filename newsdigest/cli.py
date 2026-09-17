@@ -1024,9 +1024,11 @@ server {{
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     # Новости — это текст, и его много: сжатие экономит трафик читателю.
+    # text/html в списке не нужен: его nginx сжимает всегда, а повторное
+    # упоминание он встречает предупреждением в `nginx -t`.
     gzip on;
     gzip_types application/json application/rss+xml application/manifest+json
-               text/css text/html image/svg+xml;
+               text/css image/svg+xml;
 
     # Страница шлёт крохи, большому телу взяться неоткуда.
     client_max_body_size 128k;
