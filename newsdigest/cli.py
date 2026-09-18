@@ -1024,9 +1024,11 @@ server {{
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     # Новости — это текст, и его много: сжатие экономит трафик читателю.
+    # text/html в списке не нужен: его nginx сжимает всегда, а повторное
+    # упоминание он встречает предупреждением в `nginx -t`.
     gzip on;
     gzip_types application/json application/rss+xml application/manifest+json
-               text/css text/html image/svg+xml;
+               text/css image/svg+xml;
 
     # Страница шлёт крохи, большому телу взяться неоткуда.
     client_max_body_size 128k;
@@ -1091,9 +1093,17 @@ def listen_443(version) -> str:
             "    listen [::]:443 ssl http2;" % seen)
 
 
-def cert_ready(domain) -> bool:
-    """Есть ли уже сертификат для домена — тот, на который ссылается конфиг."""
-    return Path("/etc/letsencrypt/live/%s/fullchain.pem" % domain).exists()
+def cert_ready(domain):
+    """Есть ли сертификат для домена: True, False или None — «не видно».
+
+    Каталог /etc/letsencrypt certbot закрывает от всех, кроме root, а эту
+    команду запускают от обычного пользователя. Тогда ответа нет вовсе:
+    «не вижу» — это не «нет», и запрещать по нему что-либо нельзя.
+    """
+    try:
+        return Path("/etc/letsencrypt/live/%s/fullchain.pem" % domain).exists()
+    except OSError:
+        return None
 
 
 #: домен как его знает DNS. Строку из командной строки в конфиг nginx пускаем
@@ -1142,11 +1152,16 @@ def cmd_site(args):
     print("Файл сохранён: %s\n" % path)
 
     ready = cert_ready(domain)
-    if not ready:
+    if ready is False:
         print("Сертификата для домена ещё нет — конфиг в nginx ставить рано:\n"
               "  он ссылается на /etc/letsencrypt/live/%s/, и с ним `nginx -t`\n"
               "  не пройдёт, а сломанный конфиг не даст работать и certbot.\n"
               "  Сначала шаги 1-3.\n" % domain)
+    elif ready is None:
+        print("Есть ли сертификат — отсюда не видно: /etc/letsencrypt закрыт\n"
+              "  для всех, кроме root. Проверить:\n"
+              "    sudo test -f /etc/letsencrypt/live/%s/fullchain.pem && echo есть\n"
+              % domain)
     if version is None:
         print("nginx на этой машине не найден — конфиг написан в совместимом\n"
               "  виде, он подойдёт любой версии. Ставить: шаг 2.\n")
@@ -1163,9 +1178,13 @@ def cmd_site(args):
     print("       sudo ufw allow 80,443/tcp && sudo ufw delete allow %d/tcp"
           % port)
     print("  7) проверить: curl -I https://%s/" % domain)
+    print("\nОтвечает чужой сертификат или соединение не то — сначала\n"
+          "посмотрите, кто вообще держит 443: порт достаётся одному процессу,\n"
+          "и если там уже стоит чужой сервис, nginx его просто не займёт.")
+    print("  sudo ss -lntp \"( sport = :443 )\"")
     print("\nСертификат продлевает сам certbot: systemctl status certbot.timer")
 
-    if args.apply_env and not ready and not args.force:
+    if args.apply_env and ready is False and not args.force:
         # Эти две строки уводят страницу внутрь машины, и отдавать её наружу
         # становится некому: прокси без сертификата не запустится. Человек
         # остаётся и без https, и без прежнего адреса — молчать нельзя.

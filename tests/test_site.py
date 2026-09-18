@@ -86,6 +86,13 @@ class SiteCase(unittest.TestCase):
         # без этого места certbot не продлит сертификат: проверка ходит на 80
         self.assertIn("location /.well-known/acme-challenge/", self.config())
 
+    def test_html_is_not_listed_among_gzip_types(self):
+        # nginx сжимает text/html всегда, а на повтор ворчит в `nginx -t`
+        text = self.config()
+        listed = text.split("gzip_types", 1)[1].split(";", 1)[0]
+        self.assertIn("application/rss+xml", listed)
+        self.assertNotIn("text/html", listed)
+
     def test_page_is_proxied_to_itself(self):
         text = self.config(["--port", "8123"])
         self.assertIn("proxy_pass http://127.0.0.1:8123;", text)
@@ -169,11 +176,33 @@ class SiteCase(unittest.TestCase):
         self.assertEqual(written, {})
         self.assertIn("ENV НЕ ТРОНУТ", text)
 
+    def test_an_unreadable_letsencrypt_does_not_block(self):
+        # каталог закрыт от всех, кроме root: «не вижу» — это не «нет»,
+        # и запрещать по нему нельзя
+        written, text = self.applied(["--apply-env"], ready=None)
+        self.assertEqual(written.get("ND_WEB_PROXY"), "1")
+        self.assertIn("не видно", text)
+
     def test_force_applies_env_anyway(self):
         written, _text = self.applied(["--apply-env", "--force"], ready=False)
         self.assertEqual(written.get("ND_WEB_PROXY"), "1")
 
     # --------------------------------------------------------- порядок шагов
+    def test_a_closed_letsencrypt_is_not_an_error(self):
+        # Path.exists() на закрытом каталоге кидает PermissionError — команда
+        # падала с traceback ровно там, где сертификат уже был получен
+        import pathlib
+        saved = pathlib.Path.exists
+
+        def deny(self):
+            raise PermissionError(13, "Permission denied")
+
+        pathlib.Path.exists = deny
+        try:
+            self.assertIsNone(cli.cert_ready(DOMAIN))
+        finally:
+            pathlib.Path.exists = saved
+
     def test_a_missing_certificate_is_said_out_loud(self):
         text = self.with_cert(False)
         self.assertIn("ставить рано", text)
