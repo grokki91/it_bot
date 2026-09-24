@@ -231,6 +231,31 @@ class TestShare(unittest.TestCase):
         self.assertEqual(query["url"], [card["url"]])
         self.assertTrue(query["text"][0].startswith(card["title"]))
 
+    def test_share_keyboard_stays_light_for_telegram(self):
+        """Десять длинных кириллических подписей — это больше 12 КБ ссылок,
+        Telegram такую разметку отвергает (REPLY_MARKUP_TOO_LONG)."""
+        import json
+        from urllib.parse import parse_qs, urlparse
+        snapshot = issue(6, 6)
+        for block in snapshot["sections"]:
+            for card in block["cards"]:
+                card["title"] = "Очень длинный заголовок новости " * 6
+                card["what"] = "Подробная суть новости без точки " * 8
+        _text, keyboard = issueview.screen(snapshot, 4, issueview.SHARE)
+        links = [row[0]["url"] for row in keyboard[:-1]]
+        self.assertEqual(len(links), issueview.TOP_MAX)
+        self.assertLessEqual(sum(len(link) for link in links),
+                             issueview.SHARE_BUDGET)
+        self.assertLess(len(json.dumps(keyboard, ensure_ascii=False).encode()), 6000)
+        query = parse_qs(urlparse(links[0]).query)
+        self.assertTrue(query["text"][0].startswith("Очень длинный"))
+
+    def test_share_link_without_room_keeps_just_the_url(self):
+        from urllib.parse import parse_qs, urlparse
+        card = {"url": "https://example.com/" + "a" * 300, "title": "Заголовок"}
+        query = parse_qs(urlparse(issueview.share_link(card, 100)).query)
+        self.assertEqual(query, {"url": [card["url"]]})
+
     def test_section_share_lists_section_and_cancels_back_to_it(self):
         _text, keyboard = issueview.screen(issue(3, 2), 4, issueview.SHARE,
                                            "medicine")
@@ -370,6 +395,14 @@ class TestNavigation(unittest.TestCase):
         self.press("nav:%d:sec:ai" % (self.ident + 500))
         self.assertEqual(self.edits, [])
         self.assertIn("старый", self.answers[-1])
+
+    def test_other_edit_failure_is_not_blamed_on_age(self):
+        def refuse(chat, mid, text, kb=None):
+            raise RuntimeError("Telegram отклонил запрос: 400: REPLY_MARKUP_TOO_LONG")
+
+        bot.tg_edit_text = refuse
+        self.press("nav:%d:share" % self.ident)
+        self.assertNotIn("старый", self.answers[-1])
 
     def test_stranger_gets_nothing(self):
         self.press("nav:%d:sec:ai" % self.ident, chat_id="999")

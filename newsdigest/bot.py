@@ -891,9 +891,15 @@ def handle_nav_callback(cb, chat_id, message, data) -> None:
     try:
         tg_edit_text(chat_id, message.get("message_id"), text, keyboard)
     except RuntimeError as exc:
-        log.debug("Экран выпуска не открылся: %s", exc)
+        # «слишком старый» — только когда Telegram так и сказал: остальные
+        # отказы (например, слишком тяжёлая разметка) — наша ошибка, и
+        # читателю незачем думать, что дело в выпуске
+        log.warning("Экран выпуска %s/%s не открылся: %s", name, arg, exc)
+        too_old = "can't be edited" in str(exc).lower()
         tg_answer_callback(cb.get("id"),
-                           "Не получилось открыть: выпуск слишком старый.")
+                           "Не получилось открыть: выпуск слишком старый."
+                           if too_old else
+                           "Не получилось открыть экран, попробуйте ещё раз.")
         return
     tg_answer_callback(cb.get("id"))
 

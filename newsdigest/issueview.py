@@ -54,6 +54,12 @@ SHARE = "share"
 SHARE_URL = "https://t.me/share/url?url=%s&text=%s"
 #: подпись новости в пересылке: заголовок и строка сути, не простыня
 SHARE_TEXT = 200
+#: сколько байт ссылок на всё экран «поделиться». Telegram отвергает
+#: слишком тяжёлую разметку (REPLY_MARKUP_TOO_LONG) и экран не открывается,
+#: а кириллица в ссылке раздувается в шесть раз: «%D0%9F» на букву. Десять
+#: подписей по 200 букв — это больше 12 КБ, поэтому подпись ужимается так,
+#: чтобы все ссылки вместе уложились в бюджет
+SHARE_BUDGET = 4000
 #: подпись кнопки с новостью на экране «поделиться»
 SHARE_LABEL = 60
 
@@ -318,19 +324,31 @@ def share_button(ident, topic="") -> dict:
     return {"text": "📤 Поделиться", "callback_data": route(ident, SHARE, topic)}
 
 
-def share_link(card) -> str:
+def share_link(card, budget=0) -> str:
     """Ссылка «переслать в чат»: Telegram сам покажет список чатов.
 
     Пересылается не сообщение выпуска целиком (в нём десяток новостей), а одна
-    новость — заголовок, строка сути и ссылка на первоисточник.
+    новость — заголовок, строка сути и ссылка на первоисточник. `budget` —
+    предел длины ссылки в байтах: подпись укорачивается по словам, пока
+    ссылка не влезет, а не влезла и без подписи — остаётся одна ссылка,
+    превью статьи Telegram покажет сам.
     """
+    url = quote(card["url"], safe="")
     text = card.get("title") or ""
     what = sentence(card.get("what"))
     if what:
         text = "%s — %s" % (text, what)
-    if len(text) > SHARE_TEXT:
-        text = text[:SHARE_TEXT].rsplit(" ", 1)[0].rstrip(" ,.:;—-·") + "…"
-    return SHARE_URL % (quote(card["url"], safe=""), quote(text, safe=""))
+    limit = SHARE_TEXT
+    while text:
+        if len(text) > limit:
+            text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.:;—-·") + "…"
+        link = SHARE_URL % (url, quote(text, safe=""))
+        if not budget or len(link) <= budget:
+            return link
+        limit = min(len(text), limit) * 3 // 4
+        if limit < 20:
+            break
+    return (SHARE_URL % (url, "")).rsplit("&text=", 1)[0]
 
 
 def share_cards(issue, topic="") -> list:
@@ -357,8 +375,9 @@ def share_screen(issue, ident, topic="") -> tuple:
     lines.append("<i>%s</i>" % ("Нажмите на новость — Telegram предложит, "
                                 "в какой чат её отправить." if cards
                                 else "Здесь нечем поделиться."))
+    budget = SHARE_BUDGET // max(len(cards), 1)
     rows = [[{"text": "%d. %s" % (at, short(card["title"], SHARE_LABEL)),
-              "url": share_link(card)}]
+              "url": share_link(card, budget)}]
             for at, card in enumerate(cards, 1)]
     rows.append([{"text": "✖️ Отмена", "callback_data": back}])
     return "\n".join(lines), rows
