@@ -18,12 +18,16 @@
     top / secs     то же, но с полным списком главного / разделов
     sec:<раздел>   раздел: первые новости и кнопки реакций
     all:<раздел>   он же целиком
+    share          «поделиться»: список главного, нажал — выбрал чат
+    share:<раздел> то же для новостей раздела
 
 Сам выпуск в кнопку не влезает (64 байта на всё), поэтому он лежит в базе,
 а в кнопке едет только его номер. Выпуск, которого в базе уже нет (старый,
 вычищенный), листаться перестаёт — сообщение при этом остаётся читаемым.
 """
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from .config import CFG
 from .profiles import emoji as topic_emoji
@@ -45,6 +49,13 @@ SENTENCE = 120
 
 NAV = "nav"
 HOME, TOP, SECS, SEC, ALL = "home", "top", "secs", "sec", "all"
+SHARE = "share"
+#: ссылка, по которой Telegram сам открывает выбор чата для пересылки
+SHARE_URL = "https://t.me/share/url?url=%s&text=%s"
+#: подпись новости в пересылке: заголовок и строка сути, не простыня
+SHARE_TEXT = 200
+#: подпись кнопки с новостью на экране «поделиться»
+SHARE_LABEL = 60
 
 
 # ------------------------------------------------------------------- выпуск
@@ -207,7 +218,8 @@ def hub_keyboard(issue, ident, shown, wide=False) -> list:
     # порядок разделов читатель правит отсюда: в чате команд нет, а место,
     # где на этот порядок смотрят, — ровно это оглавление
     from .prefsview import entry              # prefsview знает про нас — тут
-    rows.append(entry(ident))
+    rows.append(entry(ident) + ([share_button(ident)] if top_cards(issue)
+                                else []))
     return rows
 
 
@@ -279,8 +291,13 @@ def section_keyboard(issue, ident, block, shown, verdicts=None, saved=None) -> l
         rows.append([{"text": "⬇️ Ещё %d %s" % (left, plural(
             left, "новость", "новости", "новостей")),
             "callback_data": route(ident, ALL, block["topic"])}])
+    last = []
     if len(sections_of(issue)) > 1:
-        rows.append([{"text": "← К разделам", "callback_data": route(ident, HOME)}])
+        last.append({"text": "← К разделам", "callback_data": route(ident, HOME)})
+    if cards:
+        last.append(share_button(ident, block["topic"]))
+    if last:
+        rows.append(last)
     return rows
 
 
@@ -296,6 +313,57 @@ def section_screen(issue, ident, topic, full=False, verdicts=None, saved=None):
     return text, section_keyboard(issue, ident, block, shown, verdicts, saved)
 
 
+# ---------------------------------------------------------------- поделиться
+def share_button(ident, topic="") -> dict:
+    return {"text": "📤 Поделиться", "callback_data": route(ident, SHARE, topic)}
+
+
+def share_link(card) -> str:
+    """Ссылка «переслать в чат»: Telegram сам покажет список чатов.
+
+    Пересылается не сообщение выпуска целиком (в нём десяток новостей), а одна
+    новость — заголовок, строка сути и ссылка на первоисточник.
+    """
+    text = card.get("title") or ""
+    what = sentence(card.get("what"))
+    if what:
+        text = "%s — %s" % (text, what)
+    if len(text) > SHARE_TEXT:
+        text = text[:SHARE_TEXT].rsplit(" ", 1)[0].rstrip(" ,.:;—-·") + "…"
+    return SHARE_URL % (quote(card["url"], safe=""), quote(text, safe=""))
+
+
+def share_cards(issue, topic="") -> list:
+    """Что предложить: новости раздела или, из оглавления, главное за день."""
+    cards = cards_of(section_of(issue, topic)) if topic else top_cards(issue)
+    return [card for card in cards
+            if str(card.get("url") or "").startswith(("http://", "https://"))]
+
+
+def share_screen(issue, ident, topic="") -> tuple:
+    """Экран «Выберите новость»: по кнопке на новость и «Отмена».
+
+    Кнопка новости — не callback, а ссылка t.me/share: нажал — и Telegram
+    сразу открывает выбор чата, лишнего шага через бота нет. «Отмена»
+    возвращает туда, откуда пришли, — в оглавление или в раздел.
+    """
+    if topic and section_of(issue, topic) is None:
+        topic = ""
+    back = route(ident, SEC, topic) if topic else route(ident, HOME)
+    cards = share_cards(issue, topic)
+    lines = ["📤 <b>Выберите новость, чтобы поделиться</b>", ""]
+    if topic:
+        lines[0] += " · %s" % esc(label(topic))
+    lines.append("<i>%s</i>" % ("Нажмите на новость — Telegram предложит, "
+                                "в какой чат её отправить." if cards
+                                else "Здесь нечем поделиться."))
+    rows = [[{"text": "%d. %s" % (at, short(card["title"], SHARE_LABEL)),
+              "url": share_link(card)}]
+            for at, card in enumerate(cards, 1)]
+    rows.append([{"text": "✖️ Отмена", "callback_data": back}])
+    return "\n".join(lines), rows
+
+
 # ------------------------------------------------------------------- маршрут
 def screen(issue, ident, name=HOME, arg="", verdicts=None, saved=None) -> tuple:
     """Экран выпуска: текст сообщения и кнопки под ним.
@@ -306,6 +374,8 @@ def screen(issue, ident, name=HOME, arg="", verdicts=None, saved=None) -> tuple:
     blocks = sections_of(issue)
     if not blocks:
         return hub_text(issue, 0)[0], []
+    if name == SHARE:
+        return share_screen(issue, ident, arg)
     if len(blocks) == 1 and name in (HOME, TOP, SECS):
         name, arg = SEC, blocks[0]["topic"]
     if name in (SEC, ALL):

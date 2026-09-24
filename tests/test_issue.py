@@ -195,6 +195,59 @@ class TestSection(unittest.TestCase):
         self.assertIn("ГЛАВНОЕ СЕГОДНЯ", text)
 
 
+class TestShare(unittest.TestCase):
+    """«Поделиться»: нажал — выбрал новость — Telegram спросил, в какой чат."""
+
+    def test_hub_has_share_next_to_my_topics(self):
+        keyboard = issueview.hub_screen(issue(3, 2), 4)[1]
+        self.assertEqual([b["callback_data"] for b in keyboard[-1]],
+                         ["pref:open::4", "nav:4:share"])
+
+    def test_section_has_share_next_to_back(self):
+        _text, keyboard = issueview.screen(issue(3, 2), 4, issueview.SEC, "ai")
+        self.assertEqual([b["callback_data"] for b in keyboard[-1]],
+                         ["nav:4:home", "nav:4:share:ai"])
+
+    def test_hub_share_lists_the_top_news(self):
+        snapshot = issue(6, 6)
+        text, keyboard = issueview.screen(snapshot, 4, issueview.SHARE)
+        self.assertIn("Выберите новость", text)
+        news = keyboard[:-1]
+        self.assertEqual(len(news), issueview.TOP_MAX)
+        self.assertTrue(news[0][0]["text"].startswith("1. Заголовок ai0"))
+        self.assertEqual(keyboard[-1], [{"text": "✖️ Отмена",
+                                         "callback_data": "nav:4:home"}])
+
+    def test_news_button_opens_telegram_share(self):
+        from urllib.parse import parse_qs, urlparse
+        snapshot = issue(2)
+        card = snapshot["sections"][0]["cards"][0]
+        _text, keyboard = issueview.screen(snapshot, 4, issueview.SHARE, "ai")
+        button = keyboard[0][0]
+        self.assertNotIn("callback_data", button)
+        link = urlparse(button["url"])
+        self.assertEqual((link.netloc, link.path), ("t.me", "/share/url"))
+        query = parse_qs(link.query)
+        self.assertEqual(query["url"], [card["url"]])
+        self.assertTrue(query["text"][0].startswith(card["title"]))
+
+    def test_section_share_lists_section_and_cancels_back_to_it(self):
+        _text, keyboard = issueview.screen(issue(3, 2), 4, issueview.SHARE,
+                                           "medicine")
+        self.assertEqual(len(keyboard), 3)
+        self.assertIn("medicine", keyboard[0][0]["text"])
+        self.assertEqual(keyboard[-1][0]["callback_data"], "nav:4:sec:medicine")
+
+    def test_long_summary_is_trimmed_in_the_shared_text(self):
+        card = {"title": "Заголовок", "what": "слово " * 200,
+                "url": "https://example.com/a?b=1&c=2"}
+        link = issueview.share_link(card)
+        self.assertIn("url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2", link)
+        from urllib.parse import parse_qs, urlparse
+        text = parse_qs(urlparse(link).query)["text"][0]
+        self.assertLessEqual(len(text), issueview.SHARE_TEXT + 1)
+
+
 class TestRoutes(unittest.TestCase):
     def test_round_trip(self):
         self.assertEqual(issueview.parse(issueview.route(3, "sec", "ai")),
@@ -295,6 +348,14 @@ class TestNavigation(unittest.TestCase):
         keyboard = self.edits[-1][3]
         self.assertTrue(keyboard[0][0]["text"].endswith(render.MARK))
         self.assertEqual(keyboard[-1][0]["callback_data"], "nav:%d:home" % self.ident)
+
+    def test_share_opens_in_place_and_cancel_returns(self):
+        self.press("nav:%d:share" % self.ident)
+        text, keyboard = self.edits[-1][2], self.edits[-1][3]
+        self.assertIn("Выберите новость", text)
+        self.assertTrue(keyboard[0][0]["url"].startswith("https://t.me/share/url?"))
+        self.press(keyboard[-1][0]["callback_data"])
+        self.assertIn("ГЛАВНОЕ СЕГОДНЯ", self.edits[-1][2])
 
     def test_message_too_old_to_edit_says_so(self):
         """Telegram не даёт править сообщения старше двух суток."""

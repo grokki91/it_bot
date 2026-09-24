@@ -11,8 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (dedup, feedback, llm, pipeline, storage,  # noqa: E402
-                        subscribers, threads, translate)
+from newsdigest import (dedup, feedback, issueview, llm, pipeline,  # noqa: E402
+                        storage, subscribers, threads, translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 from newsdigest.profiles import PROFILES  # noqa: E402
@@ -114,7 +114,12 @@ class TestBuildAndSend(PipelineCase):
         chat, text, keyboard = self.sent[0]
         self.assertEqual(chat, CHAT)
         self.assertIn("Карточка 0", text)
-        self.assertEqual(len(keyboard), stats["selected"])
+        reactions = [row for row in keyboard
+                     if row[0]["callback_data"].startswith("fb:")]
+        self.assertEqual(len(reactions),
+                         min(stats["selected"], issueview.SECTION_SHOWN))
+        # последняя строка — «Поделиться»: реакции её не касаются
+        self.assertTrue(keyboard[-1][-1]["callback_data"].endswith(":share:ai"))
 
         conn = storage.db()
         try:
@@ -201,7 +206,9 @@ class TestBuildAndSend(PipelineCase):
         try:
             self.fill(3)
             pipeline.build_and_send(chat_id=CHAT)
-            self.assertFalse(self.sent[0][2])
+            # реакций нет — остаётся только «Поделиться»
+            self.assertEqual([b["text"] for row in self.sent[0][2] for b in row],
+                             ["📤 Поделиться"])
         finally:
             CFG["feedback_buttons"] = True
 
