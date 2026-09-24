@@ -54,6 +54,13 @@
 левым меню только мешал бы; сколько тем закреплено, видно числом на самой
 кнопке.
 
+«Мои темы», отмеченные ⭐ в Telegram, работают и здесь, без отдельной
+настройки на странице: меню разделов начинается с них, а в «Главном» каждый
+день ленты открывается их новостями — под строкой «⭐ Мои темы», — и только
+следом, под «Остальными темами», идёт всё прочее. Дни при этом остаются по
+порядку: вчерашняя «своя» новость сегодняшние не обгоняет. Черта «новое с
+прошлого захода» у каждой полосы своя — по времени идёт полоса, а не день.
+
 В списке тем первой строкой стоит «Все», и она отмечена, пока не выбрано
 ничего другого. Раньше это было правило — «ничего не отмечено, показываем
 всё», — и держать его приходилось в голове: список стоял пустой, и что именно
@@ -570,6 +577,12 @@ header {
   content: ''; flex: 1; height: 1px; background: var(--line);
 }
 #list > .daybar:first-child { margin-top: 2px; }
+/* Полоса внутри дня: «Мои темы» из Telegram идут первыми, следом остальные.
+   Тише дня — это не новая дата, а порядок внутри неё */
+.runbar {
+  margin: 4px 2px 10px; color: var(--dim); font-size: 12.5px; font-weight: 600;
+}
+.news + .runbar { margin-top: 18px; }
 /* Граница прочитанного: всё выше пришло с прошлого захода. Считается в
    браузере — серверу знать, когда читатель заходил на страницу, незачем */
 .seenbar {
@@ -985,6 +998,9 @@ var S = {
   /* показ ленты: последний нарисованный день, отметка прошлого захода и
      сколько новостей оказалось выше неё, выбранная с клавиатуры карточка */
   day: '', mark: '', fresh: 0, drawn: false, cursor: -1,
+  /* «Мои темы» из Telegram: пока они есть, день ленты делится на две полосы
+     — сначала свои темы, потом остальные; run — полоса последней карточки */
+  first: [], run: '', dayMine: false,
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
   feedsOpen: {},        /* какие разделы источников раскрыты в «Настройках» */
@@ -1749,6 +1765,7 @@ function loadNews(reset) {
       showChips();
     }
     S.more = !!data.more;
+    if (!data.offset) { S.first = data.first || []; }
     S.offset = data.offset + (data.items || []).length;
     drawList(data.items || [], !data.offset);
     drawMeta();
@@ -1763,6 +1780,8 @@ function drawList(items, reset) {
   if (reset) {
     box.innerHTML = '';
     S.day = '';
+    S.run = '';
+    S.dayMine = false;
     S.cursor = -1;
     /* отметку читаем один раз на показ ленты и до конца показа не трогаем:
        иначе черта уехала бы вслед за только что записанным временем */
@@ -1771,10 +1790,31 @@ function drawList(items, reset) {
     S.drawn = false;
   }
   items.forEach(function (item) {
+    var run = (item.day || '') + (item.mine ? ':mine' : ':rest');
+    if (S.first.length && S.run && run !== S.run) {
+      /* полоса целиком новая — черта встаёт в её конце, а не пропадает */
+      if (S.mark && S.fresh && !S.drawn) {
+        box.appendChild(drawSeenLine(S.fresh));
+      }
+      /* своя черта «новое / прочитанное» у каждой полосы: по времени идёт
+         только полоса, а не весь день */
+      S.fresh = 0;
+      S.drawn = false;
+    }
     if (item.day && item.day !== S.day) {
       S.day = item.day;
+      S.dayMine = false;
       box.appendChild(el('div', 'daybar', item.dayName || ''));
     }
+    if (S.first.length && run !== S.run) {
+      if (item.mine) {
+        S.dayMine = true;
+        box.appendChild(el('div', 'runbar', '⭐ Мои темы'));
+      } else if (S.dayMine) {
+        box.appendChild(el('div', 'runbar', 'Остальные темы'));
+      }
+    }
+    S.run = run;
     if (S.mark && item.iso && item.iso <= S.mark) {
       /* первая новость, которую читатель уже видел: выше неё всё новое */
       if (!S.drawn && S.fresh) { box.appendChild(drawSeenLine(S.fresh)); }
@@ -1786,9 +1826,13 @@ function drawList(items, reset) {
   });
   /* двигаем отметку только по полной ленте: в разделе и под фильтрами за
      чертой осталось бы непрочитанное из тех разделов, что сейчас скрыты */
-  if (reset && chronological() && !S.section && !filtering() &&
-      items.length && items[0].iso) {
-    keepVisit(items[0].iso);
+  /* самая свежая — не обязательно первая: «Мои темы» стоят в начале дня */
+  var newest = '';
+  items.forEach(function (item) {
+    if (item.iso && item.iso > newest) { newest = item.iso; }
+  });
+  if (reset && chronological() && !S.section && !filtering() && newest) {
+    keepVisit(newest);
   }
   if (!box.childNodes.length) { box.appendChild(drawEmpty()); }
   markClamped();

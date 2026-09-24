@@ -67,9 +67,9 @@ class TestHub(unittest.TestCase):
         for gone in ("материалов за сутки", "раздела", "продолжение"):
             self.assertNotIn(gone, head)
 
-    def test_shows_three_best_news_of_the_day(self):
+    def test_shows_five_best_news_of_the_day(self):
         # порядок главного — по оценке, а не по порядку разделов
-        blocks = [("ai", cards(2, "ai", score=7.0)),
+        blocks = [("ai", cards(4, "ai", score=7.0)),
                   ("medicine", cards(2, "medicine", score=9.0))]
         snapshot = issueview.snapshot(blocks, render.issue_info(blocks, 100))
         text, shown = issueview.hub_text(snapshot)
@@ -78,7 +78,8 @@ class TestHub(unittest.TestCase):
         self.assertIn("<b>1. Заголовок medicine0</b>", text)
         self.assertLess(text.index("Заголовок medicine1"),
                         text.index("Заголовок ai0"))
-        self.assertNotIn("Заголовок ai1", text)     # четвёртая — уже под кнопкой
+        self.assertIn("<b>5. Заголовок ai2</b>", text)
+        self.assertNotIn("Заголовок ai3", text)     # шестая — уже под кнопкой
 
     def test_summary_is_cut_to_one_line(self):
         long_text = "Первое предложение сути. " + "И ещё много слов подряд. " * 8
@@ -116,13 +117,16 @@ class TestHub(unittest.TestCase):
         self.assertTrue(shown)
 
     def test_more_top_news_opens_the_rest(self):
-        snapshot = issue(4, 4)
+        snapshot = issue(6, 6)
         keyboard = issueview.hub_screen(snapshot, 1)[1]
         self.assertEqual(keyboard[0][0]["callback_data"], "nav:1:top")
-        self.assertIn("Ещё 4", keyboard[0][0]["text"])
+        self.assertIn("Ещё 5 главных новостей", keyboard[0][0]["text"])
         text, shown = issueview.hub_text(snapshot, issueview.TOP_MAX)
         self.assertEqual(shown, issueview.TOP_MAX)
-        self.assertIn("<b>7. ", text)
+        self.assertIn("<b>10. ", text)
+        # раскрытое главное сворачивается обратно к пяти
+        keyboard = issueview.hub_screen(snapshot, 1, issueview.TOP)[1]
+        self.assertEqual(keyboard[0][0]["callback_data"], "nav:1:home")
 
     def test_empty_sections_are_named_on_the_sections_screen(self):
         snapshot = issue(2, 2, note="без новостей: Роботы")

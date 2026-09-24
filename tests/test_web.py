@@ -1116,6 +1116,79 @@ class TestNews(WebCase):
         self.assertRegex(self.news()["state"]["collected"], r"^\d{2}:\d{2}$")
 
 
+class TestMineFirst(WebCase):
+    """«Мои темы» из Telegram — порядок и на сайте: их новости открывают день."""
+
+    news = TestNews.news
+
+    def setUp(self):
+        TestNews.setUp(self)            # та же лента из четырёх новостей
+        conn = storage.db()
+        try:
+            subscribers.set_field(conn, OWNER, "favorites", "economy,incidents")
+            # «своя» новость позавчерашнего дня: сегодняшние она не обгоняет
+            conn.execute(
+                "INSERT INTO sent(chat_id,url_hash,sig,title,url,source_id,"
+                "category,section,headline,summary,score,breaking,digest_date,"
+                "sent_at) VALUES (?,?,'',?,?,'ria','media','incidents',?,'',"
+                "7.0,0,'2026-08-15','2026-08-15T12:00:00+00:00')",
+                (OWNER, "h5", "Старая своя новость", "https://ria.ru/five",
+                 "Старая своя новость"))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_favorites_open_each_day(self):
+        data = self.news()
+        self.assertEqual(data["first"], ["economy", "incidents"])
+        self.assertEqual([i["hash"] for i in data["items"]],
+                         ["h3", "h1", "h4", "h2", "h5"])
+        self.assertEqual([i["mine"] for i in data["items"]],
+                         [True, True, False, False, True])
+
+    def test_menu_starts_with_favorites(self):
+        menu = [m["id"] for m in self.news()["side"]["menu"]]
+        self.assertEqual(menu[1:3], ["economy", "incidents"])
+
+    def test_filters_keep_the_order(self):
+        data = self.news("?sections=politics,incidents")
+        self.assertEqual([i["hash"] for i in data["items"]], ["h1", "h2", "h5"])
+
+    def test_open_section_and_search_stay_by_time(self):
+        data = self.news("?section=incidents")
+        self.assertEqual(data["first"], [])
+        self.assertEqual([i["hash"] for i in data["items"]], ["h1", "h5"])
+        data = self.news("?q=" + urllib.parse.quote("Иран"))
+        self.assertEqual(data["first"], [])
+        self.assertEqual([i["hash"] for i in data["items"]], ["h3", "h1"])
+
+    def test_paging_continues_the_same_order(self):
+        conn = storage.db()
+        try:
+            first_page, more = newsfeed.page(conn, OWNER, limit=2,
+                                             first=["economy", "incidents"])
+            rest, _more = newsfeed.page(conn, OWNER, offset=2, limit=10,
+                                        first=["economy", "incidents"])
+            rows = list(first_page) + list(rest)
+        finally:
+            conn.close()
+        self.assertTrue(more)
+        self.assertEqual([r["url_hash"] for r in rows],
+                         ["h3", "h1", "h4", "h2", "h5"])
+
+    def test_without_favorites_the_feed_is_by_time(self):
+        conn = storage.db()
+        try:
+            subscribers.set_field(conn, OWNER, "favorites", "")
+        finally:
+            conn.close()
+        data = self.news()
+        self.assertEqual(data["first"], [])
+        self.assertEqual([i["hash"] for i in data["items"]],
+                         ["h4", "h3", "h2", "h1", "h5"])
+        self.assertFalse(any(i["mine"] for i in data["items"]))
+
+
 class TestFeedDays(WebCase):
     """День новости считает сервер, а не браузер: часовой пояс задаёт бот."""
 
