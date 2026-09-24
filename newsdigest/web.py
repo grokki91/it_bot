@@ -293,6 +293,11 @@ def news(query, worker=None, admin=True) -> dict:
     странице: «только наука и спорт». Открытый раздел (`section`) их
     перебивает: раз уж читатель зашёл в «Космос», показываем «Космос».
 
+    «Мои темы», отмеченные ⭐ в Telegram, — это и порядок сайта: меню
+    разделов начинается с них (`sections.plan`), а в «Главном» их новости
+    идут первыми за каждый день (`newsfeed.mine_first`). Отдельно на
+    странице их не заводят: одно избранное на бота и на сайт.
+
     Гостю достаётся только общая лента: «Сохранённые» и «Избранное» — это
     отметки владельца, и карточки к нему приходят без них. Отдельного экрана
     «Избранное» на странице больше нет, но `view=liked` остался: 👍 уходит
@@ -313,11 +318,15 @@ def news(query, worker=None, admin=True) -> dict:
         if admin:
             subscribers.ensure_owner(conn)
         sub = subscribers.get(conn, chat)
+        # «Мои темы» из Telegram: их новости открывают каждый день ленты. В
+        # открытом разделе и в поиске порядок свой — там поднимать нечего
+        first = sections.favorites(sub) if not (section or search) else []
         rows, more = newsfeed.page(conn, chat, view, section or picked,
-                                   search, offset)
+                                   search, offset, first=first)
         verdicts, saved = press_state(conn, chat) if admin else ({}, set())
         payload = {"view": view, "section": section, "sections": picked,
                    "q": search, "offset": offset, "more": more,
+                   "first": first if view == "news" else [],
                    "items": newsfeed.cards(conn, rows, verdicts, saved, chat)}
         if not offset:
             payload["side"] = {

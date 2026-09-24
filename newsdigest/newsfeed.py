@@ -36,6 +36,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from datetime import datetime, timezone
 
 from . import safety, sections, threads, translate
 from .config import CFG, local_now, log, to_local
@@ -379,11 +380,44 @@ def matching(conn, view, chat_id, words) -> tuple:
             % (storage.SEARCH_TABLE, storage.SEARCH_TABLE)), [str(chat_id), expr]
 
 
-def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE):
+def local_shift() -> str:
+    """Сдвиг местного времени для SQLite: '+180 minutes'.
+
+    День новости база должна считать так же, как `daymark`, — по поясу бота,
+    а не по UTC: иначе новость, пришедшая в полночь по Москве, встала бы
+    среди вчерашних.
+    """
+    now = datetime.now(timezone.utc)
+    minutes = round((to_local(now) - now.replace(tzinfo=None)).total_seconds() / 60)
+    return "%+d minutes" % minutes
+
+
+def mine_first(base, args, first) -> tuple:
+    """Лента, где за каждый день сначала идут «Мои темы», а потом остальные.
+
+    Дни по-прежнему идут от свежего к старому: поднимать «мою» новость
+    недельной давности над сегодняшними никто не просил. Внутри дня — две
+    полосы, каждая по времени. Признак `mine` считается здесь же, в SQL, тем
+    же условием, что и фильтр раздела: у старых записей раздела нет, и
+    карточка иначе разошлась бы с порядком, в котором встала.
+    """
+    clause, params = _sections_filter(first)
+    query = ("SELECT * FROM (SELECT *, CASE WHEN %s THEN 1 ELSE 0 END AS mine "
+             "FROM (%s)) ORDER BY COALESCE(date(at, ?), substr(at, 1, 10)) DESC,"
+             " mine DESC, at DESC" % (clause, base))
+    return query, params + args + [local_shift()]
+
+
+def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE,
+         first=()):
     """Карточки одной страницы ленты и признак «есть ещё».
 
     `section` — раздел или их набор: читатель на странице может закрепить
     несколько разделов сразу, и тогда лента идёт по ним всем.
+
+    `first` — «Мои темы» читателя (те же, что он отметил ⭐ в Telegram): их
+    новости встают в начало каждого дня (см. `mine_first`). Поиску порядок
+    не нужен — там читатель ищет конкретное, а не листает день.
 
     Пагинацию делает база — и без поиска, и с поиском по индексу. Только
     там, где индекса нет (см. `matching`), отбор идёт по словам в Python
@@ -413,8 +447,11 @@ def page(conn, chat_id, view="news", section="", query="", offset=0, limit=PAGE)
             return rows[:limit], len(rows) > limit
 
     if not words:
-        rows = list(conn.execute(base + " ORDER BY at DESC LIMIT ? OFFSET ?",
-                                 args + [limit + 1, offset]))
+        first = wanted(first) if view == "news" else []
+        ordered, params = (mine_first(base, args, first) if first
+                           else (base + " ORDER BY at DESC", args))
+        rows = list(conn.execute(ordered + " LIMIT ? OFFSET ?",
+                                 params + [limit + 1, offset]))
         return rows[:limit], len(rows) > limit
 
     found = [row for row in conn.execute(base + " ORDER BY at DESC LIMIT ?",
@@ -459,6 +496,8 @@ def cards(conn, rows, verdicts=None, saved=None, chat_id=None) -> list:
             "iso": str(row["at"] or ""),
             "score": round(float(row["score"] or 0), 1),
             "breaking": urgent(row),
+            # новость из «Моих тем», поднятая в начало дня (см. `mine_first`)
+            "mine": bool(column(row, "mine", 0)),
             "saved": row["url_hash"] in saved,
             "verdict": verdicts.get(row["url_hash"], ""),
             "earlier": [{"title": clean_title(str(step["title"] or "")),
@@ -619,6 +658,8 @@ def link_of(row, smap) -> dict:
             "source": domain(url) or column(row, "source_id") or "источник",
             "score": round(float(column(row, "score", 0) or 0), 1),
             "breaking": urgent(row),
+            # новость из «Моих тем», поднятая в начало дня (см. `mine_first`)
+            "mine": bool(column(row, "mine", 0)),
             "emoji": topic_emoji(topic) if topic else "📰"}
 
 
