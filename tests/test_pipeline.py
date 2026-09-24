@@ -119,7 +119,7 @@ class TestBuildAndSend(PipelineCase):
         self.assertEqual(len(reactions),
                          min(stats["selected"], issueview.SECTION_SHOWN))
         # последняя строка — «Поделиться»: реакции её не касаются
-        self.assertTrue(keyboard[-1][-1]["callback_data"].endswith(":share:ai"))
+        self.assertTrue(keyboard[-1][-1]["callback_data"].endswith(":share:sec:ai"))
 
         conn = storage.db()
         try:

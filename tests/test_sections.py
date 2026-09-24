@@ -17,7 +17,7 @@ os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 from newsdigest import bot, config, issueview, pipeline, sections  # noqa: E402
 from newsdigest import storage, subscribers, userprofiles  # noqa: E402
 from newsdigest.config import CFG, now_iso  # noqa: E402
-from newsdigest.profiles import BUILTIN, DEFAULT_SECTIONS, PROFILES, title  # noqa: E402
+from newsdigest.profiles import BUILTIN, DEFAULT_SECTIONS, PROFILES, short, title  # noqa: E402
 
 from test_core import item  # noqa: E402
 
@@ -328,10 +328,11 @@ class TestMorningDigest(DigestCase):
         self.assertEqual(stats["selected"], 6)
 
         # выпуск приходит одним сообщением-оглавлением, а разделы читатель
-        # открывает кнопками — там же и их названия
+        # открывает кнопками — там же и их названия (короткие: кнопка в
+        # пол-экрана)
         self.assertEqual(len(self.sent), 1)
         for topic in self.PLAN:
-            self.assertIn(title(topic), self.buttons())
+            self.assertIn(short(topic), self.buttons())
 
         # ровно по две новости из источников каждого раздела
         for topic in self.PLAN:
@@ -369,7 +370,7 @@ class TestMorningDigest(DigestCase):
         self.assertEqual(sections.plan(sub)[0], "cybersec")
         pipeline.build_and_send(chat_id=self.CHAT, sub=sub)
         labels = self.buttons()                 # кнопки разделов в оглавлении
-        self.assertLess(labels.index(title("cybersec")), labels.index(title("ai")))
+        self.assertLess(labels.index(short("cybersec")), labels.index(short("ai")))
 
     def test_favorite_section_gets_the_shared_story(self):
         """Новость, попавшая в два раздела, достаётся отмеченному.
