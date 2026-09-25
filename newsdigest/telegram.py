@@ -43,9 +43,6 @@ def mirror(chat_id, text, keyboard=None, kind="bot"):
     Делается ДО отправки: страница задумана как замена Telegram, и выпуск
     должен быть виден в браузере, даже если Bot API сейчас недоступен.
     Сбой записи не должен мешать отправке, поэтому глушим всё.
-
-    Хранится всегда ПОЛНАЯ раскладка кнопок, даже если в чат ушла свёрнутая:
-    из неё потом собирается и развёрнутый вид, и кнопки на странице.
     """
     try:
         from .storage import db, save_outbox
@@ -59,32 +56,13 @@ def mirror(chat_id, text, keyboard=None, kind="bot"):
         return 0
 
 
-def remember_message(row_id, result) -> None:
-    """Связывает копию с номером сообщения в Telegram (для «развернуть»)."""
-    message_id = (result or {}).get("message_id")
-    if not row_id or not message_id:
-        return
-    try:
-        from .storage import db, link_outbox
-        conn = db()
-        try:
-            link_outbox(conn, row_id, message_id)
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 — связка не важнее отправки
-        log.debug("Номер сообщения не сохранился: %s", exc)
-
-
 def tg_send(chat_id, text, keyboard=None, silent=None):
-    from .render import for_delivery      # render импортирует нас — только здесь
-
-    row_id = mirror(chat_id, text, keyboard)
+    mirror(chat_id, text, keyboard)
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
                "disable_web_page_preview": not CFG["link_preview"],
                "disable_notification": bool(CFG["silent"] if silent is None else silent)}
-    shown = for_delivery(keyboard)
-    if shown:
-        payload["reply_markup"] = {"inline_keyboard": shown}
+    if keyboard:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
     try:
         result = tg_call("sendMessage", payload)
     except RuntimeError as exc:
@@ -95,7 +73,6 @@ def tg_send(chat_id, text, keyboard=None, silent=None):
         payload.pop("parse_mode")
         payload["text"] = plain(text)[:TG_LIMIT]
         result = tg_call("sendMessage", payload)
-    remember_message(row_id, result)
     return result
 
 

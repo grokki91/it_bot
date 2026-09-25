@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import html as html_mod
 
-from . import factcheck, feedback
+from . import factcheck
 from .config import CFG, local_now, log, to_local
 from .feedparse import parse_date
 from .profiles import emoji as topic_emoji
@@ -238,8 +238,8 @@ def fits(text) -> bool:
 def fit_blocks(blocks, scanned, head=True, note=""):
     """Возвращает список пар (текст, карточки этого сообщения).
 
-    Карточки нужны вместе с текстом: под каждым сообщением своя клавиатура
-    реакций, и подписи кнопок берутся из этих же карточек.
+    Карточки едут вместе с текстом: по ним видно, какие новости попали в
+    какое сообщение.
 
     Подборка по десятку разделов в одно сообщение не влезает никогда. Ужимать
     её до голых заголовков — значит выбросить то, ради чего дайджест и нужен,
@@ -378,23 +378,13 @@ def alert_bulletin(rows) -> str:
     return "\n".join(lines)
 
 
-# --------------------------------------------------------- кнопки под выпуском
-MARK = "✓"
-BUTTONS = ((feedback.UP, "👍"), (feedback.DOWN, "👎"), ("save", "🔖"))
+# ------------------------------------------------------------- подписи кнопок
+# Кнопок 👍/👎/🔖 под выпуском больше нет: ряд из трёх кнопок на каждую новость
+# превращал выпуск в пульт, и чем больше новостей, тем сильнее он резал глаз.
+# Оценивают и откладывают на странице, а в Telegram выпуск только читают.
 
 
-def unmarked(text) -> str:
-    """Подпись кнопки без отметки о нажатии. Снимаем только хвостовую: в
-    подписи теперь стоит заголовок новости, и «✓» может встретиться в нём."""
-    text = str(text or "")
-    return text[:-len(MARK)] if text.endswith(MARK) else text
-
-
-#: сколько букв заголовка влезает в кнопку, не разъезжаясь на телефоне
-LABEL = 18
-
-
-def short(text, limit=LABEL) -> str:
+def short(text, limit) -> str:
     """Начало заголовка для подписи кнопки: режем по слову, а не по букве.
 
     Смотрим на букву за пределом: если там пробел, слово на границе целое и
@@ -405,128 +395,3 @@ def short(text, limit=LABEL) -> str:
         return text
     cut = text[:limit + 1].rsplit(" ", 1)[0][:limit] or text[:limit]
     return cut.rstrip(" ,.:;—-·") + "…"
-
-
-def feedback_keyboard(cards):
-    """Ряд кнопок на каждую новость: «👍 Заголовок», «👎», «🔖».
-
-    Номеров в выпуске больше нет, поэтому ряд подписан началом заголовка —
-    иначе непонятно, какую именно новость оцениваешь. Одна новость (срочное)
-    подписи не требует: она в сообщении единственная.
-
-    В callback_data влезает только 64 байта, поэтому кладём туда хэш ссылки —
-    по нему потом находятся и заголовок, и источник.
-    """
-    if not CFG["feedback_buttons"]:
-        return None
-    keyboard = []
-    for card, group, _score, _cat in cards:
-        main = primary_of(group)
-        row = [{"text": icon,
-                "callback_data": "fb:%s:%s" % (kind, main["url_hash"])}
-               for kind, icon in BUTTONS]
-        if len(cards) > 1:
-            row[0]["text"] += " " + short(card.get("headline") or main["title"])
-        keyboard.append(row)
-    return keyboard
-
-
-#: свёрнутый вид: одна строка вместо десятков кнопок
-MORE, LESS = "fb:more:x", "fb:less:x"
-
-
-def data_of(button) -> str:
-    """callback_data кнопки. Раскладка может прийти из базы — не доверяем форме."""
-    return str(button.get("callback_data") or "") if isinstance(button, dict) else ""
-
-
-def is_feedback(keyboard) -> bool:
-    """True, если это раскладка реакций, а не заявка на подписку."""
-    rows = [row for row in (keyboard or []) if row]
-    return bool(rows) and all(data_of(b).startswith("fb:")
-                              for row in rows for b in row)
-
-
-def rows_of(keyboard) -> list:
-    """Ряды новостей: без служебных «показать/свернуть»."""
-    return [row for row in (keyboard or [])
-            if row and all(data_of(b) not in (MORE, LESS) for b in row)]
-
-
-def collapse(keyboard):
-    """Сворачивает раскладку в одну кнопку «Оценить новости».
-
-    Сворачивать нечего, если новость всего одна (срочное) или это вообще не
-    реакции: один ряд из трёх кнопок глаз не режет.
-    """
-    news = rows_of(keyboard)
-    if len(news) < 2 or not is_feedback(news):
-        return keyboard
-    return [[{"text": "👍 👎 🔖 Оценить новости (%d)" % len(news),
-              "callback_data": MORE}]]
-
-
-def expand(keyboard, verdicts=None, saved=None):
-    """Разворачивает свёрнутое: ряды новостей плюс строка «Свернуть».
-
-    Отметки о нажатом ставим заново из базы: сохранённая раскладка их не
-    помнит, а читателю важно видеть, что он уже оценил.
-    """
-    news = [[dict(button) for button in row if isinstance(button, dict)]
-            for row in rows_of(keyboard)]
-    news = [row for row in news if row]
-    if not news:
-        return keyboard             # разворачивать нечего — ничего не трогаем
-    for row in news:
-        for button in row:
-            bare = unmarked(button.get("text"))
-            button["text"] = bare + MARK if is_pressed(
-                data_of(button), verdicts, saved) else bare
-    return news + [[{"text": "▲ Свернуть", "callback_data": LESS}]]
-
-
-def is_pressed(data, verdicts=None, saved=None) -> bool:
-    """Нажата ли кнопка сейчас — по тому, что записано в базе."""
-    parts = str(data or "").split(":")
-    if len(parts) < 3 or parts[0] != "fb":
-        return False
-    kind, url_hash = parts[1], parts[2]
-    if kind == "save":
-        return url_hash in (saved or ())
-    return (verdicts or {}).get(url_hash) == kind
-
-
-def for_delivery(keyboard):
-    """Что показать под сообщением: свёрнутое или полное — по настройке.
-
-    Сворачивать есть смысл только в сплошной ленте: там под одним сообщением
-    лежат ряды на все новости выпуска сразу. У выпуска экранами реакции уже
-    разложены по разделам — прятать три ряда за кнопкой незачем.
-    """
-    if not keyboard or str(CFG["feedback_style"]).lower() != "compact":
-        return keyboard
-    if str(CFG["tg_view"]).lower() != "feed":
-        return keyboard
-    return collapse(keyboard)
-
-
-def mark_pressed(keyboard, data, pressed=True):
-    """Отмечает нажатую кнопку галочкой прямо в присланной Telegram разметке.
-
-    Оценка и закладка независимы: 👍 снимает 👎 в своём ряду, а 🔖 живёт сам
-    по себе. Итоговое состояние решает вызывающий — он же пишет его в базу.
-    """
-    kind = data.split(":")[1] if data.count(":") >= 2 else ""
-    for row in keyboard:
-        if not any(b.get("callback_data") == data for b in row):
-            continue
-        for button in row:
-            other = button.get("callback_data", "")
-            other_kind = other.split(":")[1] if other.count(":") >= 2 else ""
-            bare = unmarked(button.get("text"))
-            if other == data:
-                button["text"] = bare + MARK if pressed else bare
-            elif kind in (feedback.UP, feedback.DOWN) and other_kind in (
-                    feedback.UP, feedback.DOWN):
-                button["text"] = bare
-    return keyboard

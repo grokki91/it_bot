@@ -47,7 +47,7 @@ from .llm import (LLMError, card_key, card_text, llm_cost, rate_urgency,
                   summarize)
 from .pipeline import card_of, for_topic, fresh_rows
 from .rank import SentIndex, cluster, prescore, primary_of
-from .render import alert_bulletin, breaking_card, feedback_keyboard
+from .render import alert_bulletin, breaking_card
 from .storage import (cards_known, db, log_run, meta_get, meta_set,
                       remember_cards)
 from .telegram import tg_send
@@ -550,16 +550,14 @@ def section_of(main) -> str:
 
 
 def send_flash(conn, chat_id, group, card, rating, stats, index=None) -> int:
-    """⚡ Молния: отдельное сообщение прямо сейчас."""
+    """⚡ Молния: отдельное сообщение прямо сейчас — без кнопок, как и выпуск."""
     main = primary_of(group)
-    urgency, category = rating["urgency"], rating["category"]
+    urgency = rating["urgency"]
     # событие то же, что читатель уже видел, но счётчик сдвинулся: чем именно —
     # модель сказала при проверке на повтор (`dedup.confirm_new`), и читателю
     # это первое, что нужно знать
     gain = index.gain_of(main["url_hash"]) if index is not None else ""
-    tg_send(chat_id, breaking_card(card, group, urgency, gain),
-            keyboard=feedback_keyboard([(card, group, urgency, category)]),
-            silent=False)
+    tg_send(chat_id, breaking_card(card, group, urgency, gain), silent=False)
     remember_sent(conn, chat_id, group, card, rating, section_of(main), index)
     conn.commit()
     count_sent(conn, chat_id, FLASH)

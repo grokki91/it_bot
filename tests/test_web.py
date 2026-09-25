@@ -165,7 +165,7 @@ class TestAuth(WebCase):
     def test_page_opens_without_password(self):
         code, body = self.ask("/")
         self.assertEqual(code, 200)
-        self.assertIn("Дайджест", body)
+        self.assertIn("<title>Hunter News</title>", body)
 
     def test_service_api_requires_password(self):
         code, body = self.ask("/api/tools")
@@ -247,8 +247,10 @@ class TestGuest(WebCase):
         self.assertTrue(side["menu"])
         self.assertTrue(side["sources"])
 
-    def test_feed_freshness_is_still_shown(self):
-        """«Обновлено в 18:27» — это про новости, а не про службу."""
+    def test_feed_freshness_is_still_known(self):
+        """Свежесть ленты — про новости, а не про службу: её отдают и гостю.
+        Строку «Обновлено в 18:27» страница больше не рисует, но скрипт,
+        читающий API, спросить её может по-прежнему."""
         conn = storage.db()
         try:
             storage.meta_set(conn, "last_collect", now_iso())
@@ -508,6 +510,12 @@ class TestPageLook(WebCase):
     значка, потерянный переключатель темы, забытый Ctrl+K.
     """
 
+    def code(self):
+        """Страница без комментариев. Старое в них упоминается по делу —
+        объяснить, почему его больше нет, — а проверять надо то, что работает."""
+        _code, page = self.ask("/")
+        return re.sub(r"/\*.*?\*/|<!--.*?-->", "", page, flags=re.S)
+
     def icons(self):
         """Разделы, для которых на странице нарисован значок."""
         _code, page = self.ask("/")
@@ -589,6 +597,43 @@ class TestPageLook(WebCase):
         _code, page = self.ask("/")
         self.assertIn("Ctrl K", page)
         self.assertIn("event.key === 'k'", page)
+
+    def test_the_sign_is_the_cat_with_the_bots_name(self):
+        """Вывеска та же, что у бота в Telegram: кот над газетой и Hunter
+        News. Кот нарисован линией и хранится в одном месте — шапка, вход и
+        значок вкладки берут его оттуда."""
+        from newsdigest import webpage
+        _code, page = self.ask("/")
+        self.assertNotIn("📡", page)
+        self.assertNotIn("Дайджест", page)
+        self.assertNotIn("{{", page)                  # подставлено всё
+        self.assertEqual(page.count(webpage.LOGO), 2)     # шапка и вход
+        self.assertIn('<link rel="icon" href="/icon.svg"', page)
+        self.assertIn(webpage.LOGO, self.raw("/icon.svg")[2])
+
+    def test_no_glyphs_that_phones_do_not_have(self):
+        """⏻ на кнопке «Выйти» рисовался на Android квадратиком с крестом —
+        в шрифтах телефона такого знака нет. Значки на кнопках — линией."""
+        page = self.code()
+        for glyph in ("⏻", "↻"):
+            self.assertNotIn(glyph, page)
+        self.assertIn("iconButton('ghost wide', 'logout', 'Выйти')", page)
+
+    def test_sources_start_folded(self):
+        """Шестнадцать строк разделов растягивали «Настройки» на лишний экран.
+        Блок приходит свёрнутым и раскрывается нажатием на заголовок."""
+        _code, page = self.ask("/")
+        self.assertIn("feedsShown: false", page)
+        self.assertIn("S.feedsShown = !S.feedsShown", page)
+
+    def test_the_feed_has_no_service_lines(self):
+        """Над лентой нет ни «Обновлено в 09:09 · 176 источников», ни подписей
+        «⭐ Мои темы» / «Остальные темы»: первое — про службу, второе видно в
+        настройках. Порядок «свои темы первыми» при этом остаётся."""
+        page = self.code()
+        for line in ("Обновлено в", "Мои темы", "Остальные темы", "runbar"):
+            self.assertNotIn(line, page)
+        self.assertIn("item.mine ? ':mine' : ':rest'", page)
 
 
 class TestTools(WebCase):
@@ -1268,6 +1313,9 @@ class TestRss(WebCase):
     def parsed(self, path="/rss"):
         return ET.fromstring(self.feed(path))
 
+    def test_the_channel_is_named_like_the_page(self):
+        self.assertEqual(self.parsed().find("channel/title").text, "Hunter News")
+
     def test_a_guest_gets_the_feed_without_a_password(self):
         titles = [node.text for node in self.parsed().findall(".//item/title")]
         self.assertIn("Землетрясение магнитудой 7,1 на Хонсю", titles)
@@ -1319,6 +1367,7 @@ class TestAppManifest(WebCase):
         self.assertEqual(code, 200)
         self.assertEqual(ctype, "application/manifest+json")
         data = json.loads(body)
+        self.assertEqual(data["name"], "Hunter News")
         self.assertEqual(data["start_url"], "/")
         self.assertEqual(data["display"], "standalone")
         self.assertTrue(data["icons"])

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Реакции: запись, влияние на прескоринг, подсказка модели, нажатие кнопки."""
+"""Реакции: запись, влияние на прескоринг, подсказка модели — и старые кнопки.
+
+Ставят реакции на сайте (их путь проверяет test_web). В Telegram кнопок
+👍/👎/🔖 больше нет, но выпуски, разосланные раньше, лежат в чате с ними, —
+что бывает при нажатии на такую кнопку, проверяется здесь.
+"""
 import logging
 import os
 import sys
@@ -9,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import bot, config, feedback, rank, render, storage  # noqa: E402
+from newsdigest import bot, config, feedback, rank, storage  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 
 from test_core import item  # noqa: E402
@@ -146,91 +151,57 @@ class CallbackCase(unittest.TestCase):
         }}, worker=None)
 
 
-class TestCallback(CallbackCase):
-    """Полный путь нажатия: апдейт → база → всплывашка → новая разметка."""
+class TestOldButtons(CallbackCase):
+    """Кнопки 👍/👎/🔖 под выпуском, разосланным до того, как их убрали.
 
-    def test_upvote_is_stored_with_facts_from_items(self):
+    Нажатие ничего не пишет в базу: всплывашка говорит, что оценки теперь на
+    сайте, а ряды реакций уходят из сообщения — остаются только переходы."""
+
+    def test_vote_is_not_recorded_and_points_to_the_site(self):
         self.press("fb:up:hash1")
-        conn = storage.db()
-        row = conn.execute("SELECT * FROM feedback").fetchone()
-        conn.close()
-        self.assertEqual(row["verdict"], "up")
-        self.assertEqual(row["source_id"], "openai")
-        self.assertEqual(row["category"], "labs")
-        self.assertEqual(row["title"], "Крупный релиз")
-        self.assertIn("👍", self.answers[0])
-        self.assertEqual(self.edits[0][0][0]["text"], "1 👍✓")
-
-    def test_bookmark_toggles_through_button(self):
-        self.press("fb:save:hash1")
-        self.assertEqual(self.edits[-1][0][2]["text"], "1 🔖✓")
-        self.press("fb:save:hash1", keyboard=self.edits[-1])
-        self.assertEqual(self.edits[-1][0][2]["text"], "1 🔖")
-        conn = storage.db()
-        self.assertEqual(feedback.bookmarks(conn, CHAT), [])
-        conn.close()
-
-    def test_stranger_cannot_vote(self):
-        self.press("fb:up:hash1", chat_id="999")
         conn = storage.db()
         count = conn.execute("SELECT COUNT(*) c FROM feedback").fetchone()["c"]
         conn.close()
         self.assertEqual(count, 0)
+        self.assertEqual(self.answers, [bot.MOVED])
+
+    def test_bookmark_is_not_stored_either(self):
+        self.press("fb:save:hash1")
+        conn = storage.db()
+        self.assertEqual(feedback.bookmarks(conn, CHAT), [])
+        conn.close()
+
+    def test_reaction_rows_leave_the_message(self):
+        self.press("fb:down:hash1")
+        self.assertEqual(self.edits, [[]])        # в сообщении были только реакции
+
+    def test_navigation_stays(self):
+        keyboard = [[{"text": "1 👍", "callback_data": "fb:up:hash1"},
+                     {"text": "1 👎", "callback_data": "fb:down:hash1"},
+                     {"text": "1 🔖", "callback_data": "fb:save:hash1"}],
+                    [{"text": "← К разделам", "callback_data": "nav:3:home"},
+                     {"text": "📤 Поделиться", "callback_data": "nav:3:share:sec:ai"}]]
+        self.press("fb:save:hash1", keyboard=keyboard)
+        self.assertEqual(self.edits, [keyboard[1:]])
+
+    def test_folded_row_goes_too(self):
+        """«Оценить новости» под сплошной лентой — тот же ряд реакций, только
+        свёрнутый: его тоже нечем разворачивать."""
+        folded = [[{"text": "👍 👎 🔖 Оценить новости (6)",
+                    "callback_data": "fb:more:x"}]]
+        self.press("fb:more:x", keyboard=folded)
+        self.assertEqual(self.edits, [[]])
+        self.assertEqual(self.answers, [bot.MOVED])
+
+    def test_stranger_gets_nothing(self):
+        self.press("fb:up:hash1", chat_id="999")
         self.assertEqual(self.edits, [])
+        self.assertIn("личный", self.answers[0])
 
     def test_garbage_callback_is_answered_and_ignored(self):
         self.press("что-то не то")
         self.assertEqual(self.edits, [])
         self.assertEqual(self.answers, [""])
-
-
-class TestFolding(CallbackCase):
-    """Свёрнутые реакции: «Оценить» разворачивает, «Свернуть» прячет обратно."""
-
-    #: как выглядит полная раскладка двух новостей, сохранённая в outbox
-    FULL = [[{"text": "1 👍", "callback_data": "fb:up:hash1"},
-             {"text": "1 👎", "callback_data": "fb:down:hash1"},
-             {"text": "1 🔖", "callback_data": "fb:save:hash1"}],
-            [{"text": "2 👍", "callback_data": "fb:up:hash2"},
-             {"text": "2 👎", "callback_data": "fb:down:hash2"},
-             {"text": "2 🔖", "callback_data": "fb:save:hash2"}]]
-
-    def setUp(self):
-        super().setUp()
-        conn = storage.db()
-        conn.execute("DELETE FROM outbox")
-        conn.commit()
-        row = storage.save_outbox(conn, CHAT, "выпуск", self.FULL)
-        storage.link_outbox(conn, row, 5)       # сообщение №5, как в press()
-        conn.close()
-
-    def folded(self):
-        return [[{"text": "👍 👎 🔖 Оценить новости (2)",
-                  "callback_data": render.MORE}]]
-
-    def test_more_expands_saved_keyboard(self):
-        self.press(render.MORE, keyboard=self.folded())
-        self.assertEqual(len(self.edits[-1]), 3)            # 2 новости + «свернуть»
-        self.assertEqual(self.edits[-1][0][0]["text"], "1 👍")
-        self.assertEqual(self.edits[-1][-1][0]["callback_data"], render.LESS)
-
-    def test_expanded_view_shows_past_votes(self):
-        self.press("fb:up:hash1", keyboard=self.FULL)
-        self.press(render.MORE, keyboard=self.folded())
-        self.assertEqual(self.edits[-1][0][0]["text"], "1 👍✓")
-
-    def test_less_folds_back(self):
-        self.press(render.LESS, keyboard=self.FULL)
-        self.assertEqual(self.edits[-1], self.folded())
-
-    def test_unknown_message_says_so_instead_of_failing(self):
-        conn = storage.db()
-        conn.execute("DELETE FROM outbox")
-        conn.commit()
-        conn.close()
-        self.press(render.MORE, keyboard=self.folded())
-        self.assertEqual(self.edits, [])
-        self.assertIn("старый", self.answers[-1])
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@
 
     home           оглавление: главное за день и разделы
     top / secs     то же, но с полным списком главного / разделов
-    sec:<раздел>   раздел: первые новости и кнопки реакций
+    sec:<раздел>   раздел: первые новости
     all:<раздел>   он же целиком
     share:<экран>  «поделиться» на любом из экранов выше: текст тот же, а
                    вместо кнопок — его новости, нажал — выбрал чат.
@@ -25,17 +25,20 @@
 Сам выпуск в кнопку не влезает (64 байта на всё), поэтому он лежит в базе,
 а в кнопке едет только его номер. Выпуск, которого в базе уже нет (старый,
 вычищенный), листаться перестаёт — сообщение при этом остаётся читаемым.
+
+Кнопок 👍/👎/🔖 под новостями здесь нет. Ряд из трёх кнопок на каждую новость
+превращал экран раздела в пульт — пять новостей, пятнадцать кнопок, — и под
+ним терялись переходы, ради которых кнопки и нужны. Оценивают и откладывают
+на странице, а в Telegram выпуск читают.
 """
 from __future__ import annotations
 
 from urllib.parse import quote
 
-from .config import CFG
 from .profiles import emoji as topic_emoji
 from .profiles import short as topic_short
 from .profiles import title as topic_title
-from .render import (BUTTONS, MARK, card_facts, card_text, esc, fits,
-                     is_pressed, plural, short)
+from .render import card_facts, card_text, esc, fits, plural, short
 from .telegram import TG_LIMIT
 
 #: главных новостей на первом экране и сколько их всего под кнопкой «ещё».
@@ -333,22 +336,10 @@ def section_text(issue, block, want=SECTION_SHOWN, note=False) -> tuple:
     return build(1, 2)[:TG_LIMIT], 1
 
 
-def section_keyboard(issue, ident, block, shown, verdicts=None, saved=None,
-                     full=False) -> list:
-    """Кнопки раздела: реакции на показанные новости, «ещё» и «к разделам»."""
+def section_keyboard(issue, ident, block, shown, full=False) -> list:
+    """Кнопки раздела: «ещё», «к разделам» и «поделиться»."""
     cards = cards_of(block)
     rows = []
-    if CFG["feedback_buttons"]:
-        for card in cards[:shown]:
-            row = [{"text": icon,
-                    "callback_data": "fb:%s:%s" % (kind, card["hash"])}
-                   for kind, icon in BUTTONS]
-            if shown > 1:
-                row[0]["text"] += " " + short(card["title"])
-            for button in row:
-                if is_pressed(button["callback_data"], verdicts, saved):
-                    button["text"] += MARK
-            rows.append(row)
     left = len(cards) - shown
     if left > 0:
         rows.append([{"text": "⬇️ Ещё %d %s" % (left, plural(
@@ -375,13 +366,12 @@ def section_view(issue, block, full=False) -> tuple:
     return text, cards[:shown]
 
 
-def section_screen(issue, ident, topic, full=False, verdicts=None, saved=None):
+def section_screen(issue, ident, topic, full=False):
     block = section_of(issue, topic)
     if block is None:                   # раздела нет — показываем оглавление
         return hub_screen(issue, ident)
     text, cards = section_view(issue, block, full)
-    return text, section_keyboard(issue, ident, block, len(cards), verdicts,
-                                  saved, full)
+    return text, section_keyboard(issue, ident, block, len(cards), full)
 
 
 # ---------------------------------------------------------------- поделиться
@@ -505,7 +495,7 @@ def hint(name, keyboard) -> str:
 
 
 # ------------------------------------------------------------------- маршрут
-def screen(issue, ident, name=HOME, arg="", verdicts=None, saved=None) -> tuple:
+def screen(issue, ident, name=HOME, arg="") -> tuple:
     """Экран выпуска: текст сообщения и кнопки под ним.
 
     Выпуск из одного раздела (ответ `/news`) оглавления не получает: листать
@@ -519,7 +509,7 @@ def screen(issue, ident, name=HOME, arg="", verdicts=None, saved=None) -> tuple:
     if len(blocks) == 1 and name in (HOME, TOP, SECS):
         name, arg = SEC, blocks[0]["topic"]
     if name in (SEC, ALL):
-        return section_screen(issue, ident, arg, name == ALL, verdicts, saved)
+        return section_screen(issue, ident, arg, name == ALL)
     return hub_screen(issue, ident, name)
 
 

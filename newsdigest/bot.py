@@ -2,8 +2,9 @@
 """Команды, нажатия кнопок и фоновые задачи.
 
 В Telegram бот только рассылает: команд там нет, он принимает лишь нажатия
-кнопок под выпуском — переходы по разделам, 👍/👎/🔖 — и решения владельца
-по заявкам новых чатов.
+кнопок под выпуском — переходы по разделам, «Мои темы», «Поделиться» — и
+решения владельца по заявкам новых чатов. Оценок 👍/👎 и закладок 🔖 в
+Telegram нет: они живут на странице (web.py).
 На любую команду из чата приходит одна и та же справка о расписании — вся
 переписка с ботом сводится к ней (ND_CHAT_REPLY=off убирает и её). Страница в
 браузере команд тоже не выполняет: боту командуют на самом VPS, через
@@ -27,10 +28,9 @@ from . import (config, feedback, issueview, prefsview, sections, settings,
 from .config import CFG, log, tz_label
 from .pipeline import build_and_send, build_section
 from .profiles import label, profile, title
-from .render import MONTHS, collapse, esc, expand, mark_pressed
+from .render import MONTHS, esc
 from .sources import all_feeds, collect, fetch_source
-from .storage import (db, item_facts, load_issue, meta_get, meta_set,
-                      outbox_keyboard, take_leftover)
+from .storage import db, load_issue, meta_get, meta_set, take_leftover
 from .telegram import (tg_answer_callback, tg_call, tg_edit_markup,
                        tg_edit_text, tg_send)
 
@@ -225,7 +225,7 @@ def cmd_help(ctx):
               "Разделы и их выбор: /sections",
               "",
               "<i>Команды работают здесь, на странице. В Telegram бот только "
-              "присылает выпуски и принимает кнопки 👍/👎/🔖.</i>"]
+              "присылает выпуски; оценки 👍/👎 и закладки 🔖 — на сайте.</i>"]
     return "\n".join(lines)
 
 
@@ -405,7 +405,7 @@ def cmd_saved(ctx):
         return "🔖 Закладки очищены."
     rows = feedback.bookmarks(ctx.conn, ctx.chat_id)
     if not rows:
-        return ("Закладок пока нет. Кнопка 🔖 под новостью в выпуске "
+        return ("Закладок пока нет. Кнопка 🔖 под новостью на сайте "
                 "откладывает её сюда.")
     lines = ["🔖 <b>Закладки</b>", ""]
     for row in rows:
@@ -423,9 +423,9 @@ def cmd_taste(ctx):
     total = ctx.conn.execute("SELECT COUNT(*) c FROM feedback WHERE chat_id=?",
                              (ctx.chat_id,)).fetchone()["c"]
     if not total:
-        return ("Пока ничего не знаю о ваших вкусах. Под выпуском есть строка "
-                "«Оценить новости» — разверните и жмите 👍 или 👎, через неделю "
-                "выпуск начнёт подстраиваться.")
+        return ("Пока ничего не знаю о ваших вкусах. Жмите 👍 или 👎 под "
+                "новостями на сайте — через неделю выпуск начнёт "
+                "подстраиваться.")
     liked, disliked = aff.top()
     lines = ["🎯 <b>Что я о вас понял</b>",
              "оценок собрано: %d, вес в отборе: %.2f" % (total, CFG["feedback_weight"])]
@@ -802,12 +802,6 @@ def handle_message(msg) -> None:
         answer_schedule(chat_id)
 
 
-TOAST = {
-    feedback.UP:   "Учёл 👍 — такое буду поднимать выше",
-    feedback.DOWN: "Учёл 👎 — такого станет меньше",
-}
-
-
 def handle_signup_callback(cb, chat_id, data) -> None:
     """Владелец решает судьбу заявки: «Пустить» или «Нет»."""
     if not is_owner(chat_id):
@@ -840,29 +834,35 @@ def handle_signup_callback(cb, chat_id, data) -> None:
     tg_send(chat_id, note, silent=True)
 
 
-def handle_fold_callback(cb, chat_id, message, kind) -> None:
-    """«Оценить новости» / «Свернуть»: разворачивает и прячет ряды реакций.
+#: что сказать тому, кто нажал 👍/👎/🔖 под выпуском, разосланным ещё с ними
+MOVED = "Оценки и закладки теперь на сайте — здесь кнопки больше не работают"
 
-    Полная раскладка берётся из копии сообщения: в callback_data все хэши не
-    влезут, а копия для веб-страницы хранится и так.
+
+def is_reaction(button) -> bool:
+    """Кнопка из прежнего ряда реакций: 👍, 👎, 🔖 или «Оценить новости»."""
+    return isinstance(button, dict) and \
+        str(button.get("callback_data") or "").startswith("fb:")
+
+
+def handle_old_reaction(cb, chat_id, message) -> None:
+    """Нажатие 👍/👎/🔖 под выпуском, разосланным до того, как кнопки убрали.
+
+    В Telegram реакций больше нет: ряд из трёх кнопок на каждую новость резал
+    глаз сильнее самих новостей. Но старые выпуски лежат в чате с прежней
+    разметкой, и нажатие на неё не должно пропадать молча. Оно ничего не
+    записывает: всплывашка говорит, где оценки теперь, а ряды реакций уходят
+    из сообщения — переходы по выпуску остаются на месте.
     """
-    conn = db()
-    try:
-        full = outbox_keyboard(conn, chat_id, message.get("message_id"))
-        verdicts, saved = feedback.press_state(conn, chat_id)
-    finally:
-        conn.close()
-    if not full:
-        tg_answer_callback(cb.get("id"),
-                           "Кнопки этого выпуска уже не найти — он старый.")
+    tg_answer_callback(cb.get("id"), MOVED)
+    keyboard = (message.get("reply_markup") or {}).get("inline_keyboard") or []
+    rest = [row for row in keyboard
+            if not any(is_reaction(button) for button in row)]
+    if len(rest) == len(keyboard):
         return
-
-    keyboard = (expand(full, verdicts, saved) if kind == "more" else collapse(full))
-    tg_answer_callback(cb.get("id"))
     try:
-        tg_edit_markup(chat_id, message.get("message_id"), keyboard)
+        tg_edit_markup(chat_id, message.get("message_id"), rest)
     except RuntimeError as exc:
-        log.debug("Разметку свернуть/развернуть не удалось: %s", exc)
+        log.debug("Старые кнопки реакций убрать не удалось: %s", exc)
 
 
 def handle_nav_callback(cb, chat_id, message, data) -> None:
@@ -870,14 +870,13 @@ def handle_nav_callback(cb, chat_id, message, data) -> None:
 
     Экран собирается заново из выпуска, сохранённого при отправке, и правит
     то же самое сообщение: чат не растёт, а читатель ходит по разделам, как
-    по вкладкам. Отметки о нажатых 👍/👎/🔖 расставляются по базе — раскладка
-    их не помнит, а читателю важно видеть, что он уже оценил.
+    по вкладкам. Старый выпуск, разосланный ещё с кнопками 👍/👎/🔖, после
+    первого же перехода остаётся без них: разметку экрана строим заново.
     """
     ident, name, arg = issueview.parse(data)
     conn = db()
     try:
         issue = load_issue(conn, chat_id, ident)
-        verdicts, saved = feedback.press_state(conn, chat_id)
     finally:
         conn.close()
     if not issue:
@@ -885,7 +884,7 @@ def handle_nav_callback(cb, chat_id, message, data) -> None:
                            "Этот выпуск уже не листается — он старый.")
         return
 
-    text, keyboard = issueview.screen(issue, ident, name, arg, verdicts, saved)
+    text, keyboard = issueview.screen(issue, ident, name, arg)
     # сначала правим сообщение, потом гасим «часики»: не вышло — скажем об
     # этом в той же всплывашке, второй раз ответить на нажатие нельзя
     try:
@@ -941,7 +940,7 @@ def handle_prefs_callback(cb, chat_id, message, data) -> None:
 
 
 def handle_callback(cb, worker) -> None:
-    """Нажатие кнопки: переход по выпуску, оценка новости или ответ по заявке."""
+    """Нажатие кнопки: переход по выпуску, «Мои темы» или ответ по заявке."""
     message = cb.get("message") or {}
     chat_id = str((message.get("chat") or {}).get("id") or "")
     data = cb.get("data") or ""
@@ -957,37 +956,10 @@ def handle_callback(cb, worker) -> None:
     if data.startswith(prefsview.PREF + ":"):
         handle_prefs_callback(cb, chat_id, message, data)
         return
-    if not data.startswith("fb:") or data.count(":") < 2:
-        tg_answer_callback(cb.get("id"))
+    if data.startswith("fb:"):
+        handle_old_reaction(cb, chat_id, message)
         return
-
-    _, kind, url_hash = data.split(":", 2)
-    if kind in ("more", "less"):
-        handle_fold_callback(cb, chat_id, message, kind)
-        return
-    conn = db()
-    try:
-        facts = item_facts(conn, url_hash)
-        if kind in (feedback.UP, feedback.DOWN):
-            feedback.record(conn, chat_id, url_hash, kind, facts)
-            pressed, toast = True, TOAST[kind]
-        elif kind == "save":
-            pressed = feedback.save_bookmark(conn, chat_id, url_hash, facts)
-            toast = "🔖 В закладках, /saved" if pressed else "Убрал из закладок"
-        else:
-            tg_answer_callback(cb.get("id"))
-            return
-    finally:
-        conn.close()
-
-    tg_answer_callback(cb.get("id"), toast)
-    keyboard = ((message.get("reply_markup") or {}).get("inline_keyboard") or [])
-    if keyboard:
-        try:
-            tg_edit_markup(chat_id, message.get("message_id"),
-                           mark_pressed(keyboard, data, pressed))
-        except RuntimeError as exc:
-            log.debug("Разметку обновить не удалось: %s", exc)
+    tg_answer_callback(cb.get("id"))
 
 
 def handle_update(upd, worker=None) -> None:

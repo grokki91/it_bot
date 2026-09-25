@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (dedup, feedback, issueview, llm, pipeline,  # noqa: E402
+from newsdigest import (dedup, feedback, llm, pipeline,  # noqa: E402
                         storage, subscribers, threads, translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
@@ -114,11 +114,10 @@ class TestBuildAndSend(PipelineCase):
         chat, text, keyboard = self.sent[0]
         self.assertEqual(chat, CHAT)
         self.assertIn("Карточка 0", text)
-        reactions = [row for row in keyboard
-                     if row[0]["callback_data"].startswith("fb:")]
-        self.assertEqual(len(reactions),
-                         min(stats["selected"], issueview.SECTION_SHOWN))
-        # последняя строка — «Поделиться»: реакции её не касаются
+        # 👍/👎/🔖 под выпуском нет — они на сайте; под текстом только
+        # переходы, и последняя строка — «Поделиться»
+        datas = [b.get("callback_data", "") for row in keyboard for b in row]
+        self.assertFalse([d for d in datas if d.startswith("fb:")])
         self.assertTrue(keyboard[-1][-1]["callback_data"].endswith(":share:sec:ai"))
 
         conn = storage.db()
@@ -201,16 +200,23 @@ class TestBuildAndSend(PipelineCase):
         pipeline.build_and_send(chat_id=CHAT)
         self.assertIn("Прошлая любимая новость", self.ranked_personas[0])
 
-    def test_buttons_can_be_switched_off(self):
-        CFG["feedback_buttons"] = False
-        try:
-            self.fill(3)
-            pipeline.build_and_send(chat_id=CHAT)
-            # реакций нет — остаётся только «Поделиться»
-            self.assertEqual([b["text"] for row in self.sent[0][2] for b in row],
-                             ["📤 Поделиться"])
-        finally:
-            CFG["feedback_buttons"] = True
+    def test_issue_of_one_section_has_only_share(self):
+        self.fill(3)
+        pipeline.build_and_send(chat_id=CHAT)
+        # реакций нет, разделов не из чего выбирать — остаётся «Поделиться»
+        self.assertEqual([b["text"] for row in self.sent[0][2] for b in row],
+                         ["📤 Поделиться"])
+
+    def test_feed_goes_out_without_buttons(self):
+        """Сплошная лента — те же новости без экранов. Кнопок под ней нет:
+        ни рядов 👍/👎/🔖, ни свёрнутого «Оценить новости»."""
+        self.addCleanup(CFG.update, {"tg_view": CFG["tg_view"]})
+        CFG["tg_view"] = "feed"
+        self.fill(3)
+        pipeline.build_and_send(chat_id=CHAT)
+        self.assertTrue(self.sent)
+        self.assertEqual([keyboard for _chat, _text, keyboard in self.sent],
+                         [None] * len(self.sent))
 
 
 class TestLanguage(PipelineCase):
