@@ -62,6 +62,16 @@ class TestMerge(ProfilesCase):
         self.put({"ai": {"persona": "любитель ретрокомпьютеров"}})
         self.assertEqual(PROFILES["ai"]["persona"], "любитель ретрокомпьютеров")
 
+    def test_button_name_follows_a_renamed_topic(self):
+        """Своё название — и на кнопке оно, а не встроенное «Железо»."""
+        from newsdigest.profiles import short
+        self.assertEqual(short("hardware"), "Железо")
+        self.put({"hardware": {"title": "Гаджеты"}})
+        self.assertEqual(short("hardware"), "Гаджеты")
+        self.put({"hardware": {"title": "Гаджеты и железо", "short": "Гаджеты"}})
+        self.assertEqual(short("hardware"), "Гаджеты")
+        self.assertEqual(short("medicine"), "Медицина")     # короткого нет
+
     def test_new_topic_appears(self):
         self.put({"гаджеты": {"persona": "читатель", "keywords": ["phone"],
                               "feeds": [["e", "https://e.com/rss", 2, "media"]]}})

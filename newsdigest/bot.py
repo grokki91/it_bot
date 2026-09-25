@@ -901,7 +901,7 @@ def handle_nav_callback(cb, chat_id, message, data) -> None:
                            if too_old else
                            "Не получилось открыть экран, попробуйте ещё раз.")
         return
-    tg_answer_callback(cb.get("id"))
+    tg_answer_callback(cb.get("id"), issueview.hint(name, keyboard))
 
 
 def handle_prefs_callback(cb, chat_id, message, data) -> None:

@@ -376,6 +376,14 @@ class TestRender(unittest.TestCase):
         self.assertTrue(label.endswith("…"), label)
         self.assertLessEqual(len(label), 2 + render.LABEL + 1)
 
+    def test_word_ending_right_at_the_limit_is_kept(self):
+        # «семейной» кончается ровно на 34-й букве — терять его незачем
+        title = "Минфин привяжет ставку по семейной ипотеке к числу детей"
+        self.assertEqual(render.short(title, 34),
+                         "Минфин привяжет ставку по семейной…")
+        self.assertEqual(render.short(title, 33), "Минфин привяжет ставку по…")
+        self.assertEqual(render.short("Слово" * 10, 12), "СловоСловоСл…")
+
     def test_keyboard_can_be_switched_off(self):
         CFG["feedback_buttons"] = False
         try:

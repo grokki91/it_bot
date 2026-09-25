@@ -17,6 +17,7 @@
       },
       "гаджеты": {
         "title": "Гаджеты", "emoji": "📱", "aliases": ["gadgets"],
+        "short": "…",                       // имя на кнопке, если title длинное
         "persona": "…", "keywords": [...], "feeds": [...]
       }
     }
@@ -97,7 +98,10 @@ def apply() -> dict:
         base = merged.setdefault(name, {"persona": "внимательный читатель.",
                                         "title": name, "emoji": "📌",
                                         "aliases": (), "keywords": [], "feeds": []})
-        for field in ("persona", "title", "emoji"):
+        if patch.get("title") and not patch.get("short"):
+            # своё название — и на кнопке оно же, а не встроенное «Железо»
+            base.pop("short", None)
+        for field in ("persona", "title", "short", "emoji"):
             if patch.get(field):
                 base[field] = str(patch[field])
         if patch.get("aliases"):

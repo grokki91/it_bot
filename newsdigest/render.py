@@ -395,11 +395,15 @@ LABEL = 18
 
 
 def short(text, limit=LABEL) -> str:
-    """Начало заголовка для подписи кнопки: режем по слову, а не по букве."""
+    """Начало заголовка для подписи кнопки: режем по слову, а не по букве.
+
+    Смотрим на букву за пределом: если там пробел, слово на границе целое и
+    остаётся («…по семейной…», а не «…по…»).
+    """
     text = " ".join(str(text or "").split())
     if len(text) <= limit:
         return text
-    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    cut = text[:limit + 1].rsplit(" ", 1)[0][:limit] or text[:limit]
     return cut.rstrip(" ,.:;—-·") + "…"
 
 
