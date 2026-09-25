@@ -212,14 +212,19 @@ class TestTelegramIsSendOnly(BotCase):
         self.message("просто текст")
         self.assertEqual(self.sent, [])
 
-    def test_buttons_still_work(self):
+    def test_old_reaction_buttons_point_to_the_site(self):
+        """👍/👎/🔖 из Telegram убраны, но старые выпуски лежат в чате с ними.
+        Нажатие не пропадает молча: всплывашка говорит, где оценки теперь."""
         answers = []
+        self.addCleanup(setattr, bot, "tg_answer_callback", bot.tg_answer_callback)
+        self.addCleanup(setattr, bot, "tg_edit_markup", bot.tg_edit_markup)
         bot.tg_answer_callback = lambda cb, text="", alert=False: answers.append(text)
         bot.tg_edit_markup = lambda *a, **kw: None
         bot.handle_update({"update_id": 5, "callback_query": {
             "id": "c", "data": "fb:up:hash1",
             "message": {"message_id": 1, "chat": {"id": self.OWNER}}}})
-        self.assertIn("👍", answers[0])
+        self.assertEqual(answers, [bot.MOVED])
+        self.assertIn("сайт", answers[0])
 
 
 class TestMyTopics(BotCase):

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import (feedback, feedparse, rank, render, storage,  # noqa: E402
+from newsdigest import (feedparse, rank, render, storage,  # noqa: E402
                         textutil)
 from newsdigest.config import CFG  # noqa: E402
 
@@ -354,28 +354,6 @@ class TestRender(unittest.TestCase):
         # и только у первого сообщения полная шапка со счётом новостей
         self.assertEqual(sum("новостей ·" in text for text, _c in messages), 1)
 
-    def test_keyboard_row_is_signed_with_headline(self):
-        cards = self.cards(3)
-        keyboard = render.feedback_keyboard(cards)
-        self.assertEqual(len(keyboard), 3)
-        self.assertEqual([b["text"] for b in keyboard[0]],
-                         ["👍 Заголовок 0", "👎", "🔖"])
-        for row in keyboard:
-            for button in row:
-                self.assertLessEqual(len(button["callback_data"].encode()), 64)
-
-    def test_single_news_button_needs_no_signature(self):
-        keyboard = render.feedback_keyboard(self.cards(1))
-        self.assertEqual([b["text"] for b in keyboard[0]], ["👍", "👎", "🔖"])
-
-    def test_long_headline_is_cut_by_word(self):
-        cards = self.cards(2)
-        cards[0][0]["headline"] = "Очень длинный заголовок новости про всё сразу"
-        keyboard = render.feedback_keyboard(cards)
-        label = keyboard[0][0]["text"]
-        self.assertTrue(label.endswith("…"), label)
-        self.assertLessEqual(len(label), 2 + render.LABEL + 1)
-
     def test_word_ending_right_at_the_limit_is_kept(self):
         # «семейной» кончается ровно на 34-й букве — терять его незачем
         title = "Минфин привяжет ставку по семейной ипотеке к числу детей"
@@ -383,83 +361,6 @@ class TestRender(unittest.TestCase):
                          "Минфин привяжет ставку по семейной…")
         self.assertEqual(render.short(title, 33), "Минфин привяжет ставку по…")
         self.assertEqual(render.short("Слово" * 10, 12), "СловоСловоСл…")
-
-    def test_keyboard_can_be_switched_off(self):
-        CFG["feedback_buttons"] = False
-        try:
-            self.assertIsNone(render.feedback_keyboard(self.cards(2)))
-        finally:
-            CFG["feedback_buttons"] = True
-
-    def test_collapse_hides_rows_behind_one_button(self):
-        keyboard = render.feedback_keyboard(self.cards(6))
-        folded = render.collapse(keyboard)
-        self.assertEqual(len(folded), 1)
-        self.assertEqual(len(folded[0]), 1)
-        self.assertIn("(6)", folded[0][0]["text"])
-        self.assertEqual(folded[0][0]["callback_data"], render.MORE)
-
-    def test_single_news_stays_as_is(self):
-        # три кнопки под срочной новостью прятать не за чем
-        keyboard = render.feedback_keyboard(self.cards(1))
-        self.assertEqual(render.collapse(keyboard), keyboard)
-
-    def test_expand_restores_rows_with_marks(self):
-        keyboard = render.feedback_keyboard(self.cards(3))
-        url_hash = keyboard[1][0]["callback_data"].split(":")[2]
-        rows = render.expand(keyboard, {url_hash: feedback.UP}, set())
-        self.assertEqual(len(rows), 4)                      # 3 новости + «свернуть»
-        self.assertEqual(rows[1][0]["text"], "👍 Заголовок 1✓")  # оценка видна сразу
-        self.assertEqual(rows[1][1]["text"], "👎")
-        self.assertEqual(rows[-1][0]["callback_data"], render.LESS)
-        # исходную раскладку разворачивание не портит
-        self.assertEqual(keyboard[1][0]["text"], "👍 Заголовок 1")
-
-    def test_delivery_follows_style(self):
-        """Свёртка — про сплошную ленту: там ряды на весь выпуск сразу."""
-        keyboard = render.feedback_keyboard(self.cards(4))
-        saved = CFG["tg_view"], CFG["feedback_style"]
-        try:
-            CFG["tg_view"] = "feed"
-            CFG["feedback_style"] = "rows"
-            self.assertEqual(render.for_delivery(keyboard), keyboard)
-            CFG["feedback_style"] = "compact"
-            self.assertEqual(len(render.for_delivery(keyboard)), 1)
-            # у выпуска экранами реакции и так разложены по разделам
-            CFG["tg_view"] = "screens"
-            self.assertEqual(render.for_delivery(keyboard), keyboard)
-        finally:
-            CFG["tg_view"], CFG["feedback_style"] = saved
-
-    def test_signup_keyboard_is_never_folded(self):
-        keyboard = [[{"text": "✅ Пустить", "callback_data": "sub:ok:1"},
-                     {"text": "🚫 Нет", "callback_data": "sub:no:1"}],
-                    [{"text": "ещё", "callback_data": "sub:ok:2"}]]
-        self.assertEqual(render.for_delivery(keyboard), keyboard)
-
-    def test_mark_pressed_is_exclusive_for_verdicts(self):
-        keyboard = render.feedback_keyboard(self.cards(2))
-        up = keyboard[0][0]["callback_data"]
-        down = keyboard[0][1]["callback_data"]
-        save = keyboard[0][2]["callback_data"]
-
-        render.mark_pressed(keyboard, up)
-        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0✓")
-
-        render.mark_pressed(keyboard, save)
-        self.assertEqual(keyboard[0][2]["text"], "🔖✓")
-        # закладка не сбила оценку
-        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0✓")
-
-        render.mark_pressed(keyboard, down)
-        self.assertEqual(keyboard[0][0]["text"], "👍 Заголовок 0")   # 👎 снял 👍
-        self.assertEqual(keyboard[0][1]["text"], "👎✓")
-        self.assertEqual(keyboard[0][2]["text"], "🔖✓")     # а закладка осталась
-
-        render.mark_pressed(keyboard, save, pressed=False)
-        self.assertEqual(keyboard[0][2]["text"], "🔖")
-        # соседний ряд не тронут
-        self.assertEqual(keyboard[1][0]["text"], "👍 Заголовок 1")
 
 
 class TestSending(unittest.TestCase):
@@ -480,23 +381,17 @@ class TestSending(unittest.TestCase):
         from newsdigest import telegram
         telegram.tg_call = self._real
 
-    def test_long_keyboard_goes_out_folded_but_is_stored_whole(self):
+    def test_keyboard_goes_out_as_given(self):
+        """Свёртки больше нет: её придумали ради рядов 👍/👎/🔖 под лентой, а
+        этих кнопок в Telegram теперь нет вовсе. Разметка уходит как есть."""
         from newsdigest import telegram
-        keyboard = [[{"text": "%d 👍" % n, "callback_data": "fb:up:h%d" % n}]
-                    for n in (1, 2, 3)]
-        self.addCleanup(CFG.update, {"tg_view": CFG["tg_view"]})
-        CFG["tg_view"] = "feed"                 # свёртка бывает только там
-        telegram.tg_send("77", "выпуск", keyboard=keyboard)
-        sent = self.payloads[0]["reply_markup"]["inline_keyboard"]
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0][0]["callback_data"], render.MORE)
-
-        conn = storage.db()
-        try:
-            # по номеру сообщения бот найдёт полную раскладку и развернёт её
-            self.assertEqual(len(storage.outbox_keyboard(conn, "77", 4242)), 3)
-        finally:
-            conn.close()
+        keyboard = [[{"text": "✅ Пустить", "callback_data": "sub:ok:1"},
+                     {"text": "🚫 Нет", "callback_data": "sub:no:1"}]]
+        telegram.tg_send("77", "заявка", keyboard=keyboard)
+        telegram.tg_send("77", "выпуск")
+        self.assertEqual(self.payloads[0]["reply_markup"]["inline_keyboard"],
+                         keyboard)
+        self.assertNotIn("reply_markup", self.payloads[1])
 
 
 class TestStorage(unittest.TestCase):

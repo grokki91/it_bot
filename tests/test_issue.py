@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import bot, config, feedback, issueview, render, storage  # noqa: E402
-from newsdigest.config import CFG  # noqa: E402
 from newsdigest.telegram import TG_LIMIT  # noqa: E402
 
 from test_core import item  # noqa: E402
@@ -170,7 +169,7 @@ class TestHub(unittest.TestCase):
 
 
 class TestSection(unittest.TestCase):
-    """Экран раздела: новости, реакции и дорога назад."""
+    """Экран раздела: новости и дорога назад."""
 
     def test_shows_the_section_with_its_news(self):
         snapshot = issue(3, 2)
@@ -182,22 +181,14 @@ class TestSection(unittest.TestCase):
         self.assertEqual(keyboard[-1][0]["callback_data"], "nav:7:home")
         self.assertIn("К разделам", keyboard[-1][0]["text"])
 
-    def test_reaction_row_per_news(self):
+    def test_no_reaction_buttons_under_the_news(self):
+        """👍/👎/🔖 ставят на сайте: ряд из трёх кнопок на каждую новость
+        превращал экран раздела в пульт. Под новостями — только переходы."""
         snapshot = issue(3, 2)
         _text, keyboard = issueview.screen(snapshot, 7, issueview.SEC, "ai")
-        rows = [r for r in keyboard if r[0]["callback_data"].startswith("fb:")]
-        self.assertEqual(len(rows), 3)
-        self.assertEqual([b["text"] for b in rows[0]][1:], ["👎", "🔖"])
-        self.assertTrue(rows[0][0]["text"].startswith("👍 Заголовок"))
-
-    def test_past_votes_are_marked(self):
-        snapshot = issue(2, 2)
-        url_hash = snapshot["sections"][0]["cards"][0]["hash"]
-        _text, keyboard = issueview.screen(snapshot, 7, issueview.SEC, "ai",
-                                           {url_hash: feedback.UP}, {url_hash})
-        self.assertTrue(keyboard[0][0]["text"].endswith(render.MARK))
-        self.assertTrue(keyboard[0][2]["text"].endswith(render.MARK))
-        self.assertFalse(keyboard[0][1]["text"].endswith(render.MARK))
+        datas = [b.get("callback_data", "") for row in keyboard for b in row]
+        self.assertFalse([d for d in datas if d.startswith("fb:")])
+        self.assertEqual(datas, ["nav:7:home", "nav:7:share:sec:ai"])
 
     def test_long_section_hides_the_tail_behind_a_button(self):
         snapshot = issue(9, 2)
@@ -495,28 +486,29 @@ class TestNavigation(unittest.TestCase):
         self.press("nav:%d:home" % self.ident)
         self.assertIn("ГЛАВНОЕ СЕГОДНЯ", self.edits[-1][2])
 
-    def test_vote_inside_a_section_keeps_navigation(self):
+    def test_old_vote_inside_a_section_keeps_navigation(self):
+        """Раздел выпуска, разосланного ещё с реакциями: 👍 под ним ничего не
+        пишет, говорит, что оценки теперь на сайте, и уходит из сообщения —
+        а переходы по выпуску остаются на месте."""
         self.press("nav:%d:sec:ai" % self.ident)
-        keyboard = self.edits[-1][3]
-        vote = keyboard[0][0]["callback_data"]
-        conn = storage.db()
-        conn.execute("DELETE FROM items")
-        conn.commit()
-        conn.close()
+        navigation = self.edits[-1][3]
+        old = [[{"text": "👍 Заголовок ai0", "callback_data": "fb:up:h0"},
+                {"text": "👎", "callback_data": "fb:down:h0"},
+                {"text": "🔖", "callback_data": "fb:save:h0"}]] + navigation
+        cleaned = []
+        self.addCleanup(setattr, bot, "tg_edit_markup", bot.tg_edit_markup)
+        bot.tg_edit_markup = lambda chat, mid, kb: cleaned.append((chat, mid, kb))
         bot.handle_update({"update_id": 2, "callback_query": {
-            "id": "cb", "data": vote,
+            "id": "cb", "data": "fb:up:h0",
             "message": {"message_id": 9, "chat": {"id": CHAT},
-                        "reply_markup": {"inline_keyboard": keyboard}},
+                        "reply_markup": {"inline_keyboard": old}},
         }}, worker=None)
         conn = storage.db()
-        verdicts, _saved = feedback.press_state(conn, CHAT)
+        verdicts, saved = feedback.press_state(conn, CHAT)
         conn.close()
-        self.assertEqual(len(verdicts), 1)
-        # оценка отметилась, а кнопки перехода остались на месте
-        self.press("nav:%d:sec:ai" % self.ident)
-        keyboard = self.edits[-1][3]
-        self.assertTrue(keyboard[0][0]["text"].endswith(render.MARK))
-        self.assertEqual(keyboard[-1][0]["callback_data"], "nav:%d:home" % self.ident)
+        self.assertEqual((verdicts, saved), ({}, set()))
+        self.assertEqual(self.answers[-1], bot.MOVED)
+        self.assertEqual(cleaned, [(CHAT, 9, navigation)])
 
     def test_share_opens_in_place_and_cancel_returns(self):
         self.press("nav:%d:home" % self.ident)
@@ -564,17 +556,6 @@ class TestNavigation(unittest.TestCase):
     def test_stranger_gets_nothing(self):
         self.press("nav:%d:sec:ai" % self.ident, chat_id="999")
         self.assertEqual(self.edits, [])
-
-
-class TestButtonsOff(unittest.TestCase):
-    def test_no_reactions_but_navigation_stays(self):
-        CFG["feedback_buttons"] = False
-        try:
-            _text, keyboard = issueview.screen(issue(3, 2), 1, issueview.SEC, "ai")
-        finally:
-            CFG["feedback_buttons"] = True
-        self.assertEqual(len(keyboard), 1)
-        self.assertIn("К разделам", keyboard[0][0]["text"])
 
 
 if __name__ == "__main__":

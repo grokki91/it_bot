@@ -271,20 +271,22 @@ class TestUpgradeFrom20(unittest.TestCase):
             conn.close()
 
     def test_outbox_gets_message_id(self):
-        """Старые копии сообщений остаются, у новых появляется номер в Telegram."""
+        """Старые копии сообщений остаются, а схема доезжает до нынешней.
+
+        Номер сообщения в Telegram был нужен, чтобы разворачивать свёрнутые
+        реакции; реакций в Telegram больше нет, но колонка приходит в старую
+        базу тем же путём — иначе новая копия сообщения в неё бы не легла."""
         conn = storage.db()
         try:
             row = conn.execute("SELECT * FROM outbox").fetchone()
             self.assertEqual(row["text"], "старый выпуск")
-            self.assertEqual(row["message_id"], 0)      # старое развернуть нечем
-            self.assertEqual(storage.outbox_keyboard(conn, self.OWNER, 0), [])
-
-            new = storage.save_outbox(conn, self.OWNER, "выпуск",
-                                      [[{"text": "1 👍",
-                                         "callback_data": "fb:up:h1"}]])
-            storage.link_outbox(conn, new, 77)
-            keyboard = storage.outbox_keyboard(conn, self.OWNER, 77)
-            self.assertEqual(keyboard[0][0]["callback_data"], "fb:up:h1")
+            self.assertEqual(row["message_id"], 0)
+            storage.save_outbox(conn, self.OWNER, "выпуск",
+                                [[{"text": "← К разделам",
+                                   "callback_data": "nav:1:home"}]])
+            texts = [r["text"] for r in conn.execute(
+                "SELECT text FROM outbox ORDER BY id")]
+            self.assertEqual(texts, ["старый выпуск", "выпуск"])
         finally:
             conn.close()
 

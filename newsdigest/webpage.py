@@ -56,10 +56,16 @@
 
 «Мои темы», отмеченные ⭐ в Telegram, работают и здесь, без отдельной
 настройки на странице: меню разделов начинается с них, а в «Главном» каждый
-день ленты открывается их новостями — под строкой «⭐ Мои темы», — и только
-следом, под «Остальными темами», идёт всё прочее. Дни при этом остаются по
-порядку: вчерашняя «своя» новость сегодняшние не обгоняет. Черта «новое с
+день ленты открывается их новостями, и только следом идёт всё прочее. Дни
+при этом остаются по порядку: вчерашняя «своя» новость сегодняшние не
+обгоняет. Подписей «⭐ Мои темы» и «Остальные темы» над полосами больше нет:
+какие темы свои, читатель выбрал сам, и видно это в «Настройках» — здесь и в
+Telegram, — а в ленте подпись только отнимала строку. Черта «новое с
 прошлого захода» у каждой полосы своя — по времени идёт полоса, а не день.
+
+Под заголовком ленты нет и строки «🕘 Обновлено в 09:09 · 176 источников»:
+это сведения о службе, а не о новостях. Строка появляется, только когда
+владельцу есть что сказать, — рассылка стоит на паузе.
 
 В списке тем первой строкой стоит «Все», и она отмечена, пока не выбрано
 ничего другого. Раньше это было правило — «ничего не отмечено, показываем
@@ -115,7 +121,29 @@
 когда читает вашу ленту (и продырявить CSP, которая сейчас не пускает наружу
 вообще ничего). Поэтому обложка карточки рисуется на месте: значок раздела на
 его же цвете.
+
+Вывеска у страницы та же, что у бота в Telegram: кот, читающий газету, и имя
+Hunter News. Фотографию кота на страницу не поставить — это чужая картинка и
+лишний груз, — поэтому кот нарисован той же линией, что и все значки здесь:
+уши и закрытые глаза над развёрнутой газетой. Стоит он на синей плитке, как
+значок приложения на телефоне, и цвета берёт из темы — в тёмной плитка
+светлее, а линия тёмная, как у кнопки «Применить». Тот же рисунок — во вкладке
+браузера и на экране телефона (`/icon.svg`), а хранится он в одном месте:
+LOGO ниже.
 """
+
+#: Кот над газетой: сетка 24×24 и линия 1.6, как у значков разделов. Голова
+#: со щеками и ушами, глаза закрыты — кот на аватарке бота читает, прищурясь,
+#: — а ниже газета с загибом посередине и строками текста.
+LOGO = ('<path d="M7 12.2c-.6-1-.8-2.1-.7-3.3l.6-5.1 3.3 2.3a6.2 6.2 0 0 1 '
+        '3.6 0l3.3-2.3.6 5.1c.1 1.2-.1 2.3-.7 3.3"/>'
+        '<path d="M8.5 9.4c.5.55 1.5.55 2 0M13.5 9.4c.5.55 1.5.55 2 0"/>'
+        '<rect x="3.4" y="12.2" width="17.2" height="8.2" rx="1.6"/>'
+        '<path d="M12 12.2v8.2M6 15h3.6M6 17.6h2.4M14.4 15h3.6M14.4 17.6h2.4"/>')
+
+#: Имя страницы. Бот в Telegram зовётся Hunter_News; здесь то же имя, но без
+#: подчёркивания: на вывеске оно читается как логин, а не как название.
+NAME = "Hunter News"
 
 PAGE = """<!doctype html>
 <html lang="ru">
@@ -123,14 +151,15 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>Дайджест</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
+<title>{{NAME}}</title>
+<!-- значок вкладки — тот же кот на плитке, что и значок приложения -->
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
 <!-- страница ставится на телефон значком и открывается без адресной строки -->
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon.svg">
-<meta name="apple-mobile-web-app-title" content="Дайджест">
+<meta name="apple-mobile-web-app-title" content="{{NAME}}">
 <!-- та же лента для чужой читалки: подписаться можно, не открывая страницу -->
-<link rel="alternate" type="application/rss+xml" title="Дайджест" href="/rss">
+<link rel="alternate" type="application/rss+xml" title="{{NAME}}" href="/rss">
 <!-- Тема выбирается до первой отрисовки, иначе тёмная страница успевала бы
      мигнуть белым. Это единственный скрипт в голове: всё остальное ждёт
      конца разметки. -->
@@ -198,7 +227,9 @@ h1, h2, h3 { margin: 0; }
   padding: 28px 24px; width: 100%; max-width: 360px; text-align: center;
   box-shadow: var(--shadow);
 }
-#login h1 { font-size: 20px; margin-bottom: 4px; }
+#login h1 { font-size: 20px; margin-bottom: 4px; letter-spacing: -.01em; }
+.logo.big { width: 56px; height: 56px; border-radius: 16px; margin: 0 auto 14px; }
+.logo.big svg { width: 42px; height: 42px; }
 #login p { color: var(--dim); font-size: 14px; margin: 0 0 18px; }
 input[type=password], input[type=text] {
   width: 100%; padding: 12px 14px; border-radius: 12px; font: inherit;
@@ -231,11 +262,19 @@ header {
   max-width: 1460px; margin: 0 auto;
 }
 .brand {
-  display: flex; align-items: center; gap: 8px; font-size: 18px;
-  font-weight: 700; width: 244px; flex: none;
+  display: flex; align-items: center; gap: 10px; font-size: 18px;
+  font-weight: 700; letter-spacing: -.01em; width: 244px; flex: none;
 }
-.brand span { font-size: 22px; }
 .brand { cursor: pointer; user-select: none; }
+/* Знак страницы — кот над газетой на плитке. Плитка синяя, как значок на
+   телефоне, а линия берёт цвет подписи главной кнопки: белую в светлой
+   теме и тёмную в тёмной — там синий светлее, и белое на нём тонет. */
+.logo {
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+  background: var(--accent); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center;
+}
+.logo svg { width: 26px; height: 26px; }
 .brand:focus-visible { outline: 2px solid var(--dim); outline-offset: 4px;
                        border-radius: 8px; }
 /* Строка поиска не тянется на всю шапку: ищут раз в сеанс, а место рядом с
@@ -375,11 +414,14 @@ header {
 .item.on .num { color: var(--accent); }
 
 /* ----------------------------------------------------------------- лента */
-.head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.head h1 { font-size: 27px; letter-spacing: -.02em; }
-.head .meta {
-  color: var(--dim); font-size: 13px; margin-left: auto; text-align: right;
+.head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+  flex-wrap: wrap;
 }
+.head h1 { font-size: 27px; letter-spacing: -.02em; }
+/* Пометка под заголовком (рассылка на паузе) стоит своей строкой: бывает
+   она редко, и кнопка «Темы» от неё не должна гулять — справа она всегда */
+.head .meta { color: var(--dim); font-size: 13px; flex-basis: 100%; order: 3; }
 /* Выбор тем — не главное действие на экране, а способ подрезать ленту:
    сплошная синяя кнопка над каждой страницей кричала громче самих новостей.
    Кнопка обычная, с нейтральной рамкой, а синим отмечено только число
@@ -388,6 +430,7 @@ header {
   display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
   background: var(--card); border: 1px solid var(--line); color: var(--ink);
   border-radius: 11px; padding: 8px 13px; font-weight: 600; font-size: 14px;
+  margin-left: auto;
 }
 .tune:hover { background: var(--soft); }
 .tune .ico { display: flex; align-items: center; color: var(--dim); }
@@ -577,12 +620,6 @@ header {
   content: ''; flex: 1; height: 1px; background: var(--line);
 }
 #list > .daybar:first-child { margin-top: 2px; }
-/* Полоса внутри дня: «Мои темы» из Telegram идут первыми, следом остальные.
-   Тише дня — это не новая дата, а порядок внутри неё */
-.runbar {
-  margin: 4px 2px 10px; color: var(--dim); font-size: 12.5px; font-weight: 600;
-}
-.news + .runbar { margin-top: 18px; }
 /* Граница прочитанного: всё выше пришло с прошлого захода. Считается в
    браузере — серверу знать, когда читатель заходил на страницу, незачем */
 .seenbar {
@@ -610,7 +647,9 @@ header {
   padding: 16px; box-shadow: var(--shadow);
 }
 .box h3 { font-size: 15px; margin-bottom: 12px; }
-.box .who { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.box .who { display: flex; align-items: center; gap: 9px; font-weight: 700; }
+.box .who .logo { width: 26px; height: 26px; border-radius: 8px; }
+.box .who .logo svg { width: 20px; height: 20px; }
 .box .facts { color: var(--dim); font-size: 13px; margin: 10px 0 14px; }
 .box .facts div { margin-top: 2px; }
 .pair { display: flex; gap: 8px; }
@@ -618,11 +657,9 @@ header {
   flex: 1; background: var(--soft); border: 1px solid var(--line);
   color: var(--ink); border-radius: 11px; padding: 10px; font-size: 14px;
   font-weight: 500;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
 }
-.ghost.wide {
-  width: 100%; margin-top: 12px; display: flex; align-items: center;
-  justify-content: center; gap: 8px;
-}
+.ghost.wide { width: 100%; margin-top: 12px; }
 .ghost .ico { display: flex; color: var(--dim); }
 .ghost .ico svg { width: 17px; height: 17px; }
 .rows { display: flex; flex-direction: column; gap: 10px; }
@@ -727,8 +764,26 @@ header {
    три сотни — поэтому раздел свёрнут в одну строку и раскрывается по нажатию,
    ровно как пункт меню слева. Точка состояния цветная только у больного
    источника: у трёх сотен здоровых лент три сотни зелёных точек — это рябь,
-   а не сведения. Здоровье молчит, беда видна. */
-.feeds { display: flex; flex-direction: column; gap: 2px; }
+   а не сведения. Здоровье молчит, беда видна.
+
+   Сам блок тоже свёрнут: шестнадцать строк разделов растягивали «Настройки»
+   на лишний экран, а заглядывают в них изредка. Заголовок — кнопка со
+   стрелкой, та же, что у раздела внутри; итог под ним («15 источников не
+   отвечают») виден и в свёрнутом блоке — беда за нажатием не прячется. */
+.fold {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 0; text-align: left;
+}
+.fold .nm { flex: 1; min-width: 0; }
+.fold .chev {
+  color: var(--dim); display: flex; align-items: center;
+  transition: transform .15s;
+}
+.fold .chev svg { width: 18px; height: 18px; }
+.fold:hover .chev { color: var(--ink); }
+.fold.on .chev { transform: rotate(90deg); }
+.box.folds .facts { margin-bottom: 0; }
+.feeds { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
 .feeds .grp {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
   background: none; border: 0; border-radius: 11px; padding: 8px 6px;
@@ -819,7 +874,9 @@ body.guest .tabs { display: none; }
 }
 @media (max-width: 860px) {
   header { padding: 8px 12px calc(8px + env(safe-area-inset-top)); }
-  .brand { width: auto; font-size: 16px; }
+  .brand { width: auto; font-size: 16px; gap: 9px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px; }
+  .brand .logo svg { width: 23px; height: 23px; }
   /* Строка поиска свёрнута до лупы в шапке и разворачивается по нажатию на
      неё. Развернувшись, она занимает весь ряд: название и значки уходят, а
      слева встаёт стрелка — ею из поиска и выходят. Рубрики остаются на месте:
@@ -861,10 +918,7 @@ body.guest .tabs { display: none; }
   /* без нижней панели незачем и место под неё */
   body.guest .shell { padding-bottom: 20px; }
   .tabs { display: flex; }
-  .head { flex-wrap: wrap; }
   .head h1 { font-size: 23px; }
-  .head .meta { margin-left: 0; text-align: left; flex-basis: 100%; order: 3; }
-  .tune { margin-left: auto; }
   .news { padding: 14px; gap: 12px; }
   .news h2 { font-size: 17px; }
   .news .line { font-size: 11px; gap: 6px; }
@@ -895,7 +949,8 @@ body.guest .tabs { display: none; }
 
 <div id="login">
   <form onsubmit="return login(event)">
-    <h1>📡 Дайджест</h1>
+    <span class="logo big" aria-hidden="true">{{LOGO}}</span>
+    <h1>{{NAME}}</h1>
     <p>Вход для владельца. Читать новости можно и без него.</p>
     <input type="password" id="pass" placeholder="Пароль"
            autocomplete="current-password">
@@ -914,7 +969,7 @@ body.guest .tabs { display: none; }
            title="На главную" onclick="home()"
            onkeydown="if (event.key === 'Enter' || event.key === ' ')
                       { event.preventDefault(); home(); }">
-        <span>📡</span> Дайджест
+        <span class="logo" aria-hidden="true">{{LOGO}}</span> {{NAME}}
       </div>
       <form class="search" onsubmit="return search(event)">
         <span class="lens" id="lens"></span>
@@ -941,7 +996,7 @@ body.guest .tabs { display: none; }
   <div class="shell">
     <aside class="side">
       <nav id="nav"></nav>
-      <div class="foot">© Дайджест<br>Все права защищены</div>
+      <div class="foot">© {{NAME}}<br>Все права защищены</div>
     </aside>
 
     <main>
@@ -999,11 +1054,13 @@ var S = {
      сколько новостей оказалось выше неё, выбранная с клавиатуры карточка */
   day: '', mark: '', fresh: 0, drawn: false, cursor: -1,
   /* «Мои темы» из Telegram: пока они есть, день ленты делится на две полосы
-     — сначала свои темы, потом остальные; run — полоса последней карточки */
-  first: [], run: '', dayMine: false,
+     — сначала свои темы, потом остальные; run — полоса последней карточки.
+     Подписей у полос нет: какие темы свои, видно в «Настройках» */
+  first: [], run: '',
   timer: null, typing: null,
   state: null, alerts: [], tools: null, menu: [], side: null,
-  feedsOpen: {},        /* какие разделы источников раскрыты в «Настройках» */
+  feedsShown: false,    /* раскрыт ли блок «Источники» в «Настройках» */
+  feedsOpen: {},        /* какие разделы источников раскрыты в нём */
   filters: [], pick: []
 };
 
@@ -1033,6 +1090,9 @@ function allowed(view) {
 
 var NAMES = { news: 'Главное', saved: 'Сохранённые',
               alerts: 'Уведомления', tools: 'Настройки' };
+
+/* Имя страницы — то же, что на вывеске в шапке (NAME в webpage.py). */
+var NAME = '{{NAME}}';
 
 /* ------------------------------------------------------------- значки */
 /* Значки разделов рисуем сами, одной линией на общей сетке 24x24. Эмодзи
@@ -1153,6 +1213,13 @@ var UI_ICONS = {
     + '<path d="M4.9 20.2a7.1 7.1 0 0 1 14.2 0"/>',
   key: '<circle cx="8.2" cy="12" r="3.9"/><path d="M12.1 12h8.3"/>'
     + '<path d="M17.2 12v3.2M20.4 12v2.4"/>',
+  /* «Выйти» и «Обновить» раньше несли значок буквой — ⏻ и ↻. Знака ⏻ нет в
+     шрифтах Android, и на кнопке рисовался квадратик с крестом. Линия
+     рисуется везде одинаково */
+  logout: '<path d="M9.6 20.2H6.2a1.6 1.6 0 0 1-1.6-1.6V5.4a1.6 1.6 0 0 1 1.6-1.6h3.4"/>'
+    + '<path d="m15.4 16.4 4.4-4.4-4.4-4.4"/><path d="M19.8 12H9.4"/>',
+  refresh: '<path d="M19.8 12.4a7.8 7.8 0 1 1-2.3-5.9l2.3 2.3"/>'
+    + '<path d="M19.8 4.2v4.6h-4.6"/>',
   /* воронка у кнопки «Темы»: она подрезает ленту, а не настраивает бота, и
      значок «шестерёнки» тут читался бы как второй вход в настройки */
   filter: '<path d="M3.8 5.6h16.4l-6.4 7.5v5.7l-3.6-2.1v-3.6z"/>'
@@ -1166,6 +1233,15 @@ function uiIcon(name) {
   var box = el('span', 'ico');
   box.innerHTML = svgIcon(UI_ICONS[name]);
   return box;
+}
+
+/* Кнопка со значком навигации и подписью: «Войти», «Выйти», «Обновить». */
+function iconButton(cls, icon, text) {
+  var button = el('button', cls);
+  button.type = 'button';
+  button.appendChild(uiIcon(icon));
+  button.appendChild(el('span', null, text));
+  return button;
 }
 
 /* Значок раздела строкой меню. Разметку берём из своего же набора — снаружи
@@ -1462,22 +1538,17 @@ function sectionName(id) {
   return entry ? entry.title : id;
 }
 
+/* Строка под заголовком ленты молчит, пока всё идёт своим чередом. Раньше в
+   ней стояли «🕘 Обновлено в 09:09 · 176 источников» — сведения о службе, а
+   не о новостях: читателю они ничего не говорили и отнимали строку у ленты.
+   «Выполняется: …» загоралось в ней каждые четверть часа — так часто ходит
+   быстрый обход агентств. Осталась одна пометка, и только для владельца:
+   рассылка на паузе. Про неё забывают, а заметить её надо до того, как
+   удивишься, что выпуск не пришёл. */
 function drawMeta() {
-  var st = S.state, bits = [];
-  if (!st) { $('meta').textContent = ''; return; }
-  if (S.q) { bits.push('Поиск: «' + esc(S.q) + '»'); }
-  if (st.collected) { bits.push('🕘 Обновлено в ' + esc(st.collected)); }
-  /* сколько у бота источников, стоит ли рассылка на паузе и чем он занят —
-     это про службу, а не про новости: такое видит только владелец */
-  if (S.admin) {
-    bits.push(st.feeds + ' ' +
-              plural(st.feeds, 'источник', 'источника', 'источников'));
-    if (st.paused) { bits.push('<b class="warn">⏸ рассылка на паузе</b>'); }
-    if (st.busy) {
-      bits.push('<b class="warn">выполняется: ' + esc(st.busy) + '</b>');
-    }
-  }
-  $('meta').innerHTML = bits.join(' · ');
+  var paused = !!(S.admin && S.state && S.state.paused);
+  $('meta').className = 'meta' + (paused ? '' : ' hide');
+  $('meta').innerHTML = paused ? '<b class="warn">⏸ рассылка на паузе</b>' : '';
 }
 
 function drawNav() {
@@ -1781,7 +1852,6 @@ function drawList(items, reset) {
     box.innerHTML = '';
     S.day = '';
     S.run = '';
-    S.dayMine = false;
     S.cursor = -1;
     /* отметку читаем один раз на показ ленты и до конца показа не трогаем:
        иначе черта уехала бы вслед за только что записанным временем */
@@ -1803,16 +1873,7 @@ function drawList(items, reset) {
     }
     if (item.day && item.day !== S.day) {
       S.day = item.day;
-      S.dayMine = false;
       box.appendChild(el('div', 'daybar', item.dayName || ''));
-    }
-    if (S.first.length && run !== S.run) {
-      if (item.mine) {
-        S.dayMine = true;
-        box.appendChild(el('div', 'runbar', '⭐ Мои темы'));
-      } else if (S.dayMine) {
-        box.appendChild(el('div', 'runbar', 'Остальные темы'));
-      }
     }
     S.run = run;
     if (S.mark && item.iso && item.iso <= S.mark) {
@@ -2016,8 +2077,9 @@ function drawDigestBox() {
   box.innerHTML = '';
   if (!st || !S.admin) { return; }
   var who = el('div', 'who');
-  who.appendChild(el('span', null, '📡'));
-  who.appendChild(el('span', null, 'Дайджест'));
+  /* знак — копия того, что в шапке: рисунок хранится в одном месте */
+  who.appendChild($('brand').querySelector('.logo').cloneNode(true));
+  who.appendChild(el('span', null, NAME));
   box.appendChild(who);
 
   var facts = el('div', 'facts');
@@ -2035,11 +2097,9 @@ function drawDigestBox() {
   box.appendChild(facts);
 
   var pair = el('div', 'pair');
-  var upd = el('button', 'ghost', '↻ Обновить');
-  upd.type = 'button';
+  var upd = iconButton('ghost', 'refresh', 'Обновить');
   upd.onclick = function () { loadNews(true); refresh(true); };
-  var out = el('button', 'ghost', '⏻ Выйти');
-  out.type = 'button';
+  var out = iconButton('ghost', 'logout', 'Выйти');
   out.onclick = logout;
   pair.appendChild(upd);
   pair.appendChild(out);
@@ -2364,8 +2424,7 @@ function drawPanel() {
   var rows = el('div', 'opts');
   data.settings.forEach(function (opt) { rows.appendChild(drawOption(opt)); });
   opts.appendChild(rows);
-  var out = el('button', 'ghost wide', '⏻ Выйти');
-  out.type = 'button';
+  var out = iconButton('ghost wide', 'logout', 'Выйти');
   out.onclick = logout;
   opts.appendChild(out);
   box.appendChild(opts);
@@ -2403,10 +2462,7 @@ function drawEntry() {
   box.appendChild(el('div', 'facts',
     'Уведомления о рассылках, подписчики, источники и настройки бота — ' +
     'после входа. Новости читаются и без него.'));
-  var button = el('button', 'ghost wide');
-  button.type = 'button';
-  button.appendChild(uiIcon('key'));
-  button.appendChild(el('span', null, 'Войти'));
+  var button = iconButton('ghost wide', 'key', 'Войти');
   button.onclick = openLogin;
   box.appendChild(button);
   return box;
@@ -2439,10 +2495,24 @@ function drawOption(opt) {
 /* Откуда бот берёт новости: разделы, а в них ленты. Только для чтения —
    список правят командой /feed в чате или файлом profiles.json на самой
    машине бота; страница про него рассказывает, как и про всё остальное
-   в этом разделе. */
+   в этом разделе.
+
+   Блок приходит свёрнутым: видны заголовок и итог — сколько разделов и
+   сколько лент молчит, — а сами разделы раскрываются нажатием на заголовок.
+   Раскрытый блок остаётся раскрытым, пока страница открыта: «Настройки»
+   перерисовываются с каждым ответом сервера, и схлопываться под пальцем
+   блок не должен. */
 function drawFeeds(data) {
-  var box = el('div', 'box');
-  box.appendChild(el('h3', null, 'Источники (' + data.total + ')'));
+  var box = el('div', 'box folds');
+  var head = el('button', 'fold');
+  head.type = 'button';
+  head.appendChild(el('span', 'nm', 'Источники (' + data.total + ')'));
+  var chev = el('span', 'chev');
+  chev.innerHTML = svgIcon(CHEV_ICON);
+  head.appendChild(chev);
+  var title = el('h3');
+  title.appendChild(head);
+  box.appendChild(title);
 
   var facts = el('div', 'facts');
   facts.appendChild(el('div', null, data.groups.length + ' ' +
@@ -2460,6 +2530,18 @@ function drawFeeds(data) {
     list.appendChild(drawFeedGroup(group, data.shown || 8));
   });
   box.appendChild(list);
+
+  function sync() {
+    var open = S.feedsShown;
+    head.className = 'fold' + (open ? ' on' : '');
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    list.className = 'feeds' + (open ? '' : ' hide');
+  }
+  head.onclick = function () {
+    S.feedsShown = !S.feedsShown;
+    sync();
+  };
+  sync();
   return box;
 }
 
@@ -2780,3 +2862,13 @@ start();
 </body>
 </html>
 """
+
+# Знак и имя стоят в странице в нескольких местах — в шапке, на входе, в
+# заголовке вкладки, — а описаны один раз, выше. Подставляем их сюда один раз
+# при загрузке модуля: форматировать PAGE через % или {} нельзя, в стилях и
+# в скрипте полно своих процентов и фигурных скобок.
+PAGE = (PAGE.replace("{{NAME}}", NAME)
+        .replace("{{LOGO}}", '<svg viewBox="0 0 24 24" fill="none" '
+                 'stroke="currentColor" stroke-width="1.6" '
+                 'stroke-linecap="round" stroke-linejoin="round" '
+                 'focusable="false">' + LOGO + '</svg>'))

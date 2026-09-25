@@ -17,7 +17,8 @@
 Владелец вводит пароль и получает то же самое плюс служебное: уведомления о
 рассылках, подписчиков, значения настроек, список источников с их здоровьем —
 всё для чтения — и кнопки 👍/👎/🔖 под карточками: это не команда, а вкусы
-читателя, и они те же, что в чате.
+читателя. Ставят их только здесь: из выпуска в Telegram кнопки убраны, там
+выпуск читают, а оценивают и откладывают на странице.
 
 Сервер — из стандартной библиотеки, поднимается нитью внутри демона.
 Пароль владельца (`ND_WEB_TOKEN`) создаётся сам и лежит в env.
@@ -40,14 +41,14 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (bot, config, feedback, newsfeed, redact, rss, sections,
-               settings, sources, subscribers)
+from . import (config, feedback, newsfeed, redact, rss, sections, settings,
+               sources, subscribers)
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile, title as section_title
 from .render import plural
 from .storage import db, item_facts, meta_get
-from .webpage import PAGE
+from .webpage import LOGO, NAME, PAGE
 
 #: имя cookie с признаком «пароль уже вводили»
 COOKIE = "nd_web"
@@ -63,12 +64,15 @@ CSP = ("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; "
        "script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; "
        "form-action 'none'; base-uri 'none'")
 
-#: Значок приложения: та же тарелка, что в заголовке страницы. Своим файлом,
-#: а не data-ссылкой внутри манифеста, — так его понимают все телефоны.
-ICON = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'>"
-        "<rect width='192' height='192' rx='38' fill='#2f6fed'/>"
-        "<text x='96' y='134' font-size='104' text-anchor='middle'>\U0001f4e1</text>"
-        "</svg>")
+#: Значок приложения и вкладки: тот же кот над газетой, что в шапке страницы,
+#: на той же синей плитке. Своим файлом, а не data-ссылкой внутри манифеста, —
+#: так его понимают все телефоны. Рисунок с запасом по краям: телефон
+#: обрезает значок в круг или «сквиркл», и уши не должны уйти за край.
+ICON = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
+        "<rect width='24' height='24' rx='5.4' fill='#2f6fed'/>"
+        "<g fill='none' stroke='#fff' stroke-width='1.6' stroke-linecap='round' "
+        "stroke-linejoin='round' transform='translate(2.88 2.88) scale(.76)'>"
+        + LOGO + "</g></svg>")
 
 
 def manifest() -> dict:
@@ -77,7 +81,7 @@ def manifest() -> dict:
     Ничего личного здесь нет и быть не может — манифест открыт всем, как и
     сама лента. Это только имя, цвета и адрес, с которого начинать.
     """
-    return {"name": "Дайджест", "short_name": "Дайджест",
+    return {"name": NAME, "short_name": NAME,
             "description": "Новости, отобранные ботом",
             "start_url": "/", "scope": "/", "display": "standalone",
             "background_color": "#f1f3f7", "theme_color": "#2f6fed",
@@ -138,7 +142,12 @@ def chat_id() -> str:
 
 
 def collected_at() -> str:
-    """Когда последний раз читали источники — «Обновлено в 18:27» в шапке."""
+    """Когда последний раз читали источники: «18:27».
+
+    На странице строки «Обновлено в 18:27» больше нет — читателю она ничего
+    не говорила. В ответе свежесть ленты осталась: это сведения о новостях, а
+    не о службе, и API читает не одна только страница.
+    """
     conn = db()
     try:
         return clock(meta_get(conn, "last_collect", ""))
@@ -182,6 +191,13 @@ def state(worker) -> dict:
 
 
 press_state = feedback.press_state
+
+#: всплывашка после 👍/👎 под карточкой. Кнопки эти теперь только здесь: из
+#: выпуска в Telegram их убрали, и о вкусах читателя бот узнаёт отсюда
+TOAST = {
+    feedback.UP:   "Учёл 👍 — такое буду поднимать выше",
+    feedback.DOWN: "Учёл 👎 — такого станет меньше",
+}
 
 
 def readers(conn) -> list:
@@ -270,7 +286,7 @@ def tuning(sub) -> list:
 
 
 def clock(iso: str) -> str:
-    """Только часы и минуты — «Обновлено в 18:27» в шапке ленты."""
+    """Только часы и минуты — «18:27» (см. `collected_at`)."""
     at = parse_date(iso)
     return to_local(at).strftime("%H:%M") if at else ""
 
@@ -296,7 +312,8 @@ def news(query, worker=None, admin=True) -> dict:
     «Мои темы», отмеченные ⭐ в Telegram, — это и порядок сайта: меню
     разделов начинается с них (`sections.plan`), а в «Главном» их новости
     идут первыми за каждый день (`newsfeed.mine_first`). Отдельно на
-    странице их не заводят: одно избранное на бота и на сайт.
+    странице их не заводят и в ленте не подписывают: одно избранное на бота
+    и на сайт, и видно его в «Настройках».
 
     Гостю достаётся только общая лента: «Сохранённые» и «Избранное» — это
     отметки владельца, и карточки к нему приходят без них. Отдельного экрана
@@ -402,7 +419,7 @@ def press(data: str) -> dict:
         facts = item_facts(conn, url_hash)
         if kind in (feedback.UP, feedback.DOWN):
             feedback.record(conn, chat, url_hash, kind, facts)
-            toast = bot.TOAST[kind]
+            toast = TOAST[kind]
         elif kind == "save":
             toast = ("🔖 В закладках" if feedback.save_bookmark(
                 conn, chat, url_hash, facts) else "Убрал из закладок")

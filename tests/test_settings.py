@@ -164,11 +164,13 @@ class TestApply(SettingsCase):
         self.assertEqual(CFG["send_at"], before)
         self.assertFalse(config.ENV_FILE.exists())
 
-    def test_feedback_style(self):
-        self.assertEqual(settings.as_style(" Rows "), "rows")
-        self.assertEqual(settings.as_style("свёрнуто"), "compact")
-        with self.assertRaises(settings.Invalid):
-            settings.as_style("наполовину")
+    def test_telegram_reaction_settings_are_gone(self):
+        """Кнопок 👍/👎/🔖 в Telegram нет — нечего и включать или сворачивать:
+        ни `buttons`, ни `style` среди настроек больше не значатся."""
+        for name in ("buttons", "style", "кнопки", "реакции"):
+            self.assertIsNone(settings.resolve(name)[1], name)
+        self.assertNotIn("feedback_buttons", CFG)
+        self.assertNotIn("feedback_style", CFG)
 
     def test_overview_covers_every_setting(self):
         rows = settings.overview()

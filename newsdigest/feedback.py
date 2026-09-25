@@ -53,8 +53,8 @@ def save_bookmark(conn, chat_id, url_hash, facts=None) -> bool:
 def press_state(conn, chat_id):
     """Что этот читатель уже нажал: {хэш: оценка} и множество закладок.
 
-    Нужно и странице, и боту: раскладку кнопок мы храним без отметок, а
-    галочки расставляем по базе в тот момент, когда показываем кнопки.
+    Нужно странице: отметки под карточками ставятся по базе в тот момент,
+    когда карточки показывают, — сама карточка их не помнит.
     """
     verdicts = {r["url_hash"]: r["verdict"] for r in conn.execute(
         "SELECT url_hash, verdict FROM feedback WHERE chat_id=?", (str(chat_id),))}

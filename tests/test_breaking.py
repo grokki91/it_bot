@@ -45,13 +45,13 @@ class BreakingCase(unittest.TestCase):
         finally:
             conn.close()
 
-        self.sent = []
+        self.sent, self.keyboards = [], []
         self.saved_cfg = {k: CFG[k] for k in CFG}
         CFG["use_kev"] = False        # тесты в сеть не ходят
         self._real = (breaking.tg_send, breaking.rate_urgency, breaking.summarize,
                       breaking.local_now)
-        breaking.tg_send = lambda chat, text, keyboard=None, silent=None: \
-            self.sent.append((chat, text))
+        breaking.tg_send = lambda chat, text, keyboard=None, silent=None: (
+            self.sent.append((chat, text)), self.keyboards.append(keyboard))
         breaking.rate_urgency = lambda groups, persona: (
             [{"id": i, "urgency": 9.2, "scope": "global", "category": "labs"}
              for i in range(len(groups))], {"in": 5, "out": 5})
@@ -419,6 +419,8 @@ class TestLevels(BreakingCase):
         self.confirmed()
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
         self.assertIn("⚡", self.sent[0][1])
+        # без 👍/👎/🔖: оценивают на сайте, как и новости выпуска
+        self.assertEqual(self.keyboards, [None])
         self.assertEqual(self.queued(), [])
 
     def test_alert_is_queued_not_sent(self):

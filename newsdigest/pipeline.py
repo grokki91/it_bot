@@ -30,7 +30,7 @@ from .llm import (LLMError, card_key, card_text, llm_cost, rank_clusters,
                   summarize)
 from .profiles import PROFILES, title, weight
 from .rank import SentIndex, cluster, primary_of, select
-from .render import feedback_keyboard, fit_blocks, issue_info
+from .render import fit_blocks, issue_info
 from .sources import sources_for
 from .storage import (cards_known, db, log_run, meta_set, remember_cards,
                       save_issue, save_leftover)
@@ -344,10 +344,13 @@ def send_issue(conn, chat_id, cards, info) -> int:
 
 
 def send_feed(chat_id, cards, info) -> int:
-    """Старый вид: сплошная лента, при нужде в два-три сообщения подряд."""
+    """Старый вид: сплошная лента, при нужде в два-три сообщения подряд.
+
+    Кнопок под ней нет: оценивают и откладывают новости на странице.
+    """
     sent = 0
-    for text, chunk in fit_blocks(cards, info["scanned"], note=info["note"]):
-        tg_send(chat_id, text, keyboard=feedback_keyboard(chunk))
+    for text, _chunk in fit_blocks(cards, info["scanned"], note=info["note"]):
+        tg_send(chat_id, text)
         sent += 1
         time.sleep(1.0)
     return sent

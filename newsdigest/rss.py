@@ -33,6 +33,7 @@ from . import newsfeed, sections
 from .config import CFG
 from .feedparse import clean_title, parse_date
 from .profiles import title as topic_title
+from .webpage import NAME
 
 #: сколько новостей отдаём читалке. Больше сотни не нужно никому: читалка
 #: помнит прочитанное сама, а первый заход всё равно показывает только хвост
@@ -98,7 +99,7 @@ def feed(conn, chat_id, section="", query="", host="", secure=False,
     rows, _more = newsfeed.page(conn, chat_id, "news", section, query, 0, limit)
     smap = sections.source_map()
 
-    name = "Дайджест"
+    name = NAME                     # то же имя, что на вывеске страницы
     if section:
         name += " — " + topic_title(section)
     if query:
