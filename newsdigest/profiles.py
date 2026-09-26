@@ -67,7 +67,7 @@ BUILTIN = {
             ("theregister",       "https://www.theregister.com/software/ai_ml/headlines.atom",2, "media"),
             ("the-decoder",       "https://the-decoder.com/feed/",                            2, "media"),
             # --- экспертные подборки (уже отфильтрованы человеком) ---
-            # The Batch убран: сайт закрыт от роботов (403 и серверу, и CI)
+            # The Batch убран: серверу не ответил ни разу, из CI — 403
             ("simonwillison",     "https://simonwillison.net/atom/everything/",               2, "community"),
             ("import-ai",         "https://importai.substack.com/feed",                       2, "community"),
             ("interconnects",     "https://www.interconnects.ai/feed",                        2, "community"),
@@ -264,7 +264,7 @@ BUILTIN = {
             ("realclimate",     "https://www.realclimate.org/index.php/feed/",          2, "community"),
             # --- первоисточники климатических данных и докладов ---
             ("ipcc",            "https://www.ipcc.ch/feed/",                            1, "policy"),
-            # своей ленты у WMO больше нет (все адреса — 404): берём её
+            # своей ленты у WMO больше нет (все известные адреса — 404): берём её
             # материалы витриной Google News, как Reuters
             ("wmo",             "https://news.google.com/rss/search?q=when:7d+site:wmo.int&hl=en-US&gl=US&ceid=US:en", 1, "policy"),
             ("copernicus",      "https://climate.copernicus.eu/rss.xml",                1, "research"),
@@ -336,18 +336,18 @@ BUILTIN = {
             ("bmj",           "https://www.bmj.com/rss/recent.xml",                         1, "research"),
             ("jama",          "https://jamanetwork.com/rss/site_3/67.xml",                  1, "research"),
             # --- вспышки заболеваний ---
-            # собственная лента ВОЗ застыла в феврале 2026 года, а на сайте
-            # ВОЗ живее всех. Берём его витриной Google News, как Reuters
+            # собственная лента ВОЗ застыла в феврале 2026 года, хотя сайт
+            # обновляется каждый день. Берём его витриной Google News, как Reuters
             ("who-news",      "https://news.google.com/rss/search?q=when:7d+site:who.int&hl=en-US&gl=US&ceid=US:en", 1, "policy"),
             ("ecdc",          "https://www.ecdc.europa.eu/en/taxonomy/term/1307/feed",      1, "policy"),
             # CIDRAP (Университет Миннесоты): вспышки с цифрами и ссылками. Его
-            # собственная лента молчит с 2022 года — тоже через витрину
+            # /rss.xml молчит с 2022 года — тоже через витрину
             ("cidrap",        "https://news.google.com/rss/search?q=when:3d+site:cidrap.umn.edu&hl=en-US&gl=US&ceid=US:en", 2, "media"),
             ("fda-press",     "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", 1, "policy"),
             ("sd-medicine",   "https://www.sciencedaily.com/rss/health_medicine.xml",       2, "media"),
             # --- регуляторы и доказательная медицина ---
             ("ema",           "https://www.ema.europa.eu/en/news.xml",                      1, "policy"),
-            # у NICE ленты больше нет (все адреса — 404)
+            # у NICE ленты больше нет (все известные адреса — 404)
             ("nice",          "https://news.google.com/rss/search?q=when:7d+site:nice.org.uk&hl=en-US&gl=US&ceid=US:en", 1, "policy"),
             ("cochrane",      "https://www.cochranelibrary.com/cdsr/table-of-contents/rss.xml", 1, "research"),
         ],
