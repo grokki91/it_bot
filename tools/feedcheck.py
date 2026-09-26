@@ -16,7 +16,8 @@
 сути нет: это видно по дате, а не по коду ответа.
 
 С `--new-since REF` код возврата 1, если адрес, которого в REF не было, ответил
-определённо плохо: 404 и 410, домена нет, ответ — не лента или лента пуста.
+определённо плохо — 404 и 410, домена нет, ответ не лента или лента пуста — и
+не исправился, когда его переспросили через RETRY_AFTER секунд.
 403 и 429 — защита от роботов: CI и сервер она видит по-разному, поэтому такой
 ответ печатается предупреждением и проверку не валит. Так же — таймаут и
 двухсотка с пустым телом: это тот же отказ роботу, только вежливый.
@@ -29,6 +30,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -51,6 +53,8 @@ URL = re.compile(r"https?://[^\s\"'<>)]+")
 DEAD = (404, 410)
 #: сколько дней без единой записи — «лента давно молчит»
 STALE_DAYS = 120
+#: через сколько секунд переспросить новый адрес, который не ответил
+RETRY_AFTER = 20
 
 
 def rows() -> list:
@@ -199,6 +203,15 @@ def main(argv=None) -> int:
         len(todo), (", новых: %d" % len(new)) if args.new_since else ""))
     with ThreadPoolExecutor(max_workers=16) as pool:
         results = list(pool.map(probe, todo))
+        # Сайт иногда отдаёт вместо ленты заглушку: The Register и The Next
+        # Platform — общую, одну и ту же страницу посреди обычной работы. Новый
+        # адрес зовём мёртвым, только если он не ответил и со второго раза
+        again = [n for n, res in enumerate(results)
+                 if res["url"] in new and verdict(res) == "dead"]
+        if again:
+            time.sleep(RETRY_AFTER)
+            for n, res in zip(again, pool.map(probe, [todo[n] for n in again])):
+                results[n] = res
     order = {"подборка": 0, "кандидат": 1, "переезд": 2}
     results.sort(key=lambda r: (order[r["what"]], r["topic"], r["id"]))
 
