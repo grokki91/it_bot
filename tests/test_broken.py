@@ -42,10 +42,10 @@ class ReplaceFeedCase(unittest.TestCase):
 
     def test_tier_and_category_stay(self):
         _id, _url, tier, category = userprofiles.replace_feed(
-            "wmo", "https://example.com/wmo.xml")
+            "carbonbrief", "https://example.com/cb.xml")
         self.assertEqual((tier, category),
                          next((f[2], f[3]) for f in PROFILES["climate"]["feeds"]
-                              if f[0] == "wmo"))
+                              if f[0] == "carbonbrief"))
 
     def test_unknown_source_is_refused(self):
         with self.assertRaises(ValueError):
@@ -53,7 +53,7 @@ class ReplaceFeedCase(unittest.TestCase):
 
     def test_a_link_that_is_not_a_link_is_refused(self):
         with self.assertRaises(ValueError):
-            userprofiles.replace_feed("wmo", "example.com/wmo.xml")
+            userprofiles.replace_feed("carbonbrief", "example.com/cb.xml")
 
 
 class BrokenCase(unittest.TestCase):
@@ -67,7 +67,7 @@ class BrokenCase(unittest.TestCase):
         self.conn.execute("DELETE FROM health")
         self.conn.execute(
             "INSERT INTO health(source_id, ok_at, err, err_at, fails, last_count,"
-            " empty, empty_at) VALUES ('wmo', '', 'HTTP 404', ?, 31, 0, 0, '')",
+            " empty, empty_at) VALUES ('carbonbrief', '', 'HTTP 404', ?, 31, 0, 0, '')",
             (now_iso(),))
         self.conn.commit()
         self.real_fetch = cli.fetch_source
@@ -105,31 +105,31 @@ class BrokenCase(unittest.TestCase):
     def test_broken_feed_is_listed_with_its_candidates(self):
         cli.fetch_source = self.answers("не отвечает никто")
         text = self.run_cli()
-        self.assertIn("wmo", text)
+        self.assertIn("carbonbrief", text)
         self.assertIn("не отвечал ни разу", text)
         self.assertIn("адрес не существует", text)   # подсказка по 404
 
     def test_a_working_replacement_is_offered_but_not_written(self):
-        alive = candidates.REPLACEMENTS["wmo"][0][0]
+        alive = candidates.REPLACEMENTS["carbonbrief"][0][0]
         cli.fetch_source = self.answers(alive)
         text = self.run_cli()
         self.assertIn("Нашлась замена", text)
         self.assertFalse(PROFILES_FILE.exists())     # без --adopt ничего не пишем
 
     def test_adopt_writes_the_replacement_and_forgets_the_failures(self):
-        alive = candidates.REPLACEMENTS["wmo"][0][0]
+        alive = candidates.REPLACEMENTS["carbonbrief"][0][0]
         cli.fetch_source = self.answers(alive)
         self.run_cli(adopt=True)
         urls = {f[0]: f[1] for f in PROFILES["climate"]["feeds"]}
-        self.assertEqual(urls["wmo"], alive)
+        self.assertEqual(urls["carbonbrief"], alive)
         # счётчик сбоев про старый адрес: иначе новый молчит ещё сутки
         row = self.conn.execute("SELECT COUNT(*) n FROM health "
-                                "WHERE source_id='wmo'").fetchone()
+                                "WHERE source_id='carbonbrief'").fetchone()
         self.assertEqual(row["n"], 0)
 
     def test_a_feed_that_answers_again_is_not_replaced(self):
         """Сбой бывает временным: адрес живой — менять нечего."""
-        current = next(f[1] for f in PROFILES["climate"]["feeds"] if f[0] == "wmo")
+        current = next(f[1] for f in PROFILES["climate"]["feeds"] if f[0] == "carbonbrief")
         cli.fetch_source = self.answers(current)
         text = self.run_cli(adopt=True)
         self.assertIn("сбой был временным", text)

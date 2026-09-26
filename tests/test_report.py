@@ -79,7 +79,7 @@ class TestReport(ReportCase):
 
     def test_balanced_sources_are_not_flagged(self):
         for source in ("openai", "arstechnica", "theverge", "techcrunch",
-                       "venturebeat", "techreview", "theregister", "quanta"):
+                       "the-decoder", "techreview", "theregister", "quanta"):
             self.sent("ai", source)
         text = self.run_report()
         self.assertNotIn("больше четверти", text)

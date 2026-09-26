@@ -19,9 +19,9 @@ os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import cli, daemon, sources, storage, trust, userprofiles  # noqa: E402
 from newsdigest.config import CFG, PROFILES_FILE  # noqa: E402
-from newsdigest.profiles import PROFILES  # noqa: E402
+from newsdigest.profiles import BUILTIN, PROFILES  # noqa: E402
 
-VICTIM = "wmo"          # встроенная лента климата
+VICTIM = "carbonbrief"  # встроенная лента климата с известным запасным адресом
 TOPIC = "climate"
 
 
@@ -224,6 +224,24 @@ class RestoreCase(Case):
         self.run_cli(restore=True)
         feeds = {f[0]: f for f in PROFILES[TOPIC]["feeds"]}
         self.assertEqual(feeds[VICTIM][1], moved)
+
+    def test_the_address_from_the_code_revives_it(self):
+        """Лента уехала в архив со старым адресом, а в подборке уже новый.
+
+        Так было с AP: на сервере он молчал по feeds.apnews.com, домена
+        которого больше нет, а в profiles.py у него давно витрина Google News.
+        Архив должен стучаться и туда, иначе новый адрес до сервера не дойдёт.
+        """
+        current = next(f[1] for f in BUILTIN[TOPIC]["feeds"] if f[0] == VICTIM)
+        self.archived()
+        self.conn.execute("UPDATE archive SET url='https://old.example/rss' "
+                          "WHERE source_id=?", (VICTIM,))
+        self.conn.commit()
+        cli.fetch_source = self.answers(current)
+        text = self.run_cli(restore=True)
+        self.assertIn("адрес из подборки", text)
+        feeds = {f[0]: f for f in PROFILES[TOPIC]["feeds"]}
+        self.assertEqual(feeds[VICTIM][1], current)
 
     def test_the_flags_are_wired(self):
         args = cli.build_parser().parse_args(["feeds", "--archive", "--restore"])
