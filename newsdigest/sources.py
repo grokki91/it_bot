@@ -17,6 +17,22 @@ from .storage import db, log_run, meta_set
 from .textutil import canonical_url, signature, url_hash
 
 
+#: ответы, за которыми обычно стоит защита от роботов, а не сломанный адрес
+GUARDED = (403, 405, 429, 451)
+
+
+def download(url: str):
+    """(status, bytes) ленты. Не пустили — пробуем вторым User-Agent.
+
+    Одна функция на сбор и на `tools/feedcheck.py`: проверка из CI должна
+    ходить по ленте ровно так же, как сервер.
+    """
+    status, raw = http_get(url)
+    if status in GUARDED:                   # похоже на защиту от ботов — пробуем ещё
+        status, raw = http_get(url, ua=CFG["fallback_user_agent"])
+    return status, raw
+
+
 def fetch_source(src):
     """(id, url, tier, category) -> (src, items, total, error).
 
@@ -27,11 +43,14 @@ def fetch_source(src):
     """
     source_id, url, tier, category = src
     try:
-        status, raw = http_get(url)
-        if status in (403, 405, 429, 451):      # похоже на защиту от ботов — пробуем ещё
-            status, raw = http_get(url, ua=CFG["fallback_user_agent"])
-        if status != 200 or not raw:
+        status, raw = download(url)
+        if status != 200:
             return src, [], 0, "HTTP %s" % status
+        if not raw.strip():
+            # двухсотка без тела — вежливый отказ роботу (ESPN, ReliefWeb,
+            # WADA). Второй User-Agent его не лечит: проверено из CI. Раньше
+            # это выглядело как «HTTP 200» или ParseError — загадкой
+            return src, [], 0, "HTTP 200, пустой ответ"
         entries = parse_feed(raw)
     except Exception as exc:  # noqa: BLE001 — падение источника не роняет прогон
         return src, [], 0, "%s: %s" % (type(exc).__name__, exc)

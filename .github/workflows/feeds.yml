@@ -1,0 +1,33 @@
+# Отвечают ли ленты, записанные в коде (tools/feedcheck.py).
+#
+# Идёт, только когда меняется сам список: сайты живут своей жизнью, и
+# красный крест из-за чужого 503 на каждом коммите — это шум, а не проверка.
+# Валится проверка на одном: адрес, которого в main не было, определённо
+# мёртв — 404, нет домена, не лента. Защита от роботов (403, 429, пустой
+# ответ) и таймауты идут предупреждением: сервер видит их не так, как CI.
+#
+# Полный отчёт по всем адресам — в логе шага и на странице прогона.
+name: feeds
+
+on:
+  push:
+    paths:
+      - "newsdigest/profiles.py"
+      - "newsdigest/candidates.py"
+      - "tools/feedcheck.py"
+      - ".github/workflows/feeds.yml"
+  workflow_dispatch:
+
+jobs:
+  feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: С чем сравнивать
+        run: git fetch --no-tags --depth=1 origin main
+      - name: Отвечают ли ленты
+        run: python3 tools/feedcheck.py --new-since FETCH_HEAD
