@@ -92,6 +92,26 @@ class TestFeedParse(unittest.TestCase):
         raw = b"\xef\xbb\xbf\n" + self.RSS.replace(b"Body text", b"Body\x07text")
         self.assertEqual(len(feedparse.parse_feed(raw)), 1)
 
+    def test_prefix_nobody_declared(self):
+        """TheWrap: `media:content` без xmlns:media — «unbound prefix»."""
+        raw = self.RSS.replace(
+            b"<pubDate>", b'<media:content url="https://e.com/p.jpg"/>'
+                          b"<dc:creator>Staff</dc:creator><pubDate>")
+        entries = feedparse.parse_feed(raw)
+        self.assertEqual([e["title"] for e in entries], ["Hello & goodbye"])
+        self.assertEqual(entries[0]["published"].year, 2021)
+
+    def test_declared_prefixes_are_left_alone(self):
+        """Починка — только для сломанного: исправная лента разбирается как была."""
+        raw = (b'<rss xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><item>'
+               b"<title>T</title><link>https://e.com/3</link>"
+               b"<dc:date>2021-09-06T12:00:00Z</dc:date></item></channel></rss>")
+        self.assertEqual(feedparse.parse_feed(raw)[0]["published"].day, 6)
+
+    def test_html_page_is_still_not_a_feed(self):
+        with self.assertRaises(Exception):
+            feedparse.parse_feed(b"<!DOCTYPE html><html><body><p>Moved<br></body></html>")
+
     #: GitHub в ленте релизов склеивает заголовок из имени тега и названия
     #: релиза — в карточку попадал хеш коммита вместо сути новости
     def test_strips_git_ref_prefix(self):

@@ -8,6 +8,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+#: `<media:content>` и `dc:creator="…"` — префикс, который забыли объявить
+PREFIXED_TAG = re.compile(rb"<(/?)[A-Za-z_][\w.\-]*:(?=[A-Za-z_])")
+PREFIXED_ATTR = re.compile(rb"(\s)[A-Za-z_][\w.\-]*:([A-Za-z_][\w.\-]*\s*=)")
+
 
 def _tagname(tag) -> str:
     return tag.split("}")[-1].lower() if isinstance(tag, str) else ""
@@ -78,6 +82,16 @@ def parse_date(value: str):
     return dt.astimezone(timezone.utc)
 
 
+def unprefix(raw: bytes) -> bytes:
+    """Снимает префиксы пространств имён: `media:content` → `content`.
+
+    Последнее средство для ленты с префиксом, который забыли объявить
+    (TheWrap: `unbound prefix`). Разбору это ничего не стоит: он и так
+    сравнивает только локальные имена тегов.
+    """
+    return PREFIXED_ATTR.sub(rb"\1\2", PREFIXED_TAG.sub(rb"<\1", raw))
+
+
 def parse_feed(raw: bytes) -> list:
     """RSS 2.0 / RSS 1.0 / Atom одним кодом: сравниваем локальные имена тегов."""
     start = raw.find(b"<")
@@ -87,7 +101,10 @@ def parse_feed(raw: bytes) -> list:
         root = ET.fromstring(raw)
     except ET.ParseError:
         cleaned = re.sub(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]", b"", raw)
-        root = ET.fromstring(cleaned)       # если снова упадёт — обработает вызывающий
+        try:
+            root = ET.fromstring(cleaned)
+        except ET.ParseError:
+            root = ET.fromstring(unprefix(cleaned))  # снова упадёт — обработает вызывающий
 
     out = []
     for el in root.iter():
