@@ -88,6 +88,37 @@ class CallersSurviveFailure(unittest.TestCase):
         self.assertEqual(sources.fetch_hackernews(keywords=["ai"]), [])
 
 
+class PoliteRefusal(unittest.TestCase):
+    """Двухсотка с пустым телом — отказ роботу, а не сломанная лента.
+
+    Так отвечают ESPN, ReliefWeb и WADA. Второй User-Agent их не лечит
+    (проверено из CI), поэтому повтора нет — есть честное имя ошибки, по
+    которому `feeds --broken` подсказывает, что делать.
+    """
+
+    def setUp(self):
+        self.real_open = net._open
+        self.addCleanup(setattr, net, "_open", self.real_open)
+        self.calls = 0
+
+    def serve(self, raw):
+        def fake(url, **kw):
+            self.calls += 1
+            return 200, raw
+        net._open = fake
+        return sources.fetch_source(("espn", "https://e.com/rss", 2, "media"))
+
+    def test_empty_body_is_named_as_such(self):
+        _src, items, total, err = self.serve(b"  \n")
+        self.assertEqual((items, total), ([], 0))
+        self.assertEqual(err, "HTTP 200, пустой ответ")
+        self.assertEqual(self.calls, 1)
+
+    def test_broken_list_explains_it(self):
+        from newsdigest import cli
+        self.assertIn("отказывают роботам", cli.why_dead("HTTP 200, пустой ответ"))
+
+
 def _feed(*dates) -> bytes:
     items = "".join("<item><title>t%d</title><link>https://e.com/%d</link>"
                     "<pubDate>%s</pubDate></item>" % (i, i, d)

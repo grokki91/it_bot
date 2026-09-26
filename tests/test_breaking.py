@@ -206,7 +206,7 @@ class TestCheck(BreakingCase):
         self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
 
-        self.fill(["openai", "arstechnica", "venturebeat"],
+        self.fill(["openai", "arstechnica", "the-decoder"],
                   title="Совсем другое крупное событие в отрасли",
                   tiers={"openai": 1})
         self.assertEqual(breaking.check(chat_id=CHAT), 0)   # молнией — уже нельзя

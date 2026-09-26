@@ -24,7 +24,7 @@ from .feedparse import parse_date
 from .llm import llm_cost, llm_json
 from .net import post_json
 from .pipeline import build_and_send, build_section
-from .profiles import PROFILES, label, profile
+from .profiles import BUILTIN, PROFILES, label, profile
 from .profiles import title as topic_title       # 'title' занято чатами в setup
 from .sources import all_feeds, collect, fetch_source
 from .storage import archive_drop, archive_rows, clear_health, db
@@ -350,6 +350,9 @@ def why_dead(err) -> str:
         return "адрес не существует: лента переехала или её убрали"
     if "HTTP 0" in err:
         return "до сайта не достучались: домен, DNS или TLS"
+    if "пустой ответ" in err:
+        return ("сайт отвечает пустотой — так вежливо отказывают роботам;"
+                " смена адреса не поможет, нужен другой источник о том же")
     if "ParseError" in err:
         return "по адресу лежит не фид, а что-то другое (обычно HTML)"
     return ""
@@ -469,10 +472,19 @@ def check_archive(restore=False):
 
     print("В архиве: %d источник(ов). Проверяю, не ожили ли...\n" % len(rows))
     index = {row["source_id"]: row for row in rows}
-    jobs = [(row["source_id"], row["url"], "адрес из архива") for row in rows]
+    # адрес из подборки: код мог узнать, куда лента переехала, уже после того,
+    # как её убрали в архив — AP уехал туда со старым адресом, а в profiles.py
+    # у него давно новый
+    builtin = {f[0]: f[1] for body in BUILTIN.values() for f in body["feeds"]}
+    jobs = []
     for row in rows:
-        for url, why in candidates.replacements_for(row["source_id"]):
-            jobs.append((row["source_id"], url, why))
+        known = set()
+        for url, why in ((row["url"], "адрес из архива"),
+                         (builtin.get(row["source_id"]), "адрес из подборки"),
+                         *candidates.replacements_for(row["source_id"])):
+            if url and url not in known:
+                known.add(url)
+                jobs.append((row["source_id"], url, why))
 
     def probe(job):
         source_id, url, why = job
