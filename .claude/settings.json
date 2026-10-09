@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m unittest:*)",
+      "Bash(python3 digest.py scrub:*)",
+      "Bash(python3 tools/feedcheck.py:*)"
+    ],
+    "deny": [
+      "Read(~/.newsdigest/env)",
+      "Read(./env)"
+    ]
+  }
+}
