@@ -10,9 +10,11 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import breaking, storage, subscribers, translate  # noqa: E402
+from newsdigest import (breaking, sections, storage, subscribers,  # noqa: E402
+                        translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
+from newsdigest.rank import primary_of  # noqa: E402
 
 from test_core import item  # noqa: E402
 
@@ -37,7 +39,7 @@ class BreakingCase(unittest.TestCase):
         conn = storage.db()
         try:
             for table in ("items", "sent", "meta", "runs", "feedback",
-                          "subscribers", "alerts", "cards"):
+                          "subscribers", "alerts", "cards", "ratings"):
                 conn.execute("DELETE FROM %s" % table)
             conn.commit()
             subscribers.add(conn, CHAT, role="member", title="тест")
@@ -304,6 +306,97 @@ class TestLanguage(BreakingCase):
         self.assertEqual(breaking.check(chat_id=CHAT), 1)
         self.assertEqual(self.asked, [])
         self.assertIn("Срочный заголовок", self.sent[0][1])
+
+
+class TestRatingCache(BreakingCase):
+    """Модель не оценивает дважды то, что уже оценила.
+
+    Событие, не дотянувшее до порога, остаётся «горячим» на всё окно
+    подтверждений, а проверка идёт раз в четверть часа."""
+
+    TITLES = ["Postgres 18 ускорил вакуум", "Nvidia показала ускоритель Rubin",
+              "Rust добавил асинхронные трейты", "Kubernetes отказался от dockershim"]
+
+    def setUp(self):
+        super().setUp()
+        self.rated = []
+
+        def rate(groups, persona):
+            self.rated.append([primary_of(group)["title"] for group in groups])
+            return ([{"id": i, "urgency": 6.0, "scope": "industry",
+                      "category": "labs"} for i in range(len(groups))],
+                    {"in": 5, "out": 5})
+        breaking.rate_urgency = rate
+
+    SOURCES = ["openai", "theverge", "techcrunch"]
+
+    def test_event_is_rated_once(self):
+        self.fill(self.SOURCES, tiers={"openai": 1})
+        breaking.check(chat_id=CHAT)
+        breaking.check(chat_id=CHAT)
+        breaking.check(chat_id=CHAT)
+        self.assertEqual(len(self.rated), 1, "то же событие оценили заново")
+
+    def test_new_confirmation_is_rated_again(self):
+        """Пришёл ещё один издатель — модель видит другое число подтверждений,
+        и прежняя оценка к этому вопросу не относится."""
+        self.fill(self.SOURCES, tiers={"openai": 1})
+        breaking.check(chat_id=CHAT)
+        self.fill(["arstechnica"])
+        breaking.check(chat_id=CHAT)
+        self.assertEqual(len(self.rated), 2)
+
+    def test_rated_event_does_not_hold_a_slot(self):
+        """Три места у читателя занимали одни и те же непрошедшие события, а
+        четвёртому оставалось ждать, пока они выйдут из окна."""
+        for title in self.TITLES:
+            self.fill(self.SOURCES, title=title, tiers={"openai": 1})
+        breaking.check(chat_id=CHAT)
+        breaking.check(chat_id=CHAT)
+        self.assertEqual(len(self.rated[0]), breaking.MAX_CANDIDATES)
+        self.assertEqual(len(self.rated[1]), 1)
+        self.assertEqual(sorted(self.rated[0] + self.rated[1]),
+                         sorted(self.TITLES))
+        breaking.check(chat_id=CHAT)
+        self.assertEqual(len(self.rated), 2, "всё оценено, спрашивать нечего")
+
+    def test_numbers_still_raise_a_remembered_rating(self):
+        """Кэш хранит мнение модели, а не итог: магнитуда поправляет его заново.
+        Иначе занизившая M7.4 оценка закрыла бы событие навсегда."""
+        self.fill(["theverge"], title="M 7.4 - 100km SE of Kamaishi", social=1.0)
+        topics = list(breaking.plan_key(None))
+        conn = storage.db()
+        try:
+            group = breaking.hot_clusters(conn, topics)[0]
+            key = breaking.rating_key(sections.persona(topics), group)
+            breaking.remember_ratings(conn, [(key, {
+                "urgency": 3.0, "scope": "niche", "category": "other"})])
+        finally:
+            conn.close()
+        self.assertEqual(breaking.check(chat_id=CHAT), 1)
+        self.assertEqual(self.rated, [], "модель спрашивали про оценённое")
+
+    def test_failed_request_is_not_remembered(self):
+        def broken(groups, persona):
+            self.rated.append(len(groups))
+            raise LLMError("нет связи")
+        breaking.rate_urgency = broken
+        self.fill(self.SOURCES, tiers={"openai": 1})
+        breaking.check(chat_id=CHAT)
+        breaking.check(chat_id=CHAT)
+        self.assertEqual(len(self.rated), 2, "оценкой посчитали отказ")
+
+    def test_old_rating_is_not_reused(self):
+        old = (datetime.now(timezone.utc) - timedelta(
+            hours=CFG["breaking_window_h"] + 1)).isoformat()
+        conn = storage.db()
+        try:
+            conn.execute("INSERT INTO ratings(key, urgency, scope, category, at) "
+                         "VALUES ('k', 6.0, 'industry', 'labs', ?)", (old,))
+            conn.commit()
+            self.assertEqual(breaking.rated_before(conn, ["k"]), {})
+        finally:
+            conn.close()
 
 
 class TestGrouped(BreakingCase):

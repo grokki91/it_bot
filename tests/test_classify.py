@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
@@ -188,6 +189,109 @@ class TestRouteAll(unittest.TestCase):
                      source="reuters-world") for n in range(5)]
         classify.route_all(self.conn, rows, DEFAULT_SECTIONS)
         self.assertEqual(len(self.asked[0]), 2)
+
+    # --- отказы модели -----------------------------------------------------
+    #: числа сигнатура отбрасывает, так что заголовки различаем словами
+    WORDS = ["альфа", "бета", "гамма", "дельта", "эпсилон"]
+
+    def wide(self, count, start=0):
+        return [item("https://reuters.com/%d" % n,
+                     "Нейтральный текст %s" % self.WORDS[n],
+                     source="reuters-world") for n in range(start, start + count)]
+
+    def test_refusal_is_remembered(self):
+        """«Раздела нет» — тоже ответ: вторым проходом за него не платим.
+
+        Быстрая полоса идёт раз в четверть часа, а широкие ленты отдают те же
+        записи сутками — без этого одни и те же отказы уходили к модели на
+        каждом обходе."""
+        CFG["classify_llm"] = True
+        self.stub_model({0: ""})
+        classify.route_all(self.conn, self.wide(1), DEFAULT_SECTIONS)
+        self.assertEqual(len(self.asked), 1)
+
+        again = self.wide(1)
+        self.asked = []
+        classify.route_all(self.conn, again, DEFAULT_SECTIONS)
+        self.assertEqual(self.asked, [], "отказ переспросили")
+        self.assertEqual(again[0]["section"], "")
+
+    def test_refusals_do_not_eat_the_queue(self):
+        """Очередь к модели строится по доверию, и отказы занимали в ней все
+        места: свежее до модели не доезжало."""
+        CFG["classify_llm"] = True
+        CFG["classify_max"] = 2
+        answers = {"Нейтральный текст альфа": "", "Нейтральный текст бета": "",
+                   "Нейтральный текст гамма": "economy"}
+
+        def fake(rows, topics):
+            self.asked.append([row["title"] for row in rows])
+            return {idx: answers[row["title"]] for idx, row in enumerate(rows)}, 0.0
+        classify.ask_model = fake
+
+        first = self.wide(3)
+        # порядок в очереди задаёт доверие, а у всех трёх оно одно: первыми
+        # уйдут те, кого отсортировала свежесть. Подкрутим её явно
+        for at, row in enumerate(first):
+            row["published_at"] = "2026-08-13T0%d:00:00+00:00" % (3 - at)
+        classify.route_all(self.conn, first, DEFAULT_SECTIONS)
+        self.assertEqual(len(self.asked[0]), 2)
+
+        second = self.wide(3)
+        for at, row in enumerate(second):
+            row["published_at"] = "2026-08-13T0%d:00:00+00:00" % (3 - at)
+        classify.route_all(self.conn, second, DEFAULT_SECTIONS)
+        self.assertEqual(self.asked[1], ["Нейтральный текст гамма"],
+                         "отказанные заняли место новичка")
+        self.assertEqual(second[2]["section"], "economy")
+
+    def test_silence_is_not_a_refusal(self):
+        """Модель материал не упомянула — мы ничего не знаем и спросим снова."""
+        CFG["classify_llm"] = True
+        self.stub_model({})
+        classify.route_all(self.conn, self.wide(1), DEFAULT_SECTIONS)
+        classify.route_all(self.conn, self.wide(1), DEFAULT_SECTIONS)
+        self.assertEqual(len(self.asked), 2)
+
+    def test_failed_request_is_not_a_refusal(self):
+        """Связи не было — это не ответ, и запоминать нечего."""
+        CFG["classify_llm"] = True
+
+        def boom(rows, topics):
+            self.asked.append(list(rows))
+            raise LLMError("нет связи")
+        classify.ask_model = boom
+        classify.route_all(self.conn, self.wide(1), DEFAULT_SECTIONS)
+        classify.route_all(self.conn, self.wide(1), DEFAULT_SECTIONS)
+        self.assertEqual(len(self.asked), 2)
+
+    def test_stale_refusal_is_asked_again(self):
+        """Отказ живёт окно свежести: тот же заголовок завтра — новый вопрос."""
+        CFG["classify_llm"] = True
+        self.stub_model({})
+        row = self.wide(1)[0]
+        old = (datetime.now(timezone.utc)
+               - timedelta(hours=CFG["window_hours"] + 1)).isoformat()
+        self.conn.execute("INSERT INTO routes(sig, section, at) VALUES (?,?,?)",
+                          (row["sig"], "", old))
+        self.conn.commit()
+        classify.route_all(self.conn, [row], DEFAULT_SECTIONS)
+        self.assertEqual(len(self.asked), 1)
+
+    def test_refusal_does_not_hide_what_rules_can_decide(self):
+        """Отказ закрывает только вопрос к модели: словарь бесплатный, и если он
+        нашёл раздел, материал в нём и остаётся."""
+        CFG["classify_llm"] = True
+        self.stub_model()
+        row = item("https://reuters.com/a",
+                   "OpenAI releases GPT-6 with 2M context window",
+                   source="reuters-world", tier=1)
+        self.conn.execute("INSERT INTO routes(sig, section, at) VALUES (?,?,?)",
+                          (row["sig"], "", datetime.now(timezone.utc).isoformat()))
+        self.conn.commit()
+        classify.route_all(self.conn, [row], DEFAULT_SECTIONS)
+        self.assertEqual(row["section"], "ai")
+        self.assertEqual(self.asked, [])
 
 
 class TestForTopic(unittest.TestCase):

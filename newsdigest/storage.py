@@ -65,6 +65,36 @@ CREATE TABLE IF NOT EXISTS dupes (
     at      TEXT NOT NULL
 );
 
+-- Оценки срочности (llm.rate_urgency). Событие, не дотянувшее до порога,
+-- остаётся «горячим» на всё окно breaking_window_h, а проверка идёт раз в
+-- четверть часа: без кэша модель оценивала бы одно и то же до двух десятков
+-- раз — и каждая попытка была шансом выбить порог случайностью ответа.
+-- Ключ собирает breaking.rating_key из того, что видит модель: портрет,
+-- сигнатура новости и число подтверждений. Пришло ещё подтверждение — ключ
+-- другой, и событие оценивается заново.
+CREATE TABLE IF NOT EXISTS ratings (
+    key      TEXT PRIMARY KEY,
+    urgency  REAL NOT NULL DEFAULT 0,
+    scope    TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    at       TEXT NOT NULL
+);
+
+-- Журнал расхода на модель по суткам и назначениям (newsdigest/spend.py).
+-- Пишется из llm.llm_json, то есть по каждому запросу, а не по строкам `runs`:
+-- тех хранится по 200 на вид, и сбор с проверкой срочного раз в 15 минут
+-- вытирали собственную историю за двое суток.
+CREATE TABLE IF NOT EXISTS spend (
+    day        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    calls      INTEGER NOT NULL DEFAULT 0,
+    tok_in     INTEGER NOT NULL DEFAULT 0,
+    tok_cached INTEGER NOT NULL DEFAULT 0,
+    tok_out    INTEGER NOT NULL DEFAULT 0,
+    cost       REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, kind)
+);
+
 -- Сюжетные связи: какая новость какую продолжает. Приговор `follows` живёт в
 -- `dupes` по паре СИГНАТУР — он общий для всех подписчиков и переживает
 -- пересборку выпуска. Здесь же лежит то, что из него вышло у конкретного

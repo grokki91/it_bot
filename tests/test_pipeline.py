@@ -280,8 +280,9 @@ class TestLanguage(PipelineCase):
         self.assertIn("Русский перевод", text)
         self.assertNotIn(self.ENGLISH[0], text)
 
-    def test_leftover_is_translated_for_more(self):
-        """Хвост для /more переводится при сборке: команда не ждёт модель."""
+    def test_leftover_is_not_translated(self):
+        """Хвост для /more лежит как есть: команды в Telegram нет, и платить за
+        перевод до тридцати заголовков в каждом выпуске никому не нужно."""
         self.fill(len(self.ENGLISH), titles=self.ENGLISH)
         limit = CFG["max_items"]
         CFG["max_items"] = 2                # остальное уйдёт в запас для /more
@@ -294,9 +295,10 @@ class TestLanguage(PipelineCase):
             rows = storage.take_leftover(conn, CHAT, 10)
         finally:
             conn.close()
-        self.assertTrue(rows)
+        self.assertTrue(rows, "запас должен сохраниться")
         for row in rows:
-            self.assertNotIn(row["title"], self.ENGLISH)
+            self.assertIn(row["title"], self.ENGLISH)
+        self.assertEqual(self.asked, [], "хвост ушёл на перевод")
 
     def test_half_written_card_is_filled_and_translated(self):
         """Модель дала заголовок, но не суть: остальное берём из источника."""

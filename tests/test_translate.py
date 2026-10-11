@@ -163,12 +163,6 @@ class TestLocalize(TranslateCase):
         self.assertEqual(self.asked, [])
         self.assertEqual(card["headline"], ENGLISH)
 
-    def test_titles_of_the_leftover(self):
-        rows = [{"title": ENGLISH}, {"title": RUSSIAN}]
-        translate.localize_titles(self.conn, rows)
-        self.assertEqual(rows[0]["title"], self.TRANSLATED % 0)
-        self.assertEqual(rows[1]["title"], RUSSIAN)
-
 
 class TestKnown(TranslateCase):
     """Кэш умеет отдавать перевод без единого запроса — на этом стоят

@@ -253,10 +253,11 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
         else:
             stats["empty"].append(topic)
 
-    # хвост переводим здесь, а не в момент /more: команда должна отвечать
-    # сразу, а сборка выпуска и так идёт в фоне
+    # хвост кладём как есть, без перевода: /more в Telegram больше нет (бот
+    # только рассылает), а платить за перевод до тридцати заголовков в каждом
+    # выпуске ради команды, которую никто не вызовет, незачем. Ленте на странице
+    # хвост не нужен — она строится из `sent`
     spare = sorted(spare, key=lambda r: -r["score"])[:30]
-    stats["cost"] += translate.localize_titles(conn, spare)
     save_leftover(conn, chat_id, spare)
     if not blocks:
         log.warning("Ничего не прошло порог важности %.1f — тихий день",

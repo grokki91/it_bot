@@ -29,6 +29,7 @@ Guardian, phys.org, ScienceDaily, Nature и IEEE Spectrum в одной лент
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
 from . import trust
 from .config import CFG, log, now_iso
@@ -339,20 +340,36 @@ def by_rules(title: str, lead: str, topics):
 
 # --------------------------------------------------------------- кэш решений
 def cached(conn, sigs) -> dict:
-    """Что уже классифицировали раньше: сигнатура -> раздел."""
+    """Что уже классифицировали раньше: сигнатура -> раздел.
+
+    Пустой раздел — тоже ответ: модель на этот материал уже отвечала, и ответом
+    было «ни в один из ваших». Без этого такой материал уходил к ней заново на
+    КАЖДОМ обходе: быстрая полоса идёт раз в четверть часа, широкие ленты
+    (Reuters, BBC, AP) отдают те же записи сутками, а очередь к модели строится
+    по доверию к источнику — то есть сорок мест занимали одни и те же отказы,
+    а свежее до модели не доезжало. Отказ живёт окно свежести: после него
+    материала в выпуске уже нет, а тот же заголовок через сутки — новый вопрос
+    (разделы читателей за это время могли смениться).
+    """
     out = {}
     sigs = [s for s in sigs if s]
+    stale = (datetime.now(timezone.utc)
+             - timedelta(hours=max(1, int(CFG["window_hours"])))).isoformat()
     for start in range(0, len(sigs), 400):       # SQLite не любит длинные IN
         part = sigs[start:start + 400]
         marks = ",".join("?" * len(part))
         for row in conn.execute(
-                "SELECT sig, section FROM routes WHERE sig IN (%s)" % marks, part):
+                "SELECT sig, section, at FROM routes WHERE sig IN (%s)" % marks,
+                part):
+            if not row["section"] and row["at"] < stale:
+                continue                        # отказ протух — спросим снова
             out[row["sig"]] = row["section"]
     return out
 
 
 def remember(conn, decided) -> None:
-    """Кладёт решения модели в кэш: тот же материал второй раз не оплачиваем."""
+    """Кладёт ответы модели в кэш: тот же материал второй раз не оплачиваем.
+    Раздел может быть пустым — это запомненный отказ (см. `cached`)."""
     conn.executemany(
         "INSERT INTO routes(sig, section, at) VALUES (?,?,?) "
         "ON CONFLICT(sig) DO UPDATE SET section=excluded.section, at=excluded.at",
@@ -362,7 +379,10 @@ def remember(conn, decided) -> None:
 
 # ---------------------------------------------------------------- модель
 def ask_model(rows, topics):
-    """Классификация пачкой. Возвращает ({номер строки: раздел}, стоимость)."""
+    """Классификация пачкой. Возвращает ({номер строки: раздел}, стоимость).
+
+    Раздел пуст, если модель ответила «подходящего нет» (или не уверена):
+    такой отказ запоминается. Кого она не упомянула, того в ответе нет."""
     from .profiles import title as topic_title
 
     listing = "\n".join("- %s — %s" % (t, topic_title(t)) for t in topics)
@@ -372,7 +392,8 @@ def ask_model(rows, topics):
     data, usage = llm_json(
         CLASSIFY_SYSTEM,
         task("Новости", payload, "Разделы:\n" + listing),
-        CFG["model_rank"], max_tokens=60 * len(payload) + 500)
+        CFG["model_rank"], max_tokens=60 * len(payload) + 500,
+        kind="classify")
     out = {}
     for entry in as_list(data):
         try:
@@ -381,20 +402,26 @@ def ask_model(rows, topics):
         except (TypeError, ValueError):
             continue
         section = str(entry.get("section") or "").strip()
-        if 0 <= idx < len(rows) and section in topics and confidence >= 0.5:
-            out[idx] = section
+        if not 0 <= idx < len(rows):
+            continue
+        # ответ «раздела нет» или неуверенный — это ответ: пустая строка, а не
+        # молчание. Про тех, кого модель не упомянула вовсе, мы ничего не знаем
+        # и спросим ещё раз
+        out[idx] = section if section in topics and confidence >= 0.5 else ""
     return out, llm_cost(usage)
 
 
-def undecided_for_model(rows):
+def undecided_for_model(rows, declined=()):
     """Кого имеет смысл отдать модели: широкие ленты, лучшие — первыми.
 
     Узкий фид сюда не попадает по определению, а из широких берём самые
     заслуживающие доверия и самые свежие: до выпуска доедут именно они,
-    а платить за классификацию хвоста незачем.
+    а платить за классификацию хвоста незачем. `declined` — сигнатуры, про
+    которые модель уже ответила «раздела нет»: переспрашивать их нечего.
     """
     wide = [row for row in rows
-            if not row.get("section") and not trust.is_strict(row["source_id"])]
+            if not row.get("section") and not trust.is_strict(row["source_id"])
+            and row.get("sig") not in declined]
     # сортировка стабильна, поэтому два прохода дают «доверие, потом свежесть»
     wide.sort(key=lambda r: r.get("published_at") or "", reverse=True)
     wide.sort(key=lambda r: -trust.trust(r["source_id"]))
@@ -419,6 +446,7 @@ def route_all(conn, rows, topics) -> float:
     from .sections import by_source
 
     known = cached(conn, [row.get("sig") for row in rows])
+    declined = {sig for sig, section in known.items() if not section}
     stats = {"feed": 0, "rules": 0, "cache": 0, "model": 0, "unsure": 0}
 
     for row in rows:
@@ -430,7 +458,7 @@ def route_all(conn, rows, topics) -> float:
             stats["feed"] += 1
         else:
             hit = known.get(row.get("sig"))
-            if hit is not None:
+            if hit:
                 section, confidence = hit, 0.8
                 stats["cache"] += 1
             else:
@@ -443,7 +471,7 @@ def route_all(conn, rows, topics) -> float:
 
     cost = 0.0
     if CFG["classify_llm"]:
-        pending = undecided_for_model(rows)
+        pending = undecided_for_model(rows, declined)
         if pending:
             try:
                 decided, cost = ask_model(pending, topics)
@@ -454,14 +482,17 @@ def route_all(conn, rows, topics) -> float:
                             exc)
                 decided = {}
             for idx, section in decided.items():
-                pending[idx]["section"] = section
-                pending[idx]["route_conf"] = 0.8
-            stats["model"] = len(decided)
+                if section:
+                    pending[idx]["section"] = section
+                    pending[idx]["route_conf"] = 0.8
+            stats["model"] = sum(1 for section in decided.values() if section)
             remember(conn, [(pending[idx].get("sig"), section)
                             for idx, section in decided.items()])
 
     stats["unsure"] = sum(1 for row in rows if not row["section"])
     log.info("Разделы: по ленте %d, по словарю %d, из кэша %d, моделью %d, "
-             "не решено %d", stats["feed"], stats["rules"], stats["cache"],
-             stats["model"], stats["unsure"])
+             "не решено %d (из них модель уже отказала %d)", stats["feed"],
+             stats["rules"], stats["cache"], stats["model"], stats["unsure"],
+             sum(1 for row in rows if not row["section"]
+                 and row.get("sig") in declined))
     return cost
