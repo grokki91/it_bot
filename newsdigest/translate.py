@@ -202,16 +202,3 @@ def localize(conn, cards, language=None) -> float:
             done += 1
     log.info("Перевёл на язык выпуска: %d фрагмент(ов) из %d", done, len(spots))
     return cost
-
-
-def localize_titles(conn, rows, language=None) -> float:
-    """То же для голых заголовков — хвоста выпуска, который покажет /more."""
-    if not CFG["translate"]:
-        return 0.0
-    spots = [row for row in rows if foreign(row.get("title"), language)]
-    if not spots:
-        return 0.0
-    ready, cost = translated(conn, [row["title"] for row in spots], language)
-    for row in spots:
-        row["title"] = ready.get(row["title"], row["title"])
-    return cost

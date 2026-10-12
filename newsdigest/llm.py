@@ -8,7 +8,7 @@ import json
 import re
 import time
 
-from . import config, redact
+from . import config, redact, spend
 from .config import CFG, log
 from .net import post_json
 from .rank import primary_of, voices
@@ -40,8 +40,12 @@ def task(label: str, payload, *head) -> str:
     return "\n".join(lines + ["", "%s (json):" % label, body])
 
 
-def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
+def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
+             kind: str = ""):
     """Один вызов модели в режиме JSON. Возвращает (данные, usage).
+
+    `kind` — на что запрос (`spend.LABELS`): по нему расход ложится в журнал,
+    и `status` показывает, из чего он состоит.
 
     Это единственная дверь наружу к языковой модели: и ранжирование, и
     карточки, и перевод, и определение раздела уходят через неё. Поэтому
@@ -83,12 +87,15 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000):
             except (KeyError, IndexError, TypeError) as exc:
                 raise LLMError("неожиданный формат ответа: %s" % exc)
             usage = data.get("usage") or {}
-            return _loads(text), {
+            used = {
                 "in": usage.get("prompt_tokens", 0),
                 "out": usage.get("completion_tokens", 0),
                 "cached": (usage.get("prompt_cache_hit_tokens")
                            or usage.get("prompt_tokens_cached") or 0),
             }
+            # деньги потрачены, даже если ответ не разобрался: учитываем до разбора
+            spend.add(kind, used, llm_cost(used))
+            return _loads(text), used
         last = "HTTP %s %s" % (status, err or (json.dumps(data)[:300] if data else ""))
         # некоторые аккаунты/модели не принимают поле thinking — снимаем и пробуем ещё
         if status == 400 and "thinking" in payload and "thinking" in last.lower():
@@ -447,7 +454,7 @@ def rank_clusters(clusters, persona):
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
         RANK_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
-        CFG["model_rank"], max_tokens=3000)
+        CFG["model_rank"], max_tokens=3000, kind="rank")
     return as_list(data), usage
 
 
@@ -468,7 +475,7 @@ def rate_urgency(clusters, persona):
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
         BREAKING_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
-        CFG["model_rank"], max_tokens=2000)
+        CFG["model_rank"], max_tokens=2000, kind="urgency")
     return as_list(data), usage
 
 
@@ -527,7 +534,8 @@ def judge_duplicates(pairs):
         DUP_SYSTEM, task("Пары", payload),
         # ответ подрос на `gain`: короткая фраза «что нового» вместо
         # второго булева поля
-        CFG["model_rank"], max_tokens=64 * len(payload) + 400)
+        CFG["model_rank"], max_tokens=64 * len(payload) + 400,
+        kind="dupes")
     out = {}
     for entry in as_list(data):
         try:
@@ -550,7 +558,8 @@ def judge_claims(claims):
     payload = [dict(claim, id=idx) for idx, claim in enumerate(claims)]
     data, usage = llm_json(
         CLAIM_SYSTEM, task("Новости", payload),
-        CFG["model_rank"], max_tokens=80 * len(payload) + 500)
+        CFG["model_rank"], max_tokens=80 * len(payload) + 500,
+        kind="claims")
     out = {}
     for entry in as_list(data):
         try:
@@ -585,7 +594,8 @@ def summarize_batch(picked, persona, language, offset=0):
     data, usage = llm_json(
         SUM_SYSTEM, task("Новости", payload, "Читатель: " + persona,
                          "Язык ответа: " + language),
-        CFG["model_summary"], max_tokens=400 * len(payload) + 500)
+        CFG["model_summary"], max_tokens=400 * len(payload) + 500,
+        kind="cards")
     cards = {}
     for card in as_list(data):
         try:
@@ -605,7 +615,8 @@ def translate_texts(texts, language):
                for idx, text in enumerate(texts)]
     data, usage = llm_json(
         TR_SYSTEM, task("Строки", payload, "Язык перевода: " + language),
-        CFG["model_summary"], max_tokens=300 * len(payload) + 500)
+        CFG["model_summary"], max_tokens=300 * len(payload) + 500,
+        kind="translate")
     out = {}
     for row in as_list(data):
         try:

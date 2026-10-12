@@ -36,6 +36,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 from . import (config, dedup, factcheck, safety, sections, signals,
@@ -364,6 +365,74 @@ def shared_shortlist(pools, hot) -> list:
     return [group for group in hot if id(group) in chosen][:limit]
 
 
+def rating_key(persona: str, group) -> str:
+    """Ключ оценки срочности: то, что видит модель, когда её об этом спрашивают.
+
+    Лицо кластера и число подтверждений (`llm.rate_urgency` показывает их ей),
+    а портрет — без личной дописки «зашло/не зашло»: она меняется от каждой
+    оценки читателя, а срочность — про масштаб события, не про вкусы. Пришло
+    ещё одно подтверждение или у кластера сменилось лицо — ключ другой, и
+    событие оценивается заново.
+    """
+    seed = "\n".join((str(persona), primary_of(group)["sig"],
+                      str(len({i["source_id"] for i in group}))))
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def rated_before(conn, keys) -> dict:
+    """Оценки, которые модель уже выносила: ключ -> оценка.
+
+    Живут окно подтверждений (`breaking_window_h`): позже событие из выборки
+    всё равно выпадает. До этого кэша каждое событие, не дотянувшее до порога,
+    оставалось «горячим» на всё окно и оценивалось заново на каждой проверке,
+    то есть раз в четверть часа — до двух десятков раз подряд. Дорого, а главное
+    — каждая попытка была ещё одним шансом выбить порог случайностью ответа.
+    """
+    out = {}
+    keys = [k for k in dict.fromkeys(keys) if k]
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=max(1, int(CFG["breaking_window_h"])))).isoformat()
+    for start in range(0, len(keys), 400):      # SQLite не любит длинные IN
+        part = keys[start:start + 400]
+        marks = ",".join("?" * len(part))
+        for row in conn.execute(
+                "SELECT key, urgency, scope, category FROM ratings "
+                "WHERE at > ? AND key IN (%s)" % marks, [cutoff] + part):
+            out[row["key"]] = {"urgency": float(row["urgency"]),
+                               "scope": row["scope"] or "industry",
+                               "category": row["category"] or "other"}
+    return out
+
+
+def remember_ratings(conn, pairs) -> None:
+    """Кладёт оценки модели в кэш — до поправок числами: те считаются заново."""
+    rows = [(key, float(r["urgency"]), r["scope"], r["category"], now_iso())
+            for key, r in pairs]
+    if not rows:
+        return
+    conn.executemany(
+        "INSERT INTO ratings(key, urgency, scope, category, at) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+        "urgency=excluded.urgency, scope=excluded.scope, "
+        "category=excluded.category, at=excluded.at", rows)
+    conn.commit()
+
+
+def settled_ids(earlier, hot, kev) -> set:
+    """События, про которые всё решено: модель оценила, и даже с поправкой
+    числами (магнитуда, KEV) до порога важного они не дотянули.
+
+    Они не должны занимать места в списке кандидатов читателя
+    (`MAX_CANDIDATES`): раньше три самых «горячих» события, которые не
+    дотягивали до порога, сидели там всё окно, а новое срочное ждало за ними
+    своей очереди на оценку.
+    """
+    copies = {key: dict(rating) for key, rating in earlier.items()}
+    signals.raise_floors(copies, [g for g in hot if id(g) in copies], kev)
+    return {key for key, rating in copies.items()
+            if not level_of(rating["urgency"])}
+
+
 def rated_by_group(ranking, shortlist) -> dict:
     """Ответ модели, разложенный по кластерам: id(кластер) -> оценка срочности.
 
@@ -404,6 +473,16 @@ def check_group(topics, readers) -> int:
             return 0
 
         hot = hot_clusters(conn, list(topics))
+        kev = signals.kev_ids(conn)
+        # что модель уже оценивала: такое не оценивается второй раз, а
+        # не дотянувшее до порога не занимает места у читателей
+        base = sections.persona(list(topics))
+        keys = {id(group): rating_key(base, group) for group in hot}
+        known = rated_before(conn, keys.values())
+        earlier = {gid: known[key] for gid, key in keys.items() if key in known}
+        settled = settled_ids(earlier, hot, kev)
+        hot = [group for group in hot if id(group) not in settled]
+
         pools, seen, checked = {}, {}, 0.0
         for chat_id, _sub in ready:
             # индекс переживает проверку: разбирая дубли, он узнаёт и то, какое
@@ -418,39 +497,47 @@ def check_group(topics, readers) -> int:
         if not ready:
             return 0
         shortlist = shared_shortlist(pools, hot)
+        todo = [group for group in shortlist if id(group) not in earlier]
+        before = {id(group): dict(earlier[id(group)]) for group in shortlist
+                  if id(group) in earlier}
 
         persona = group_persona(conn, topics, ready)
-        kev = signals.kev_ids(conn)
-        try:
-            ranking, usage = rate_urgency(shortlist, persona)
-        except LLMError as exc:
-            # Без оценки модели срочное обычно не отправляем: слишком легко
-            # разбудить человека ради пересказа чужой новости. Но событие с
-            # твёрдым числом в её мнении не нуждается — магнитуда 7.4 остаётся
-            # магнитудой 7.4, что бы там ни ответил DeepSeek
-            rated = signals.raise_floors({}, shortlist, kev)
-            if not rated:
-                log.warning("Срочное не проверить (%s) — подождёт выпуска", exc)
-                for chat_id, _sub in ready:
-                    log_run(conn, "breaking", "llm-failed",
-                            {"candidates": len(pools[chat_id]), "sent": 0,
-                             "cost": checked / len(ready), "best": 0.0})
-                return 0
-            log.warning("Модель недоступна (%s), но числа говорят сами за себя",
-                        exc)
-            sent = 0
-            for chat_id, sub in ready:
-                with subscribers.overlay(sub):
-                    sent += deliver(conn, chat_id, pools[chat_id], rated,
-                                    persona, {}, checked / len(ready),
-                                    seen[chat_id])
-            return sent
+        usage = {}
+        if todo:
+            try:
+                ranking, usage = rate_urgency(todo, persona)
+            except LLMError as exc:
+                # Без оценки модели срочное обычно не отправляем: слишком легко
+                # разбудить человека ради пересказа чужой новости. Но событие с
+                # твёрдым числом в её мнении не нуждается — магнитуда 7.4
+                # остаётся магнитудой 7.4, что бы там ни ответил DeepSeek. Не
+                # нуждается и событие, которое она уже оценила раньше
+                rated = signals.raise_floors(before, shortlist, kev)
+                if not rated:
+                    log.warning("Срочное не проверить (%s) — подождёт выпуска", exc)
+                    for chat_id, _sub in ready:
+                        log_run(conn, "breaking", "llm-failed",
+                                {"candidates": len(pools[chat_id]), "sent": 0,
+                                 "cost": checked / len(ready), "best": 0.0})
+                    return 0
+                log.warning("Модель недоступна (%s), но есть прежние оценки и "
+                            "числа", exc)
+                sent = 0
+                for chat_id, sub in ready:
+                    with subscribers.overlay(sub):
+                        sent += deliver(conn, chat_id, pools[chat_id], rated,
+                                        persona, {}, checked / len(ready),
+                                        seen[chat_id])
+                return sent
+            fresh = rated_by_group(ranking, todo)
+            remember_ratings(conn, [(keys[id(group)], fresh[id(group)])
+                                    for group in todo if id(group) in fresh])
+            before.update(fresh)
 
         # общий запрос делим на всех: иначе в `status` расход одного читателя
         # выглядел бы как расход целой группы
         cost = (llm_cost(usage) + checked) / len(ready)
-        rated = signals.raise_floors(rated_by_group(ranking, shortlist),
-                                     shortlist, kev)
+        rated = signals.raise_floors(before, shortlist, kev)
 
         sent, cards = 0, {}
         for chat_id, sub in ready:

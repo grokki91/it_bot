@@ -328,6 +328,13 @@ def collect(topics=None, wire_only=False) -> dict:
     # вычищенную строку истории — это «Ранее по теме» в пустоту
     conn.execute("DELETE FROM threads WHERE at < ?", (cutoff_s,))
     conn.execute("DELETE FROM routes WHERE at < ?", (cutoff_r,))
+    # оценка срочности нужна, пока событие в окне подтверждений; запас — сутки
+    cutoff_b = (datetime.now(timezone.utc)
+                - timedelta(hours=CFG["breaking_window_h"] + 24)).isoformat()
+    conn.execute("DELETE FROM ratings WHERE at < ?", (cutoff_b,))
+    conn.execute("DELETE FROM spend WHERE day < ?",
+                 ((datetime.now(timezone.utc)
+                   - timedelta(days=CFG["keep_spend_days"])).strftime("%Y-%m-%d"),))
     conn.execute("DELETE FROM dupes WHERE at < ?", (cutoff_d,))
     # приговоры фактчека и наша репутация доменов живут дольше самих новостей:
     # домен, знакомый полгода, — это и есть то, ради чего таблица заведена

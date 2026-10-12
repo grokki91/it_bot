@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import (candidates, config, factcheck, redact, safety, sections,
-               subscribers, trust, userprofiles)
+               spend, subscribers, trust, userprofiles)
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
@@ -720,6 +720,44 @@ def report_taste(conn, since) -> None:
     print()
 
 
+def spend_report(conn, since) -> None:
+    """Расход на модель за неделю — из журнала запросов, по назначениям.
+
+    Раньше он складывался из строк `runs`, а их хранится по 200 на вид: сбор и
+    проверка срочного идут раз в 15 минут, то есть эти двести строк — двое
+    суток. Перевод ленты на странице не попадал в сумму вовсе. Журнал пишется
+    из `llm.llm_json` и не теряет ничего. Пока он пуст (база только что
+    обновлена), показываем старую сумму и говорим, откуда она.
+    """
+    rows = spend.totals(conn, 7)
+    if not rows:
+        cost = 0.0
+        for row in conn.execute("SELECT stats FROM runs WHERE at > ?", (since,)):
+            try:
+                cost += float(json.loads(row["stats"]).get("cost", 0))
+            except (ValueError, TypeError):
+                pass
+        print("Расход DeepSeek за неделю: $%.4f  (≈ $%.2f/мес) — по строкам "
+              "прогонов, занижен; журнал запросов пока пуст" % (cost, cost * 4.3))
+        return
+    total = sum(row["cost"] or 0.0 for row in rows)
+    first = conn.execute("SELECT MIN(day) AS d FROM spend WHERE day >= ?",
+                         (spend.since(7),)).fetchone()["d"]
+    span = (datetime.now(timezone.utc).date()
+            - datetime.strptime(first, "%Y-%m-%d").date()).days + 1
+    print("Расход DeepSeek за %s: $%.4f  (≈ $%.2f/мес)"
+          % ("неделю" if span >= 7 else "%d дн." % span, total,
+             total / max(1, span) * 30))
+    for row in rows:
+        tok_in, tok_out = row["tok_in"] or 0, row["tok_out"] or 0
+        print("  %-13s $%.4f  запросов %-4d вход %5dk (кэш провайдера %2d%%)"
+              "  выход %4dk" % (spend.label(row["kind"]), row["cost"] or 0.0,
+                               row["calls"] or 0, tok_in // 1000,
+                               round(100.0 * (row["tok_cached"] or 0)
+                                     / max(1, tok_in)),
+                               tok_out // 1000))
+
+
 def breaking_report(conn, since) -> None:
     """Что было со срочным за неделю.
 
@@ -775,13 +813,7 @@ def cmd_status(_args):
                         (week,)).fetchone()["c"]
     print("\nМатериалов за сутки: %d   отправлено за неделю: %d" % (fresh, sent))
 
-    cost = 0.0
-    for row in conn.execute("SELECT stats FROM runs WHERE at > ?", (week,)):
-        try:
-            cost += float(json.loads(row["stats"]).get("cost", 0))
-        except (ValueError, TypeError):
-            pass
-    print("Расход DeepSeek за неделю: $%.4f  (≈ $%.2f/мес)" % (cost, cost * 4.3))
+    spend_report(conn, week)
 
     breaking_report(conn, week)
 
