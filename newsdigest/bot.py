@@ -761,7 +761,8 @@ def answer_schedule(chat_id) -> None:
     if str(CFG["chat_reply"]).lower() == "off":
         return
     now = time.monotonic()
-    if now - _ANSWERED.get(chat_id, 0) < ANSWER_EVERY:
+    last = _ANSWERED.get(chat_id)
+    if last is not None and now - last < ANSWER_EVERY:
         return
     _ANSWERED[chat_id] = now
     conn = db()
