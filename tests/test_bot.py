@@ -195,6 +195,17 @@ class TestTelegramIsSendOnly(BotCase):
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.sent[0][1], self.sent[1][1])
 
+    def test_first_answer_after_boot_is_not_swallowed(self):
+        # monotonic() считает от старта системы: в первые ANSWER_EVERY секунд
+        # новый чат не должен считаться «только что отвеченным»
+        real = bot.time.monotonic
+        bot.time.monotonic = lambda: 5.0
+        try:
+            self.message("/status")
+        finally:
+            bot.time.monotonic = real
+        self.assertEqual(len(self.sent), 1)
+
     def test_burst_of_commands_is_answered_once(self):
         self.message("/status")
         before = len(self.sent)

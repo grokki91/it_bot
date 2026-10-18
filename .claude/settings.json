@@ -3,11 +3,40 @@
     "allow": [
       "Bash(python3 -m unittest:*)",
       "Bash(python3 digest.py scrub:*)",
-      "Bash(python3 tools/feedcheck.py:*)"
+      "Bash(python3 tools/feedcheck.py:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
     ],
     "deny": [
       "Read(~/.newsdigest/env)",
-      "Read(./env)"
+      "Read(./env)",
+      "Bash(cat ~/.newsdigest/env:*)",
+      "Bash(cat ./env:*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/turn_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/reply_gate.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
