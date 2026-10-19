@@ -20,7 +20,7 @@ from . import breaking, config, sections, subscribers
 from .bot import Worker, drain_backlog, poll_forever
 from .config import CFG, HOME, LOG_FILE, log, tz_label
 from .feedparse import parse_date
-from .pipeline import build_and_send
+from .pipeline import build_group
 from .sources import archive_stale, collect
 from .storage import db, meta_get
 from .telegram import tg_send
@@ -33,29 +33,40 @@ def send_at_minutes() -> int:
     return hour * 60 + minute
 
 
-def digest_job(sub):
-    """Замыкание на конкретного подписчика — у каждого своя тема и время."""
-    chat_id = sub["chat_id"]
+def digest_job(subs):
+    """Плановые выпуски всем, кому пора, — одной задачей.
+
+    Одной, а не по задаче на человека: кандидатов ранжирует модель, и
+    читателям с одинаковым портретом она ответила бы одно и то же. Вместе
+    они ранжируются одним запросом на раздел (`pipeline.build_group`), а
+    время, разделы и история у каждого остаются свои.
+    """
+    chat_ids = [sub["chat_id"] for sub in subs]
 
     def job():
         conn = db()
         try:
-            fresh = subscribers.get(conn, chat_id)
+            fresh = [subscribers.get(conn, chat_id) for chat_id in chat_ids]
         finally:
             conn.close()
-        if fresh is None or fresh["paused"]:    # успел отписаться, пока ждал
+        # успел отписаться или поставить паузу, пока ждал
+        fresh = [sub for sub in fresh if sub is not None and not sub["paused"]]
+        if not fresh:
             return
-        log.info("Время выпуска для %s", chat_id)
-        stats = build_and_send(sub=fresh)
-        if not stats.get("sent"):
+        log.info("Время выпуска для %s",
+                 ", ".join(str(sub["chat_id"]) for sub in fresh))
+        for sub, stats in zip(fresh, build_group(fresh)):
+            if stats is None or stats.get("sent"):
+                continue
             # день не закрываем: новости могут появиться позже. Но и повторять
             # каждую минуту нельзя — ранжирование стоит денег
             conn = db()
             try:
-                subscribers.note_empty(conn, chat_id)
+                subscribers.note_empty(conn, sub["chat_id"])
             finally:
                 conn.close()
-            log.info("Для %s выпуска не набралось — вернусь через час", chat_id)
+            log.info("Для %s выпуска не набралось — вернусь через час",
+                     sub["chat_id"])
     return job
 
 
@@ -127,8 +138,7 @@ def tick(worker) -> None:
     if ready:
         # свежее собираем один раз на всех, дальше выпуск каждому свой
         worker.submit("collect", collect)
-        for sub in ready:
-            worker.submit("digest:%s" % sub["chat_id"], digest_job(sub))
+        worker.submit("digests", digest_job(ready))
         # ...и срочное проверяем тоже. Раньше здесь стоял ранний выход, и в
         # часы планового выпуска проверка не выполнялась вовсе
         worker.submit("breaking", urgent_job(waiting))

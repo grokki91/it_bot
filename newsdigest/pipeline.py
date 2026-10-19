@@ -10,7 +10,8 @@
        разбирает модель одним запросом на весь выпуск (dedup.py);
     3) модель ранжирует кандидаты каждого раздела своим портретом читателя
        (разделы идут параллельно — иначе выпуск из полутора десятков разделов
-       собирался бы минуты);
+       собирался бы минуты). Плановые выпуски ранжируются группой: читателям
+       с одним портретом — один запрос на раздел (`rank_together`);
     4) разделы разбираются по очереди, и всё уже занятое пропускается —
        поэтому одна и та же новость не приходит дважды под двумя вывесками;
     5) карточки пишутся пачками и уходят одним сообщением — оглавлением
@@ -163,7 +164,7 @@ def usable(ranking, shortlist, index):
     return out
 
 
-# --------------------------------------------------------------------- выпуск
+# -------------------------------------------------------------------- выпуск
 def build_and_send(dry_run=False, chat_id=None, sub=None, topics=None,
                    count=None, close_day=True) -> dict:
     """Собирает и отправляет выпуск одному читателю.
@@ -173,11 +174,22 @@ def build_and_send(dry_run=False, chat_id=None, sub=None, topics=None,
     """
     if sub is not None and chat_id is None:
         chat_id = sub["chat_id"]
-    chat_id = str(chat_id or config.TG_CHAT)
-    with subscribers.overlay(sub):
-        plan = list(topics) if topics else sections.plan(sub)
-        per = count if count else per_section_count(plan, sub)
-        return _build_and_send(dry_run, chat_id, plan, per, close_day, sub)
+    reader = Reader(str(chat_id or config.TG_CHAT), sub, topics, count,
+                    close_day)
+    return run_issues([reader], dry_run=dry_run, strict=True)[0]
+
+
+def build_group(subs) -> list:
+    """Плановые выпуски сразу нескольким подписчикам — статистика по порядку.
+
+    Новости собираются один раз на всех, а ранжировать каждому отдельно
+    значило бы платить модели за одних и тех же кандидатов по разу на
+    человека. Поэтому ранжирование здесь общее (`rank_together`), а всё
+    личное — история, вкусы, отбор, карточки — остаётся своим. Выпуск, упавший
+    с ошибкой, соседей не роняет: на его месте None, причина — в логе.
+    """
+    readers = [Reader(str(sub["chat_id"]), sub) for sub in subs]
+    return run_issues(readers, strict=False)
 
 
 def per_section_count(plan, sub) -> int:
@@ -188,37 +200,104 @@ def per_section_count(plan, sub) -> int:
     return max(CFG["max_items"], sections.per_section(sub))
 
 
-def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
-    conn = db()
-    stats = {"candidates": 0, "clusters": 0, "selected": 0, "sent": 0,
-             "cost": 0.0, "sections": 0, "empty": []}
+class Reader:
+    """Один адресат выпуска: что ему собрать и что собрано к ранжированию."""
+
+    def __init__(self, chat_id, sub=None, topics=None, count=None,
+                 close_day=True):
+        self.chat_id, self.sub, self.close_day = chat_id, sub, close_day
+        self.topics, self.count = topics, count
+        self.stats = {"candidates": 0, "clusters": 0, "selected": 0, "sent": 0,
+                      "cost": 0.0, "sections": 0, "empty": []}
+        self.conn = None
+        self.plan, self.mark, self.hint, self.index = [], "", "", None
+        self.shortlists, self.rankings = [], {}
+
+    def done(self, status) -> dict:
+        """Записывает прогон и отпускает базу: дальше этот выпуск не идёт."""
+        log_run(self.conn, "digest", status, self.stats)
+        self.close()
+        return self.stats
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+
+def run_issues(readers, dry_run=False, strict=True) -> list:
+    """Выпуски по шагам на всех сразу: кандидаты → общее ранжирование → выпуск.
+
+    strict — ошибку пробрасывать. Без него она пишется в лог и стоит только
+    того читателя, у кого случилась: плановая рассылка не должна оставлять
+    без выпуска всех из-за одного.
+    """
+    results = [None] * len(readers)
+
+    def guarded(pos, step):
+        reader = readers[pos]
+        try:
+            # личные настройки — на каждом шаге свои: между шагами идут чужие
+            with subscribers.overlay(reader.sub):
+                results[pos] = step(reader)
+        except Exception:  # noqa: BLE001 — см. strict
+            reader.close()
+            if strict:
+                raise
+            log.exception("Выпуск для %s не собрался", reader.chat_id)
+
+    for pos in range(len(readers)):
+        guarded(pos, prepare)
+    ranked = [reader for reader in readers if reader.conn is not None]
+    try:
+        rank_together(ranked)
+    except Exception:  # noqa: BLE001 — см. strict
+        for reader in ranked:
+            reader.close()
+        if strict:
+            raise
+        log.exception("Ранжирование не удалось — выпуски не собраны")
+        return results
+    for pos, reader in enumerate(readers):
+        if reader.conn is not None:
+            guarded(pos, lambda r: finish(r, dry_run))
+    return results
+
+
+def prepare(reader):
+    """Всё личное до ранжирования: разделы, история, вкусы, кандидаты.
+
+    Возвращает статистику, если выпуск кончился, не начавшись, и None, если
+    кандидаты есть и ждут модели.
+    """
+    sub, stats = reader.sub, reader.stats
+    plan = list(reader.topics) if reader.topics else sections.plan(sub)
+    reader.count = reader.count or per_section_count(plan, sub)
+    reader.conn = conn = db()
     # какой выпуск суток собираем, решаем на входе: сборка занимает минуты, и
     # начатый в 20:59 выпуск должен закрыть свой слот, а не следующий
-    mark = subscribers.slot_mark(sub)
-    plan = [topic for topic in plan if topic in PROFILES]
+    reader.mark = subscribers.slot_mark(sub)
+    reader.plan = plan = [topic for topic in plan if topic in PROFILES]
     if not plan:
         log.warning("Не задано ни одного раздела — выпуск не формируется")
-        log_run(conn, "digest", "empty", stats)
-        conn.close()
-        return stats
+        return reader.done("empty")
 
     rows = fresh_rows(conn)
     stats["candidates"] = len(rows)
     if not rows:
         log.warning("Нет свежих материалов — дайджест не формируется")
-        log_run(conn, "digest", "empty", stats)
-        conn.close()
-        return stats
+        return reader.done("empty")
 
     # прескоринг с поправкой на вкусы: реакции читателя решают, кто вообще
     # доедет до модели, — а это самый дешёвый способ учесть обратную связь
-    ordering = weighted_prescore(conn, chat_id)
-    hint = persona_hint(conn, chat_id)
-    index = SentIndex(conn, chat_id)
+    ordering = weighted_prescore(conn, reader.chat_id)
+    reader.hint = persona_hint(conn, reader.chat_id)
+    reader.index = index = SentIndex(conn, reader.chat_id)
 
-    shortlists = [(topic, shortlist_for(rows, topic, index, ordering,
-                                        CFG["section_candidates"]))
-                  for topic in plan]
+    reader.shortlists = shortlists = [
+        (topic, shortlist_for(rows, topic, index, ordering,
+                              CFG["section_candidates"]))
+        for topic in plan]
     # слова развели кандидатов по кластерам, но одно событие всё ещё может
     # стоять в выпуске дважды — под разными заголовками или следом за вчерашним
     # выпуском. Спорное разбирается здесь, ДО ранжирования: платить за оценку
@@ -231,18 +310,23 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     stats["clusters"] = sum(len(s) for _topic, s in shortlists)
     if not stats["clusters"]:
         log.warning("После дедупликации новых новостей не осталось")
-        log_run(conn, "digest", "empty", stats)
-        conn.close()
-        return stats
+        return reader.done("empty")
+    # дальше выпуск ждёт соседей по группе — незаписанное держало бы базу
+    # запертой для них
+    conn.commit()
+    return None
 
-    rankings = rank_all(shortlists, hint, stats)
 
+def finish(reader, dry_run) -> dict:
+    """Отбор по готовым оценкам, карточки и отправка — каждому своё."""
+    conn, chat_id, index = reader.conn, reader.chat_id, reader.index
+    stats, plan, count = reader.stats, reader.plan, reader.count
     blocks, spare = [], []
     # вес раздела применяем только к плановому выпуску: единственный раздел
     # приходит по запросу, и урезать его было бы странно
     scaled = len(plan) > 1
-    for topic, shortlist in shortlists:
-        ranking = rankings.get(topic) or []
+    for topic, shortlist in reader.shortlists:
+        ranking = reader.rankings.get(topic) or []
         limits = limits_for(count_for(topic, count, scaled))
         picked = select(usable(ranking, shortlist, index), shortlist, **limits)
         for group, _score, _cat in picked:
@@ -262,9 +346,7 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
     if not blocks:
         log.warning("Ничего не прошло порог важности %.1f — тихий день",
                     CFG["min_score"])
-        log_run(conn, "digest", "empty", stats)
-        conn.close()
-        return stats
+        return reader.done("empty")
 
     cards = write_cards(conn, blocks, plan, stats)
     mark_earlier(conn, chat_id, index, cards)
@@ -278,9 +360,7 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
         print(preview(cards, info))
         print("\n[dry-run] отправки не было. Примерная стоимость запроса: $%.4f"
               % stats["cost"])
-        log_run(conn, "digest", "dry-run", stats)
-        conn.close()
-        return stats
+        return reader.done("dry-run")
 
     stats["sent"] = send_issue(conn, chat_id, cards, info)
 
@@ -311,13 +391,12 @@ def _build_and_send(dry_run, chat_id, plan, count, close_day, sub=None) -> dict:
                 conn.execute("UPDATE items SET state='sent' WHERE url_hash=?",
                              (item["url_hash"],))
     conn.commit()
-    if close_day:
+    if reader.close_day:
         # метка — «дата#номер выпуска в сутках»: следующий выпуск дня ждёт
         # своего часа, а этот повторно не соберётся
-        subscribers.set_last_digest(conn, chat_id, mark)
+        subscribers.set_last_digest(conn, chat_id, reader.mark)
         meta_set(conn, "last_digest_date", day)
-    log_run(conn, "digest", "ok", stats)
-    conn.close()
+    reader.done("ok")
     log.info("Отправлено: %d новостей из %d разделов, %d сообщение(й), ~$%.4f",
              stats["selected"], stats["sections"], stats["sent"], stats["cost"])
     return stats
@@ -372,6 +451,98 @@ def preview(cards, info) -> str:
                      for name, text in issueview.screens(issue))
 
 
+#: столько шортлистов раздела, самое большее, модель видит одним запросом.
+#: Объединение кандидатов группы растёт с числом читателей, а длинный список
+#: модель оценивает дольше и хуже; лишнее уходит следующим запросом
+POOL_FACTOR = 3
+
+
+def group_key(group) -> tuple:
+    """Опознаёт кластер в шортлистах разных читателей: по составу, а не по
+    объекту — у каждого читателя кластеры собраны заново."""
+    return tuple(sorted(item["url_hash"] for item in group))
+
+
+def rank_together(readers) -> None:
+    """Ранжирует кандидатов сразу на всех читателей с одним портретом.
+
+    Модель видит раздел и портрет читателя, а портрет — это раздел плюс
+    `persona_hint`, подсказка из личных 👍/👎. Читатели с одной подсказкой
+    (чаще всего — пустой) получили бы от модели одно и то же, поэтому в
+    каждом разделе объединение их кандидатов ранжируется одним запросом.
+    Общая шкала внутри раздела от этого только честнее нескольких
+    независимых шкал на тех же кандидатах.
+
+    Оценки каждому раздаются только на его собственный шортлист: кандидат
+    соседа, которого читатель уже видел или который не прошёл его
+    прескоринг, к нему не попадает. Стоимость запроса делится поровну.
+    """
+    teams = {}
+    for reader in readers:
+        teams.setdefault(reader.hint, []).append(reader)
+    for hint, team in teams.items():
+        pools = {}
+        for reader in team:
+            for topic, shortlist in reader.shortlists:
+                groups, ids = pools.setdefault(topic, ([], {}))
+                for group in shortlist:
+                    key = group_key(group)
+                    if key not in ids:
+                        ids[key] = len(groups)
+                        groups.append(group)
+        stats = {"cost": 0.0, "requests": 0}
+        rankings = rank_all([(topic, groups) for topic, (groups, _ids)
+                             in pools.items()], hint, stats)
+        for reader in team:
+            reader.rankings = {
+                topic: project(rankings.get(topic) or [], pools[topic][1],
+                               shortlist)
+                for topic, shortlist in reader.shortlists}
+            reader.stats["cost"] += stats["cost"] / len(team)
+        if len(team) > 1:
+            alone = sum(1 for reader in team
+                        for _topic, shortlist in reader.shortlists if shortlist)
+            log.info("Ранжирование на %d читателей: %d запрос(ов) вместо %d, "
+                     "~$%.4f", len(team), stats["requests"], alone,
+                     stats["cost"])
+
+
+def project(ranking, ids, shortlist) -> list:
+    """Оценки общего пула → оценки одного шортлиста, в его собственном порядке.
+
+    Порядок шортлиста — личный прескоринг читателя: по нему `select` разводит
+    равные оценки, а когда модель не ответила, других оценок и нет.
+    """
+    scored = {}
+    for entry in ranking:
+        try:
+            scored.setdefault(int(entry.get("id", -1)), entry)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    out = []
+    for idx, group in enumerate(shortlist):
+        entry = scored.get(ids.get(group_key(group)))
+        if entry is not None:
+            out.append(dict(entry, id=idx))
+    return out
+
+
+def rank_pool(pool, persona):
+    """Ранжирует кандидатов раздела. Возвращает (оценки, стоимость, запросов)."""
+    size = max(1, int(CFG["section_candidates"]) * POOL_FACTOR)
+    ranking, cost, requests = [], 0.0, 0
+    for start in range(0, len(pool), size):
+        part, part_cost = rank_shortlist(pool[start:start + size], persona)
+        for entry in part:
+            try:
+                ranking.append(dict(entry, id=int(entry.get("id", -1)) + start))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        cost += part_cost
+        requests += 1
+    return ranking, cost, requests
+
+
 def rank_all(shortlists, hint, stats) -> dict:
     """Ранжирует разделы. Каждый — своим портретом читателя, все — параллельно.
 
@@ -383,7 +554,7 @@ def rank_all(shortlists, hint, stats) -> dict:
     def one(job):
         topic, shortlist = job
         persona = PROFILES[topic]["persona"] + hint
-        return topic, rank_shortlist(shortlist, persona)
+        return topic, rank_pool(shortlist, persona)
 
     if len(jobs) <= 1:
         results = [one(job) for job in jobs]
@@ -393,9 +564,10 @@ def rank_all(shortlists, hint, stats) -> dict:
             results = list(pool.map(one, jobs))
 
     out = {}
-    for topic, (ranking, cost) in results:
+    for topic, (ranking, cost, requests) in results:
         out[topic] = ranking
         stats["cost"] += cost
+        stats["requests"] = stats.get("requests", 0) + requests
     return out
 
 
