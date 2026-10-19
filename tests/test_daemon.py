@@ -52,9 +52,9 @@ class TestTick(unittest.TestCase):
 
         self.collected = []
         self.digests = []
-        self._real = (daemon.collect, daemon.build_and_send)
+        self._real = (daemon.collect, daemon.build_group)
         daemon.collect = self.fake_collect
-        daemon.build_and_send = self.fake_digest
+        daemon.build_group = self.fake_digest
 
         conn = storage.db()
         try:
@@ -66,7 +66,7 @@ class TestTick(unittest.TestCase):
             conn.close()
 
     def tearDown(self):
-        daemon.collect, daemon.build_and_send = self._real
+        daemon.collect, daemon.build_group = self._real
         config.TG_CHAT = self._owner
         CFG.update(self.saved)
 
@@ -74,9 +74,9 @@ class TestTick(unittest.TestCase):
         self.collected.append("wire" if wire_only else 1)
         return {}
 
-    def fake_digest(self, sub=None, **kw):
-        self.digests.append(sub["chat_id"])
-        return {"sent": 1}
+    def fake_digest(self, subs):
+        self.digests.extend(sub["chat_id"] for sub in subs)
+        return [{"sent": 1} for _sub in subs]
 
     def mark_collected(self, hours_ago):
         conn = storage.db()
@@ -144,13 +144,14 @@ class TestTick(unittest.TestCase):
         daemon.tick(self.worker)
         # срочное проверяется и в час выпуска: раньше здесь стоял ранний выход
         self.assertEqual(self.worker.names(),
-                         ["collect", "digest:%s" % self.OWNER, "breaking"])
+                         ["collect", "digests", "breaking"])
 
         self.worker.run_all()
         self.assertEqual(self.collected, [1])
         self.assertEqual(self.digests, [self.OWNER])
 
-    def test_every_due_subscriber_gets_his_own_job(self):
+    def test_due_subscribers_share_one_job(self):
+        """Одна задача на всех, кому пора: ранжирование у них общее."""
         CFG["send_at"] = "00:01"
         conn = storage.db()
         try:
@@ -160,8 +161,10 @@ class TestTick(unittest.TestCase):
         finally:
             conn.close()
         daemon.tick(self.worker)
-        self.assertIn("digest:800", self.worker.names())
-        self.assertNotIn("digest:900", self.worker.names())
+        self.assertEqual(self.worker.names().count("digests"), 1)
+        self.worker.run_all()
+        self.assertIn("800", self.digests)
+        self.assertNotIn("900", self.digests)
 
     def test_paused_subscriber_is_skipped_even_after_queueing(self):
         CFG["send_at"] = "00:01"
@@ -199,17 +202,17 @@ class TestTick(unittest.TestCase):
             conn.close()
         again = FakeWorker()
         daemon.tick(again)
-        self.assertIn("digest:%s" % self.OWNER, again.names())
+        self.assertIn("digests", again.names())
 
     def test_empty_digest_backs_off_for_an_hour(self):
         CFG["send_at"] = "00:01"
-        daemon.build_and_send = lambda sub=None, **kw: {"sent": 0}
+        daemon.build_group = lambda subs: [{"sent": 0} for _s in subs]
         daemon.tick(self.worker)
         self.worker.run_all()
 
         again = FakeWorker()
         daemon.tick(again)
-        self.assertNotIn("digest:%s" % self.OWNER, again.names())
+        self.assertNotIn("digests", again.names())
 
         conn = storage.db()
         try:                              # час прошёл — пробуем снова
@@ -220,7 +223,7 @@ class TestTick(unittest.TestCase):
             conn.close()
         third = FakeWorker()
         daemon.tick(third)
-        self.assertIn("digest:%s" % self.OWNER, third.names())
+        self.assertIn("digests", third.names())
 
 
 if __name__ == "__main__":

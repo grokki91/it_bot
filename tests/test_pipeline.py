@@ -81,6 +81,16 @@ class PipelineCase(unittest.TestCase):
         "Curl отказался от поддержки gopher",
     ]
 
+    def subscriber(self, chat_id, **fields):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, chat_id, role="member")
+            for field, value in fields.items():
+                subscribers.set_field(conn, chat_id, field, value)
+            return subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
+
     def source_ids(self, topic="ai"):
         """Материал попадает в выпуск, только если его источник есть в теме."""
         return [f[0] for f in PROFILES[topic]["feeds"]]
@@ -335,16 +345,6 @@ class TestLanguage(PipelineCase):
 class TestPerSubscriber(PipelineCase):
     """У каждого подписчика своя тема, свои лимиты и своя история."""
 
-    def subscriber(self, chat_id, **fields):
-        conn = storage.db()
-        try:
-            subscribers.add(conn, chat_id, role="member")
-            for field, value in fields.items():
-                subscribers.set_field(conn, chat_id, field, value)
-            return subscribers.get(conn, chat_id)
-        finally:
-            conn.close()
-
     def test_history_is_personal(self):
         self.fill(5)
         first = self.subscriber("a")
@@ -402,6 +402,88 @@ class TestPerSubscriber(PipelineCase):
             self.assertEqual(subscribers.due(conn), [])
         finally:
             conn.close()
+
+
+class TestGroup(PipelineCase):
+    """Плановые выпуски группой: ранжирование общее, всё остальное — своё."""
+
+    def urls(self, chat_id):
+        conn = storage.db()
+        try:
+            return [r["url"] for r in conn.execute(
+                "SELECT url FROM sent WHERE chat_id=?", (chat_id,))]
+        finally:
+            conn.close()
+
+    def test_same_sections_share_one_request(self):
+        self.fill(5)
+        subs = [self.subscriber(chat) for chat in ("a", "b", "c")]
+        results = pipeline.build_group(subs)
+        self.assertEqual(len(self.ranked_personas), 1)       # а не три
+        self.assertEqual([r["sent"] for r in results], [1, 1, 1])
+        # замер «до»: те же трое по одному — запрос на каждого, и дороже
+        alone = [self.subscriber(chat) for chat in ("x", "y", "z")]
+        before = sum(pipeline.build_and_send(sub=sub)["cost"] for sub in alone)
+        self.assertEqual(len(self.ranked_personas), 4)
+        self.assertLess(sum(r["cost"] for r in results), before)
+
+    def test_personal_history_splits_the_issue(self):
+        self.fill(3)
+        first = self.subscriber("a")
+        pipeline.build_and_send(sub=first)            # «a» уже видел три
+        seen = set(self.urls("a"))
+        self.fill(6)
+        del self.ranked_personas[:]
+        pipeline.build_group([first, self.subscriber("b")])
+        self.assertEqual(len(self.ranked_personas), 1)
+        fresh_a = set(self.urls("a")) - seen
+        got_b = set(self.urls("b"))
+        self.assertNotEqual(fresh_a, got_b)            # выпуски различаются
+        # личный дедуп не протёк: «a» не получил виденного, а «b» получил
+        # и то, что видел «a», — чужая история его не касается
+        self.assertFalse(fresh_a & seen)
+        self.assertEqual(len(self.urls("a")), len(set(self.urls("a"))))
+        self.assertTrue(seen <= got_b)
+
+    def test_different_tastes_rank_separately(self):
+        self.fill(3)
+        conn = storage.db()
+        feedback.record(conn, "a", "x", feedback.UP,
+                        {"title": "Прошлая любимая новость", "source_id": "s"})
+        conn.close()
+        pipeline.build_group([self.subscriber("a"), self.subscriber("b")])
+        self.assertEqual(len(self.ranked_personas), 2)
+        self.assertEqual(sum("Прошлая любимая новость" in p
+                             for p in self.ranked_personas), 1)
+
+    def test_one_failure_does_not_stop_the_rest(self):
+        self.fill(3)
+        real = pipeline.send_issue
+
+        def picky(conn, chat_id, cards, info):
+            if chat_id == "a":
+                raise RuntimeError("Telegram недоступен")
+            return real(conn, chat_id, cards, info)
+
+        pipeline.send_issue = picky
+        try:
+            results = pipeline.build_group([self.subscriber("a"),
+                                            self.subscriber("b")])
+        finally:
+            pipeline.send_issue = real
+        self.assertIsNone(results[0])
+        self.assertEqual(results[1]["sent"], 1)
+
+    def test_big_pool_is_split(self):
+        saved = CFG["section_candidates"]
+        CFG["section_candidates"] = 2
+        try:
+            groups = [[{"url_hash": str(i)}] for i in range(7)]
+            ranking, _cost, requests = pipeline.rank_pool(groups, "читатель")
+        finally:
+            CFG["section_candidates"] = saved
+        self.assertEqual(requests, 2)                  # 6 + 1
+        self.assertEqual(sorted(e["id"] for e in ranking), list(range(7)))
 
 
 class TestOneEventTwoNotes(PipelineCase):
