@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 
 from . import config, translate
 from .config import DB_FILE, HOME, log, now_iso
@@ -965,9 +966,28 @@ def remember_cards(conn, pairs) -> None:
     conn.commit()
 
 
+#: базы, у которых в этом процессе уже сделаны миграции и схема. Ключ — путь, а
+#: не флаг: тесты (и `ND_HOME`) подменяют `DB_FILE` на лету, и у каждой базы
+#: своя очередь на инициализацию
+_ready: set = set()
+_ready_lock = threading.Lock()
+
+
+def init_schema(conn) -> None:
+    """Миграции, схема и поисковый индекс — то, что нужно сделать один раз."""
+    upgrade(conn)                 # сначала чиним старое, потом досоздаём новое
+    conn.executescript(SCHEMA)
+    add_search_index(conn)        # индекс стоит над схемой — значит, после неё
+
+
 def db() -> sqlite3.Connection:
     HOME.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_FILE), timeout=30)
+    key = str(DB_FILE)
+    if key in _ready and not DB_FILE.exists():
+        # базу удалили из-под живого процесса: схему надо завести заново
+        with _ready_lock:
+            _ready.discard(key)
+    conn = sqlite3.connect(key, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -975,9 +995,18 @@ def db() -> sqlite3.Connection:
     # INSERT OR REPLACE в `sent` без этого не снимает с индекса старую строку:
     # без рекурсии REPLACE молча пропускает триггеры удаления
     conn.execute("PRAGMA recursive_triggers=ON")
-    upgrade(conn)                 # сначала чиним старое, потом досоздаём новое
-    conn.executescript(SCHEMA)
-    add_search_index(conn)        # индекс стоит над схемой — значит, после неё
+    if key not in _ready:
+        # демон многонитевой: остальные ждут на замке, пока первое соединение
+        # закончит миграции, и не видят полупереехавшую базу. Упавшая
+        # инициализация флаг не ставит — следующее соединение попробует снова
+        with _ready_lock:
+            if key not in _ready:
+                try:
+                    init_schema(conn)
+                except BaseException:
+                    conn.close()
+                    raise
+                _ready.add(key)
     return conn
 
 

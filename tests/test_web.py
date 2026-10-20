@@ -1560,6 +1560,11 @@ class TestSearchIndex(WebCase):
         storage.SEARCH_SCHEMA = ("CREATE VIRTUAL TABLE IF NOT EXISTS "
                                  "нет_такого USING fts_которого_нет(text);")
         self.addCleanup(setattr, storage, "SEARCH_SCHEMA", saved)
+        # схема идёт один раз на процесс: «сборку без FTS5» она увидит только
+        # при новом запуске, а следующему тесту индекс надо завести заново
+        key = str(storage.DB_FILE)
+        storage._ready.discard(key)
+        self.addCleanup(storage._ready.discard, key)
         storage.db().close()
 
 
