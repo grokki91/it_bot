@@ -539,6 +539,7 @@ class TestSchedule(BotCase):
             conn.commit()
         finally:
             conn.close()
+        storage._ready.discard(str(storage.DB_FILE))   # новый запуск процесса
         conn = storage.db()                # миграция идёт при открытии базы
         try:
             self.assertEqual(subscribers.get(conn, self.OWNER)["last_digest"],

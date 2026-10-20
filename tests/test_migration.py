@@ -74,6 +74,15 @@ class TestUpgradeFrom20(unittest.TestCase):
 
     def tearDown(self):
         storage.DB_FILE, storage.HOME, config.TG_CHAT = self._saved
+        storage._ready.discard(str(self.db_file))
+
+    def restart(self):
+        """Новый запуск процесса: миграции и схема идут заново.
+
+        `db()` отрабатывает их один раз на процесс, а тесты ниже проверяют
+        именно то, что происходит при следующем запуске на уже живой базе.
+        """
+        storage._ready.discard(str(self.db_file))
 
     def test_history_survives_and_belongs_to_owner(self):
         conn = storage.db()
@@ -154,6 +163,7 @@ class TestUpgradeFrom20(unittest.TestCase):
             storage.meta_set(conn, "search_index", "прошлая версия")
         finally:
             conn.close()
+        self.restart()
         conn = storage.db()
         try:
             self.assertEqual(conn.execute(
@@ -166,6 +176,7 @@ class TestUpgradeFrom20(unittest.TestCase):
     def test_index_is_not_rebuilt_on_every_open(self):
         """Переиндексация — дело разовое: она читает всю историю целиком."""
         storage.db().close()
+        self.restart()
         conn = storage.db()
         try:
             conn.execute("INSERT INTO sent_fts(rowid, text) "
@@ -173,6 +184,7 @@ class TestUpgradeFrom20(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+        self.restart()
         conn = storage.db()
         try:
             self.assertEqual(conn.execute(
@@ -187,6 +199,7 @@ class TestUpgradeFrom20(unittest.TestCase):
         останься он на месте, упала бы вся запись истории, а не поиск.
         """
         storage.db().close()
+        self.restart()
         saved = storage.SEARCH_SCHEMA
         storage.SEARCH_SCHEMA = ("CREATE VIRTUAL TABLE IF NOT EXISTS "
                                  "нет_такого USING fts_которого_нет(text);")
@@ -211,6 +224,7 @@ class TestUpgradeFrom20(unittest.TestCase):
     def test_index_returns_with_fts5(self):
         """FTS5 вернулся — индекс собирается заново вместе с триггерами."""
         self.test_history_stays_writable_without_fts5()
+        self.restart()
         conn = storage.db()
         try:
             self.assertTrue(storage.searchable(conn))
@@ -223,6 +237,7 @@ class TestUpgradeFrom20(unittest.TestCase):
 
     def test_migration_is_idempotent(self):
         storage.db().close()
+        self.restart()
         conn = storage.db()
         try:
             self.assertEqual(
@@ -307,6 +322,95 @@ class TestUpgradeFrom20(unittest.TestCase):
             self.assertEqual(storage.meta_get(conn, "extra_chats"), "")
         finally:
             conn.close()
+
+
+class TestInitOncePerProcess(unittest.TestCase):
+    """Миграции и схема идут один раз на процесс, а не на каждое соединение."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp(prefix="ndonce-"))
+        self.db_file = self.home / "digest.db"
+        self._saved = (storage.DB_FILE, storage.HOME, storage.init_schema)
+        storage.DB_FILE, storage.HOME = self.db_file, self.home
+        self.calls = []
+        real = storage.init_schema
+
+        def counted(conn):
+            self.calls.append(1)
+            real(conn)
+
+        storage.init_schema = counted
+
+    def tearDown(self):
+        storage.DB_FILE, storage.HOME, storage.init_schema = self._saved
+        storage._ready.discard(str(self.db_file))
+
+    def test_second_connection_skips_init(self):
+        for _ in range(3):
+            storage.db().close()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_bare_connection_keeps_pragmas(self):
+        storage.db().close()
+        conn = storage.db()
+        try:
+            self.assertEqual(conn.execute("PRAGMA recursive_triggers").fetchone()[0], 1)
+            self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+            self.assertIsInstance(conn.row_factory, type(sqlite3.Row))
+        finally:
+            conn.close()
+
+    def test_threads_init_once(self):
+        import threading
+        errors = []
+
+        def work():
+            try:
+                storage.db().close()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_other_database_gets_its_own_init(self):
+        storage.db().close()
+        other = Path(tempfile.mkdtemp(prefix="ndonce2-"))
+        storage.DB_FILE, storage.HOME = other / "digest.db", other
+        try:
+            storage.db().close()
+            self.assertEqual(len(self.calls), 2)
+        finally:
+            storage._ready.discard(str(other / "digest.db"))
+
+    def test_deleted_database_is_rebuilt(self):
+        storage.db().close()
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(self.db_file) + suffix).unlink(missing_ok=True)
+        conn = storage.db()
+        try:
+            self.assertEqual(len(self.calls), 2)
+            conn.execute("SELECT 1 FROM sent LIMIT 1")  # таблица на месте
+        finally:
+            conn.close()
+
+    def test_failed_init_is_retried(self):
+        def boom(conn):
+            self.calls.append(1)
+            raise sqlite3.OperationalError("boom")
+
+        storage.init_schema = boom
+        with self.assertRaises(sqlite3.OperationalError):
+            storage.db()
+        self.assertNotIn(str(self.db_file), storage._ready)
+        storage.init_schema = lambda conn: self.calls.append(2)
+        storage.db().close()
+        self.assertEqual(self.calls, [1, 2])
 
 
 if __name__ == "__main__":
