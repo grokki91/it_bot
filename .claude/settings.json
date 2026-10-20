@@ -4,6 +4,7 @@
       "Bash(python3 -m unittest:*)",
       "Bash(python3 digest.py scrub:*)",
       "Bash(python3 tools/feedcheck.py:*)",
+      "Bash(python3 tools/prcheck.py:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)"
