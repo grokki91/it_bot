@@ -45,8 +45,6 @@ from .telegram import TG_LIMIT
 #: Пять — столько читают с первого экрана, не листая; остальное главное
 #: раскрывается кнопкой и не теряется
 TOP_SHOWN, TOP_MAX = 5, 10
-#: разделов в оглавлении, пока не нажали «все разделы»
-SECTIONS_SHOWN = 6
 #: кнопок разделов в ряду. Столбик кнопок во всю ширину вытягивал оглавление
 #: в девять одинаковых полос — длиннее самих новостей над ним. В три ряда
 #: имена уже не влезают, в два — влезают целиком (profiles.short)
@@ -181,9 +179,8 @@ def top_entry(card) -> str:
     what = sentence(card.get("what"))
     if what:
         lines.append(esc(what))
-    lines.append('🔗 <a href="%s">%s</a> · ⭐ %.1f'
-                 % (esc(card["url"]), esc(card["source"]),
-                    float(card.get("score") or 0)))
+    lines.append('🔗 <a href="%s">%s</a>'
+                 % (esc(card["url"]), esc(card["source"])))
     return "\n".join(lines)
 
 
@@ -239,23 +236,13 @@ def grid(buttons, size=SECTIONS_ROW) -> list:
     return [buttons[at:at + size] for at in range(0, len(buttons), size)]
 
 
-def folded(blocks) -> bool:
-    """Прячет ли оглавление часть разделов за «☰ Все разделы».
-
-    Кнопка сама занимает целый ряд, поэтому прятать стоит, только если это
-    экономит ряды: восемь разделов — те же четыре ряда, что шесть и «☰».
-    """
-    def height(count):
-        return -(-count // SECTIONS_ROW)
-    return height(len(blocks)) > height(SECTIONS_SHOWN) + 1
-
-
 def hub_keyboard(issue, ident, shown, name=HOME) -> list:
-    """Кнопки оглавления: «ещё главное», сетка разделов, «все разделы» и
-    нижний ряд — «Мои темы» и «Поделиться».
+    """Кнопки оглавления: «ещё главное», «все темы» и нижний ряд — «Мои
+    темы» и «Поделиться».
 
-    Разделы стоят по два в ряд, служебные кнопки — своими рядами сверху и
-    снизу: так сетка читается как меню, а не как девять одинаковых полос.
+    Сетка разделов спрятана за «☰ Все темы»: под главным за день она
+    перегружала экран, а читатель чаще всего листает только главное. Открытая,
+    она стоит по два в ряд — как меню, а не как девять одинаковых полос.
     """
     rows = []
     left = len(top_cards(issue)) - shown
@@ -268,14 +255,14 @@ def hub_keyboard(issue, ident, shown, name=HOME) -> list:
                       "callback_data": route(ident, HOME)}])
 
     blocks = sections_of(issue)
-    wide, hidden = name == SECS, folded(blocks)
-    limit = SECTIONS_SHOWN if hidden and not wide else len(blocks)
-    rows += grid([section_button(ident, block["topic"])
-                  for block in blocks[:limit]])
-    if hidden:
-        rows.append([{"text": "⬆️ Свернуть разделы",
+    wide = name == SECS
+    if wide:
+        rows += grid([section_button(ident, block["topic"])
+                      for block in blocks])
+    if len(blocks) > 1:
+        rows.append([{"text": "⬆️ Свернуть темы",
                       "callback_data": route(ident, HOME)} if wide else
-                     {"text": "☰ Все разделы",
+                     {"text": "☰ Все темы",
                       "callback_data": route(ident, SECS)}])
     # порядок разделов читатель правит отсюда: в чате команд нет, а место,
     # где на этот порядок смотрят, — ровно это оглавление
@@ -517,7 +504,7 @@ def screens(issue, ident=0) -> list:
     """Все экраны выпуска подряд: [(имя, текст)] — для `--dry-run` в терминале.
 
     Разделы печатаются целиком, а оглавление — со строкой о пустых разделах:
-    в чате она ждёт за кнопкой «☰ Все разделы», а в терминале кнопок нет.
+    в чате она ждёт за кнопкой «☰ Все темы», а в терминале кнопок нет.
     """
     blocks = sections_of(issue)
     full = [(label(block["topic"]), screen(issue, ident, ALL, block["topic"])[0])

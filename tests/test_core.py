@@ -329,6 +329,12 @@ class TestRender(unittest.TestCase):
         self.assertIn("<b>Заголовок 0</b>", text)
         self.assertNotIn("📌", text)
 
+    def test_news_carry_no_rating(self):
+        """Оценка отбора — не для читателя: ни в выпуске, ни в срочном."""
+        card, group, score, _cat = self.cards(1)[0]
+        self.assertNotIn("⭐", render.breaking_card(card, group, score))
+        self.assertNotIn("⭐", render.fit_blocks(self.blocks(1), 100)[0][0])
+
     def test_breaking_says_what_is_new_in_it(self):
         """Событие то же, что читатель уже видел, — и первым делом карточка
         говорит, чем оно отличается: сличать два сообщения не его работа."""

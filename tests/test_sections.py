@@ -295,9 +295,10 @@ class DigestCase(unittest.TestCase):
         return "\n".join(t for _chat, t, _kb in self.sent)
 
     def buttons(self):
-        """Подписи всех кнопок отправленного: названия разделов теперь там."""
-        return " ".join(b["text"] for _chat, _t, kb in self.sent
-                        for row in (kb or []) for b in row)
+        """Подписи кнопок отправленного оглавления: разделы там — за «☰ Все
+        темы», поэтому берём раскрытый экран."""
+        keyboard = self.screen(issueview.SECS)[1]
+        return " ".join(b["text"] for row in keyboard for b in row)
 
     def screen(self, name=issueview.HOME, arg=""):
         """Экран выпуска, который читатель откроет кнопкой."""
@@ -327,10 +328,12 @@ class TestMorningDigest(DigestCase):
         self.assertEqual(stats["sections"], 3)
         self.assertEqual(stats["selected"], 6)
 
-        # выпуск приходит одним сообщением-оглавлением, а разделы читатель
-        # открывает кнопками — там же и их названия (короткие: кнопка в
-        # пол-экрана)
+        # выпуск приходит одним сообщением-оглавлением без разделов, а
+        # читатель открывает их кнопкой «☰ Все темы» — там и их названия
+        # (короткие: кнопка в пол-экрана)
         self.assertEqual(len(self.sent), 1)
+        self.assertNotIn(short("ai"), " ".join(
+            b["text"] for row in self.sent[0][2] for b in row))
         for topic in self.PLAN:
             self.assertIn(short(topic), self.buttons())
 
