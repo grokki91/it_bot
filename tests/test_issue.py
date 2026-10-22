@@ -94,7 +94,7 @@ class TestHub(unittest.TestCase):
     def test_sections_are_a_grid_without_counts(self):
         snapshot = issue(5, 3, 4)
         _text, shown = issueview.hub_text(snapshot)
-        keyboard = issueview.hub_keyboard(snapshot, 12, shown)
+        keyboard = issueview.hub_keyboard(snapshot, 12, shown, issueview.SECS)
         sections = [[b["text"] for b in row] for row in keyboard
                     if row[0]["callback_data"].startswith("nav:12:sec:")]
         self.assertEqual(sections, [["🤖 ИИ и технологии", "🩺 Медицина"],
@@ -110,44 +110,45 @@ class TestHub(unittest.TestCase):
         а в самом разделе имя полное."""
         blocks = [("hardware", cards(1, "hardware")), ("ai", cards(1, "ai"))]
         snapshot = issueview.snapshot(blocks, render.issue_info(blocks, 100))
-        labels = [b["text"] for row in issueview.hub_screen(snapshot, 3)[1]
-                  for b in row]
+        labels = [b["text"] for row in issueview.hub_screen(
+            snapshot, 3, issueview.SECS)[1] for b in row]
         self.assertIn("🖥 Железо", labels)
         text = issueview.screen(snapshot, 3, issueview.SEC, "hardware")[0]
         self.assertIn("<b>Компьютерное железо</b>", text)
 
-    def test_menu_is_six_rows_instead_of_nine(self):
-        """Десять разделов и десять главных новостей: «ещё главное», три ряда
-        разделов, «все разделы», «Мои темы» с «Поделиться». Столбиком было
-        девять рядов во всю ширину."""
-        keyboard = issueview.hub_screen(issue(*([1] * 10)), 1)[1]
-        self.assertEqual(len(keyboard), 6)
-        self.assertEqual([len(row) for row in keyboard], [1, 2, 2, 2, 1, 2])
-
-    def test_rest_of_the_sections_hides_behind_one_button(self):
+    def test_menu_has_no_sections_until_all_topics_is_pressed(self):
+        """Десять разделов и десять главных новостей: «ещё главное», «все
+        темы», «Мои темы» с «Поделиться» — три ряда вместо девяти."""
         snapshot = issue(*([1] * 10))
-        text, keyboard = issueview.hub_screen(snapshot, 1)
-        sections = [b for row in keyboard for b in row
-                    if b["callback_data"].startswith("nav:1:sec:")]
-        self.assertEqual(len(sections), issueview.SECTIONS_SHOWN)
-        # последняя строка оглавления — «Мои темы», «все разделы» перед ней
-        self.assertEqual(keyboard[-1][0]["callback_data"], "pref:open::1")
-        self.assertEqual(keyboard[-2], [{"text": "☰ Все разделы",
+        keyboard = issueview.hub_screen(snapshot, 1)[1]
+        self.assertEqual([len(row) for row in keyboard], [1, 1, 2])
+        data = [b["callback_data"] for row in keyboard for b in row]
+        self.assertFalse([d for d in data if d.startswith("nav:1:sec:")])
+        self.assertEqual(keyboard[-2], [{"text": "☰ Все темы",
                                          "callback_data": "nav:1:secs"}])
-        # «все разделы» показывает все разделы и умеет свернуться обратно
+        self.assertEqual(keyboard[-1][0]["callback_data"], "pref:open::1")
+
+    def test_all_topics_opens_the_grid_and_folds_back(self):
+        snapshot = issue(*([1] * 10))
         wide = issueview.hub_screen(snapshot, 1, issueview.SECS)[1]
         self.assertEqual(len([b for row in wide for b in row
                               if b["callback_data"].startswith("nav:1:sec:")]), 10)
-        self.assertEqual(wide[-2][0]["callback_data"], "nav:1:home")
-        self.assertTrue(text)
+        self.assertEqual(wide[-2], [{"text": "⬆️ Свернуть темы",
+                                     "callback_data": "nav:1:home"}])
 
-    def test_sections_hide_only_if_that_saves_rows(self):
-        """Восемь разделов — те же четыре ряда, что шесть и «☰ Все разделы»:
-        прятать два раздела за кнопкой незачем."""
-        keyboard = issueview.hub_screen(issue(*([1] * 8)), 1)[1]
+    def test_few_sections_are_hidden_too(self):
+        keyboard = issueview.hub_screen(issue(2, 2), 1)[1]
         data = [b["callback_data"] for row in keyboard for b in row]
-        self.assertEqual(len([d for d in data if d.startswith("nav:1:sec:")]), 8)
-        self.assertNotIn("nav:1:secs", data)
+        self.assertFalse([d for d in data if d.startswith("nav:1:sec:")])
+        self.assertIn("nav:1:secs", data)
+
+    def test_no_ratings_in_the_issue(self):
+        """⭐ 8.5 под новостью — внутренняя оценка отбора, читателю она ничего
+        не говорит."""
+        snapshot = issue(3, 2)
+        self.assertNotIn("⭐", issueview.hub_text(snapshot)[0])
+        self.assertNotIn("⭐", issueview.screen(
+            snapshot, 1, issueview.SEC, "ai")[0])
 
     def test_more_top_news_opens_the_rest(self):
         snapshot = issue(6, 6)

@@ -363,10 +363,10 @@ def cmd_more(ctx):
                 "пришлите /digest или дождитесь планового.")
     lines = ["📎 <b>Ещё из вчерашнего отбора</b>", ""]
     for row in rows:
-        lines.append('• <a href="%s">%s</a> — %s · ⭐ %.1f'
+        lines.append('• <a href="%s">%s</a> — %s'
                      % (esc(row["url"]),
                         esc(translate.known(ctx.conn, row["title"])),
-                        esc(row["source_id"]), row["score"]))
+                        esc(row["source_id"])))
     return "\n".join(lines)
 
 

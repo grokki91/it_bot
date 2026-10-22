@@ -141,8 +141,8 @@ def card_text(facts, trim=0, when=False) -> str:
     насколько свежее), в сплошной ленте только удлиняет строку.
     """
     also = " · " + esc(", ".join(facts.get("also") or ())) if facts.get("also") else ""
-    link = '🔗 <a href="%s">%s</a>%s · ⭐ %.1f' % (
-        esc(facts["url"]), esc(facts["source"]), also, facts["score"])
+    link = '🔗 <a href="%s">%s</a>%s' % (
+        esc(facts["url"]), esc(facts["source"]), also)
     if when and facts.get("at"):
         link += " · " + esc(facts["at"])
     head = "<b>%s</b>" % esc(facts["title"])
@@ -351,8 +351,8 @@ def breaking_card(card, group, score, gain=""):
     if why:
         lines.append("💡 " + esc(why))
     confirm = " · подтверждают: " + esc(", ".join(others)) if others else ""
-    lines.append('🔗 <a href="%s">%s</a>%s · ⭐ %.1f'
-                 % (esc(main["url"]), esc(main["source_id"]), confirm, score))
+    lines.append('🔗 <a href="%s">%s</a>%s'
+                 % (esc(main["url"]), esc(main["source_id"]), confirm))
     lines.append("<i>Остальное придёт в очередном выпуске.</i>")
     return "\n".join(lines)
 
@@ -370,9 +370,8 @@ def alert_bulletin(rows) -> str:
         what = str(row["what"] or "").strip()
         if what:
             lines.append(esc(what))
-        lines.append('🔗 <a href="%s">%s</a> · ⭐ %.1f'
-                     % (esc(row["url"]), esc(row["source_id"]),
-                        float(row["urgency"] or 0)))
+        lines.append('🔗 <a href="%s">%s</a>'
+                     % (esc(row["url"]), esc(row["source_id"])))
         lines.append("")
     lines.append("<i>Подробности — в очередном выпуске.</i>")
     return "\n".join(lines)
