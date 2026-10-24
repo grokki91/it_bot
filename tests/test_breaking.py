@@ -284,7 +284,7 @@ class TestLanguage(BreakingCase):
         translate.translate_texts = self._real_tr
         super().tearDown()
 
-    def fake_translate(self, texts, language):
+    def fake_translate(self, texts, language, **_kw):
         self.asked.extend(texts)
         return ({i: "Русский перевод строки %d" % i for i in range(len(texts))},
                 {"in": 5, "out": 5})

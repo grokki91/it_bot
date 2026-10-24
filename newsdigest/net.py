@@ -46,16 +46,18 @@ def _open(url: str, data=None, headers=None, timeout=30, method=None):
     return 200, raw
 
 
-def http_get(url: str, timeout=None, ua=None):
+def http_get(url: str, timeout=None, ua=None, headers=None):
     """Возвращает (status, bytes). Исключения сети наружу не выпускает.
 
     Сетевой сбой — таймаут, DNS, TLS — это status 0 с пустым телом: вызывающему
     незачем отличать «сервер ответил плохо» от «до сервера не дошли», он в обоих
     случаях пропускает источник. Причину пишем в debug, чтобы не потерять.
     """
-    headers = {"User-Agent": ua} if ua else None
+    hdr = dict(headers or {})
+    if ua:
+        hdr["User-Agent"] = ua
     try:
-        return _open(url, headers=headers, timeout=timeout or CFG["http_timeout"])
+        return _open(url, headers=hdr or None, timeout=timeout or CFG["http_timeout"])
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read()

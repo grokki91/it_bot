@@ -541,7 +541,8 @@ def ask_model(conn, texts) -> dict:
             if translate.key_of(text) not in _stubborn][:TRANSLATE_LIMIT]
     if not part:
         return {}
-    ready, _cost = translate.translated(conn, part)
+    # страница ждёт ответа: бесплатному маршруту с его таймаутами тут не место
+    ready, _cost = translate.translated(conn, part, route="paid")
     if not ready:
         # модель недоступна: молчим минуты, но строки не запоминаем — когда
         # она вернётся, лента доведёт их до языка выпуска сама

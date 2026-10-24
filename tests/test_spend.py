@@ -12,7 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
-from newsdigest import cli, config, llm, spend, storage  # noqa: E402
+from newsdigest import classify, cli, config, llm, spend, storage  # noqa: E402
 from newsdigest.config import CFG  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
 
@@ -86,24 +86,30 @@ class TestRecording(SpendCase):
     def test_every_caller_is_labelled(self):
         """Вызов без метки попал бы в «прочее», и разбивка перестала бы
         показывать, куда уходят деньги."""
-        seen = []
-        real = llm.llm_json
+        seen, expected = [], []
+        real, real_classify = llm.llm_json, classify.llm_json
 
-        def spy(system, user, model, max_tokens=3000, kind=""):
+        def spy(system, user, model, max_tokens=3000, kind="", **kwargs):
             seen.append(kind)
+            expected.append(list(kwargs.get("expect", ())))
             return {"items": []}, {"in": 0, "out": 0, "cached": 0}
-        llm.llm_json = spy
+        llm.llm_json = classify.llm_json = spy
+        group = [{"title": "t", "summary": "s", "source_id": "src", "tier": 1,
+                  "published_at": "", "url": "https://example.com/a"}]
         try:
-            llm.rank_clusters([], "p")
-            llm.rate_urgency([], "p")
+            llm.rank_clusters([group], "p")
+            llm.rate_urgency([group], "p")
             llm.judge_duplicates([("a", "b")])
             llm.judge_claims([{"title": "t"}])
-            llm.summarize_batch([], "p", "русский")
+            llm.summarize_batch([(group, 5, "")], "p", "русский", offset=3)
             llm.translate_texts(["x"], "русский")
+            classify.ask_model([{"title": "t", "summary": "s"}], ["it"])
         finally:
-            llm.llm_json = real
+            llm.llm_json, classify.llm_json = real, real_classify
         self.assertEqual(seen, ["rank", "urgency", "dupes", "claims",
-                                "cards", "translate"])
+                                "cards", "translate", "classify"])
+        # без `expect` бесплатный ответ не с чем сверить на полноту
+        self.assertEqual(expected, [[0], [0], [0], [0], [3], [0], [0]])
         known = {kind for kind, _label in spend.LABELS}
         self.assertTrue(set(seen) <= known)
 

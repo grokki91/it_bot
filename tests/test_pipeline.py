@@ -261,7 +261,7 @@ class TestLanguage(PipelineCase):
         translate.translate_texts = self._real_tr
         super().tearDown()
 
-    def fake_translate(self, texts, language):
+    def fake_translate(self, texts, language, **_kw):
         self.asked.extend(texts)
         return ({i: self.TRANSLATED % i for i in range(len(texts))},
                 {"in": 10, "out": 5})

@@ -20,7 +20,7 @@ Python 3.8+, без внешних зависимостей, всё хранит
 
 ```bash
 python3 digest.py setup       # мастер: токен бота, chat_id, ключ DeepSeek, время, TZ
-python3 digest.py doctor      # проверить Telegram, DeepSeek, базу, часовой пояс
+python3 digest.py doctor      # проверить Telegram, DeepSeek, OpenRouter, базу, часовой пояс
 python3 digest.py run --dry-run   # собрать выпуск и показать в терминале
 python3 digest.py daemon      # рабочий режим
 ```
@@ -82,7 +82,7 @@ sudo systemctl enable --now newsdigest-update.timer
 | Команда | Что делает |
 |---------|-----------|
 | `setup` / `chatid` | Первичная настройка / переопределить chat_id |
-| `doctor` | Диагностика подключений |
+| `doctor` | Диагностика подключений: Telegram, DeepSeek (с рассуждениями), OpenRouter по каждой бесплатной модели |
 | `run` | Собрать и отправить выпуск сейчас |
 | `run --dry-run` | То же, но показать в терминале |
 | `run --section спорт --count 10` | Топ-N новостей одного раздела |
@@ -310,6 +310,9 @@ ND_WEB_PROXY=1          # верить X-Forwarded-Proto и X-Forwarded-For от
 export TELEGRAM_BOT_TOKEN=...         # Токен бота
 export TELEGRAM_CHAT_ID=...           # Chat ID владельца
 export DEEPSEEK_API_KEY=...           # API ключ DeepSeek
+export OPENROUTER_API_KEY=...         # Необязательно: бесплатная модель OpenRouter, сбой — в DeepSeek
+export ND_FREE_KINDS=classify,translate # Что идёт сначала бесплатно (all — всё, пусто — ничего)
+export ND_FREE_MODELS=deepseek/deepseek-v4-flash:free # Бесплатные модели по порядку, через запятую
 export ND_SECTIONS=ai,medicine,sports # Разделы выпуска (пусто = по умолчанию)
 export ND_FAVORITES=sports,space      # До 5 разделов первыми (пусто = обычный порядок)
 export ND_PER_SECTION=2               # Новостей на раздел (1–5)
@@ -494,6 +497,23 @@ export ND_WEB=1                       # Страница в браузере
 двери к модели, `llm.llm_json`, поэтому в нём есть и классификация на быстрой
 полосе, и перевод ленты на странице. Раньше сумма складывалась из строк `runs`,
 а их хранится по 200 на вид — для сбора и срочного это двое суток.
+
+**Бесплатный маршрут.** С `OPENROUTER_API_KEY` запросы видов из `ND_FREE_KINDS`
+(по умолчанию — разделы и перевод: их ответ проверяется механически) сначала
+уходят в бесплатную модель OpenRouter — по умолчанию ту же V4 Flash. Ответ берём,
+только если в нём есть каждый id с обязательным полем, а перевод ещё и стал
+русским; иначе, а также при лимите, таймауте или отказе тот же запрос уходит в
+DeepSeek. Суточный лимит (429 `per-day`) — пауза до 00:00 UTC, молчание и 5xx —
+`free_pause_min` минут, плохой ключ — до перезапуска. Перевод ленты на странице
+всегда идёт в DeepSeek: страница ждёт ответа. В `status` у назначения видно
+«бесплатно N, откатов K», под таблицей — сколько сэкономлено; «рассуждения Nk» и
+предупреждение — если DeepSeek тратит деньги на рассуждения (не принял
+`thinking=disabled`, об этом же WARNING в логе). Настройка: ключ на
+openrouter.ai/settings/keys → строка `OPENROUTER_API_KEY=…` в `~/.newsdigest/env`
+→ `sudo systemctl restart newsdigest`; в настройках приватности OpenRouter
+разрешить бесплатные эндпоинты (иначе 404 «No endpoints found matching your data
+policy»). Разовое пополнение на $10 поднимает лимит `:free` с 50 до 1000 запросов
+в сутки, а сами `:free` баланс не тратят. Проверка — `digest.py doctor`.
 
 **Доверие к источнику** (`trust.py`): `kind` (wire, primary, independent, pr,
 state, aggregator…) задаёт достоверность, `publisher` — по кому считается

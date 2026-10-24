@@ -11,18 +11,19 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import (candidates, config, factcheck, redact, safety, sections,
+from . import (candidates, config, factcheck, llm, redact, safety, sections,
                spend, subscribers, trust, userprofiles)
 from .config import (CFG, DB_FILE, ENV_FILE, HOME, LAUNCHER, PROFILES_FILE, PROG,
                      local_now, load_env, setup_logging, tz_label, write_env)
 from .daemon import daemon
 from .feedparse import parse_date
 from .llm import llm_cost, llm_json
-from .net import post_json
+from .net import http_get, post_json
 from .pipeline import build_and_send, build_section
 from .profiles import BUILTIN, PROFILES, label, profile
 from .profiles import title as topic_title       # 'title' занято чатами в setup
@@ -207,8 +208,9 @@ def cmd_doctor(_args):
             _data, usage = llm_json("Отвечай только json.",
                                     'Верни ровно {"items": [{"id": 0, "ok": true}]}',
                                     CFG["model_rank"], max_tokens=60)
-            print("[OK]   DeepSeek отвечает (%s), стоимость проверки ~$%.6f"
-                  % (CFG["model_rank"], llm_cost(usage)))
+            print("[OK]   DeepSeek отвечает (%s), стоимость проверки ~$%.6f, "
+                  "рассуждений %d" % (CFG["model_rank"], llm_cost(usage),
+                                      usage.get("reason", 0)))
         except Exception as exc:  # noqa: BLE001
             print("[FAIL] DeepSeek: %s" % exc)
             good = False
@@ -223,6 +225,7 @@ def cmd_doctor(_args):
     else:
         print("[FAIL] DeepSeek: нет DEEPSEEK_API_KEY")
         good = False
+    free_doctor()
 
     try:
         conn = db()
@@ -236,6 +239,40 @@ def cmd_doctor(_args):
 
     print("\nИТОГ:", "готово к запуску" if good else "есть проблемы, см. [FAIL] выше")
     return 0 if good else 1
+
+
+def free_doctor() -> None:
+    """Бесплатный маршрут: ключ и каждая модель. На итог `doctor` не влияет —
+    без OpenRouter всё просто идёт в DeepSeek."""
+    if not config.OR_KEY:
+        print("[--]   OpenRouter: ключа нет — всё идёт в DeepSeek")
+        return
+    base = CFG["free_base"].rstrip("/")
+    status, raw = http_get(base + "/key", 20,
+                           headers={"Authorization": "Bearer " + config.OR_KEY})
+    try:
+        info = json.loads(raw.decode("utf-8", "replace")).get("data") or {}
+    except (ValueError, AttributeError):
+        info = {}
+    if status == 200:
+        shown = ", ".join("%s=%s" % (k, info[k]) for k in
+                          ("is_free_tier", "usage_daily", "limit_remaining")
+                          if k in info)
+        print("[OK]   OpenRouter ключ: %s" % (shown or "принят"))
+    else:
+        print("[WARN] OpenRouter ключ: HTTP %s" % status)
+    for model in llm.free_models():
+        started = time.monotonic()
+        status, data, err = llm._free_once(model, llm._payload(
+            "Отвечай только json.", 'Верни ровно {"items": [{"id": 0, "ok": true}]}',
+            model, 60))
+        took = time.monotonic() - started
+        if status == 200 and isinstance(data, dict) and data.get("choices"):
+            print("[OK]   OpenRouter %s: %.1f с, рассуждений %d"
+                  % (model, took, llm._used(data.get("usage"))["reason"]))
+        else:
+            print("[WARN] OpenRouter %s: HTTP %s %s"
+                  % (model, status, redact.scrub(llm._why(data, err))[:160]))
 
 
 def cmd_feeds(args):
@@ -748,14 +785,34 @@ def spend_report(conn, since) -> None:
     print("Расход DeepSeek за %s: $%.4f  (≈ $%.2f/мес)"
           % ("неделю" if span >= 7 else "%d дн." % span, total,
              total / max(1, span) * 30))
+    free = {"calls": 0, "in": 0, "out": 0, "reason": 0, "paid": 0}
     for row in rows:
         tok_in, tok_out = row["tok_in"] or 0, row["tok_out"] or 0
+        extra = []
+        if row["free_calls"] or row["fallbacks"]:
+            extra.append("бесплатно %d, откатов %d"
+                         % (row["free_calls"] or 0, row["fallbacks"] or 0))
+        if row["tok_reason"]:
+            extra.append("рассуждения %dk" % (row["tok_reason"] // 1000))
         print("  %-13s $%.4f  запросов %-4d вход %5dk (кэш провайдера %2d%%)"
-              "  выход %4dk" % (spend.label(row["kind"]), row["cost"] or 0.0,
-                               row["calls"] or 0, tok_in // 1000,
-                               round(100.0 * (row["tok_cached"] or 0)
-                                     / max(1, tok_in)),
-                               tok_out // 1000))
+              "  выход %4dk%s" % (spend.label(row["kind"]), row["cost"] or 0.0,
+                                 row["calls"] or 0, tok_in // 1000,
+                                 round(100.0 * (row["tok_cached"] or 0)
+                                       / max(1, tok_in)),
+                                 tok_out // 1000,
+                                 "".join("  " + e for e in extra)))
+        free["calls"] += row["free_calls"] or 0
+        free["in"] += row["free_in"] or 0
+        free["out"] += row["free_out"] or 0
+        free["reason"] += row["tok_reason"] or 0
+        free["paid"] += row["calls"] or 0
+    if free["calls"]:
+        print("  Бесплатно (OpenRouter): %d запросов (%d%% всех), сэкономлено ≈ $%.4f"
+              % (free["calls"], round(100.0 * free["calls"]
+                                      / max(1, free["calls"] + free["paid"])),
+                 llm_cost({"in": free["in"], "out": free["out"], "cached": 0})))
+    if free["reason"]:
+        print("  ⚠ DeepSeek рассуждает — см. WARNING про thinking в логе")
 
 
 def breaking_report(conn, since) -> None:

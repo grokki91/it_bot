@@ -5,7 +5,9 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import logging
 import re
+import threading
 import time
 
 from . import config, redact, spend
@@ -40,8 +42,66 @@ def task(label: str, payload, *head) -> str:
     return "\n".join(lines + ["", "%s (json):" % label, body])
 
 
+#: обязательное поле ответа по виду запроса. Бесплатный ответ, где у какого-то
+#: id его нет, не берём: сверить его с DeepSeek не с чем, а пустые места в
+#: выпуске дороже лишнего платного запроса
+REQUIRED = {"rank": "score", "urgency": "urgency", "dupes": "news",
+            "claims": "verdict", "classify": "section", "cards": "headline",
+            "translate": "text"}
+#: у этих видов обязательное поле — ещё и непустая строка
+TEXT_KINDS = ("cards", "translate")
+
+#: состояние бесплатного маршрута на процесс. Разделы ранжируются в три нити,
+#: поэтому всё — под замком
+_lock = threading.Lock()
+#: модель или "*" (весь маршрут) -> до какого time.time() к ней не ходим
+_free_off = {}
+#: о чём уже предупредили: одно и то же в лог раз за процесс (или за сутки)
+_told = set()
+#: OpenRouter не принял `reasoning`, DeepSeek не принял `thinking` — больше не шлём
+_no_reasoning = False
+_no_thinking = False
+
+ROUTES = ("auto", "paid", "free")
+
+
+def _once(key, level, message, *args) -> None:
+    with _lock:
+        if key in _told:
+            return
+        _told.add(key)
+    log.log(level, message, *args)
+
+
+def _payload(system, user, model, max_tokens) -> dict:
+    return {
+        "model": model,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": False,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _used(usage) -> dict:
+    """usage провайдера -> наш учёт. Поля у DeepSeek и OpenRouter свои."""
+    usage = usage or {}
+    prompt = usage.get("prompt_tokens_details") or {}
+    answer = usage.get("completion_tokens_details") or {}
+    return {
+        "in": usage.get("prompt_tokens", 0) or 0,
+        "out": usage.get("completion_tokens", 0) or 0,
+        "cached": (usage.get("prompt_cache_hit_tokens")
+                   or usage.get("prompt_tokens_cached")
+                   or prompt.get("cached_tokens") or 0),
+        "reason": answer.get("reasoning_tokens", 0) or 0,
+    }
+
+
 def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
-             kind: str = ""):
+             kind: str = "", expect=(), check=None, route: str = "auto"):
     """Один вызов модели в режиме JSON. Возвращает (данные, usage).
 
     `kind` — на что запрос (`spend.LABELS`): по нему расход ложится в журнал,
@@ -55,25 +115,35 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
     случайно. Чистим ПЕРЕД отправкой и по факту наличия сообщения, а не по
     именам наших промптов: сменится провайдер или добавится новая роль —
     защита останется на месте.
+
+    `route`: `auto` — виды из `free_kinds` сначала идут в бесплатную модель
+    OpenRouter, при любом сбое — в DeepSeek; `paid` — только DeepSeek; `free` —
+    только OpenRouter, сбой — `LLMError`. Бесплатный ответ берём, только если
+    в нём есть каждый id из `expect` с обязательным полем (`REQUIRED`) и его
+    принял `check(данные)`.
     """
-    if not config.DS_KEY:
-        raise LLMError("DEEPSEEK_API_KEY не задан")
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-        "stream": False,
-        "response_format": {"type": "json_object"},
-    }
+    if route not in ROUTES:
+        raise ValueError("route: %r" % route)
+    payload = _payload(system, user, model, max_tokens)
     hidden = redact.clean_messages(payload)
     if hidden:
         # что именно вырезали — не пишем даже в лог: там оно и окажется
         log.warning("Из запроса к модели вырезаны чувствительные данные (%s). "
                     "Проверьте profiles.json и адреса источников",
                     ", ".join(hidden))
-    if CFG["disable_thinking"]:
+    if route == "free" or (route == "auto" and free_wanted(kind)):
+        got = _free(payload, kind, expect, check, strict=route == "free")
+        if got is not None:
+            return got
+    return _paid(payload, kind)
+
+
+def _paid(payload, kind):
+    """Нынешний путь: DeepSeek с повторами."""
+    global _no_thinking
+    if not config.DS_KEY:
+        raise LLMError("DEEPSEEK_API_KEY не задан")
+    if CFG["disable_thinking"] and not _no_thinking:
         payload["thinking"] = {"type": "disabled"}
 
     url = CFG["llm_base"].rstrip("/") + "/chat/completions"
@@ -86,20 +156,19 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
                 text = data["choices"][0]["message"]["content"] or ""
             except (KeyError, IndexError, TypeError) as exc:
                 raise LLMError("неожиданный формат ответа: %s" % exc)
-            usage = data.get("usage") or {}
-            used = {
-                "in": usage.get("prompt_tokens", 0),
-                "out": usage.get("completion_tokens", 0),
-                "cached": (usage.get("prompt_cache_hit_tokens")
-                           or usage.get("prompt_tokens_cached") or 0),
-            }
+            used = _used(data.get("usage"))
             # деньги потрачены, даже если ответ не разобрался: учитываем до разбора
             spend.add(kind, used, llm_cost(used))
             return _loads(text), used
         last = "HTTP %s %s" % (status, err or (json.dumps(data)[:300] if data else ""))
-        # некоторые аккаунты/модели не принимают поле thinking — снимаем и пробуем ещё
+        # некоторые аккаунты/модели не принимают поле thinking — снимаем и
+        # больше не шлём: иначе каждый запрос тратит лишний круг 400 и попытку
         if status == 400 and "thinking" in payload and "thinking" in last.lower():
             payload.pop("thinking", None)
+            _no_thinking = True
+            _once("thinking", logging.WARNING,
+                  "DeepSeek не принял thinking=disabled (%s) — модель рассуждает, "
+                  "это оплачивается как выход", last[:160])
             continue
         if status not in (0, 408, 429, 500, 502, 503, 504) and status != 200:
             raise LLMError(last)
@@ -110,6 +179,138 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
             time.sleep(wait)
     raise LLMError("DeepSeek недоступен после %d попыток: %s"
                    % (CFG["llm_retries"], last))
+
+
+# ------------------------------------------------------- бесплатный маршрут
+def free_models() -> list:
+    return [m.strip() for m in str(CFG["free_models"] or "").split(",") if m.strip()]
+
+
+def free_wanted(kind) -> bool:
+    """Идёт ли этот вид сначала в бесплатную модель."""
+    if not config.OR_KEY:
+        return False
+    kinds = {k.strip() for k in str(CFG["free_kinds"] or "").split(",") if k.strip()}
+    return "all" in kinds or (kind or "other") in kinds
+
+
+def _free_once(model, payload):
+    """Один запрос в OpenRouter. Возвращает (status, data, текст ошибки)."""
+    global _no_reasoning
+    body = dict(payload, model=model)
+    body.pop("thinking", None)
+    if not _no_reasoning:
+        body["reasoning"] = {"enabled": False}
+    url = CFG["free_base"].rstrip("/") + "/chat/completions"
+    headers = {"Authorization": "Bearer " + config.OR_KEY}
+    status, data, err = post_json(url, body, headers, CFG["free_timeout"])
+    if status == 400 and "reasoning" in body and "reasoning" in _why(data, err).lower():
+        _no_reasoning = True
+        body.pop("reasoning")
+        status, data, err = post_json(url, body, headers, CFG["free_timeout"])
+    return status, data, err
+
+
+def _why(data, err) -> str:
+    return err or (json.dumps(data, ensure_ascii=False)[:300] if data else "")
+
+
+def _resting(model, now) -> bool:
+    with _lock:
+        return now < _free_off.get("*", 0) or now < _free_off.get(model, 0)
+
+
+def _rest(model, status, why, now) -> bool:
+    """Пауза после сбоя. True — следующую модель пробовать бессмысленно."""
+    forever = float("inf")
+    if status == 429 and "per-day" in why.lower():
+        with _lock:
+            _free_off["*"] = (int(now) // 86400 + 1) * 86400   # ближайшие 00:00 UTC
+        _once("per-day:%d" % (int(now) // 86400), logging.INFO,
+              "Бесплатный лимит OpenRouter на сутки исчерпан — до 00:00 UTC всё идёт в DeepSeek")
+        return True
+    if status in (401, 402, 403):
+        with _lock:
+            _free_off["*"] = forever
+        _once("key", logging.WARNING,
+              "OpenRouter отказал (HTTP %s: %s) — бесплатный маршрут выключен до "
+              "перезапуска, всё идёт в DeepSeek", status, why[:160])
+        return True
+    if status == 429:
+        pause = 60
+    elif status in (400, 404):
+        pause = forever
+        _once("model:" + model, logging.WARNING,
+              "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "
+              "или разрешите бесплатные эндпоинты в настройках приватности",
+              model, status, why[:160])
+    elif status in (0, 408) or status >= 500:
+        pause = CFG["free_pause_min"] * 60
+    else:
+        return True
+    with _lock:
+        _free_off[model] = now + pause
+    return False
+
+
+def covers(kind, data, expect) -> bool:
+    """В ответе есть каждый id из `expect` вместе с обязательным полем."""
+    field = REQUIRED.get(kind)
+    rows = {}
+    for row in as_list(data):
+        if not isinstance(row, dict):
+            continue
+        try:
+            rows[int(row.get("id", -1))] = row
+        except (TypeError, ValueError):
+            continue
+    for idx in expect:
+        row = rows.get(int(idx))
+        if row is None or (field and row.get(field) is None):
+            return False
+        if kind in TEXT_KINDS and not str(row.get(field) or "").strip():
+            return False
+    return True
+
+
+def _free(payload, kind, expect, check, strict=False):
+    """Запрос в бесплатную модель. (данные, usage) или None — тогда в DeepSeek."""
+    if not config.OR_KEY:
+        if strict:
+            raise LLMError("OPENROUTER_API_KEY не задан")
+        return None
+    asked, last = False, "все модели на паузе"
+    for model in free_models():
+        now = time.time()
+        if _resting(model, now):
+            continue
+        asked = True
+        status, data, err = _free_once(model, payload)
+        why = _why(data, err)
+        if status == 200 and isinstance(data, dict) and not data.get("error"):
+            try:
+                parsed = _loads(data["choices"][0]["message"]["content"] or "")
+            except (KeyError, IndexError, TypeError, LLMError) as exc:
+                last = "%s: ответ не разобрался (%s)" % (model, str(exc)[:120])
+                break
+            if not covers(kind, parsed, expect):
+                last = "%s: в ответе не все id" % model
+                break
+            if check is not None and not check(parsed):
+                last = "%s: ответ не прошёл проверку" % model
+                break
+            used = _used(data.get("usage"))
+            spend.add(kind, used, 0.0, route="free")
+            return parsed, used
+        last = "%s: HTTP %s %s" % (model, status, why[:160])
+        if status == 200 or _rest(model, status, why, now):
+            break
+    if asked:
+        spend.fallback(kind)
+        log.debug("Бесплатная модель не ответила (%s) — спрашиваю DeepSeek", last)
+    if strict:
+        raise LLMError("OpenRouter: " + last)
+    return None
 
 
 def _loads(text: str):
@@ -454,7 +655,8 @@ def rank_clusters(clusters, persona):
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
         RANK_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
-        CFG["model_rank"], max_tokens=3000, kind="rank")
+        CFG["model_rank"], max_tokens=3000, kind="rank",
+        expect=[p["id"] for p in payload])
     return as_list(data), usage
 
 
@@ -475,7 +677,8 @@ def rate_urgency(clusters, persona):
                         "confirmations": len({i["source_id"] for i in group})})
     data, usage = llm_json(
         BREAKING_SYSTEM, task("Кандидаты", payload, "Читатель: " + persona),
-        CFG["model_rank"], max_tokens=2000, kind="urgency")
+        CFG["model_rank"], max_tokens=2000, kind="urgency",
+        expect=[p["id"] for p in payload])
     return as_list(data), usage
 
 
@@ -535,7 +738,7 @@ def judge_duplicates(pairs):
         # ответ подрос на `gain`: короткая фраза «что нового» вместо
         # второго булева поля
         CFG["model_rank"], max_tokens=64 * len(payload) + 400,
-        kind="dupes")
+        kind="dupes", expect=[p["id"] for p in payload])
     out = {}
     for entry in as_list(data):
         try:
@@ -559,7 +762,7 @@ def judge_claims(claims):
     data, usage = llm_json(
         CLAIM_SYSTEM, task("Новости", payload),
         CFG["model_rank"], max_tokens=80 * len(payload) + 500,
-        kind="claims")
+        kind="claims", expect=[p["id"] for p in payload])
     out = {}
     for entry in as_list(data):
         try:
@@ -595,7 +798,7 @@ def summarize_batch(picked, persona, language, offset=0):
         SUM_SYSTEM, task("Новости", payload, "Читатель: " + persona,
                          "Язык ответа: " + language),
         CFG["model_summary"], max_tokens=400 * len(payload) + 500,
-        kind="cards")
+        kind="cards", expect=[p["id"] for p in payload])
     cards = {}
     for card in as_list(data):
         try:
@@ -605,28 +808,40 @@ def summarize_batch(picked, persona, language, offset=0):
     return cards, usage
 
 
-def translate_texts(texts, language):
+def translate_texts(texts, language, check=None, route="auto"):
     """Перевод пачки строк одним запросом. Возвращает ({номер: строка}, usage).
 
     Номер — позиция строки во входном списке: так ответ раскладывается обратно
     даже когда модель вернула не все строки или перепутала их порядок.
+    `check(исходная, перевод)` проверяет бесплатный ответ построчно: хоть одна
+    строка не прошла — переводит DeepSeek.
     """
     payload = [{"id": idx, "text": str(text)[:600]}
                for idx, text in enumerate(texts)]
+    whole = None
+    if check is not None:
+        def whole(data):
+            return all(check(texts[idx], text)
+                       for idx, text in _translations(data, texts).items())
     data, usage = llm_json(
         TR_SYSTEM, task("Строки", payload, "Язык перевода: " + language),
         CFG["model_summary"], max_tokens=300 * len(payload) + 500,
-        kind="translate")
+        kind="translate", expect=[p["id"] for p in payload], check=whole,
+        route=route)
+    return _translations(data, texts), usage
+
+
+def _translations(data, texts) -> dict:
     out = {}
     for row in as_list(data):
         try:
             idx = int(row.get("id", -1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):
             continue
         text = str(row.get("text") or "").strip()
         if 0 <= idx < len(texts) and text:
             out[idx] = text
-    return out, usage
+    return out
 
 
 def summarize(picked, persona, language):

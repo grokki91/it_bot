@@ -393,7 +393,7 @@ def ask_model(rows, topics):
         CLASSIFY_SYSTEM,
         task("Новости", payload, "Разделы:\n" + listing),
         CFG["model_rank"], max_tokens=60 * len(payload) + 500,
-        kind="classify")
+        kind="classify", expect=[p["id"] for p in payload])
     out = {}
     for entry in as_list(data):
         try:
