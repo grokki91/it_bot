@@ -202,7 +202,9 @@ CFG = {
     "price_out":        0.28,
     # --- бесплатный маршрут (OpenRouter) -----------------------------------
     "free_base":      "https://openrouter.ai/api/v1",
-    "free_models":    "deepseek/deepseek-v4-flash:free",  # [env ND_FREE_MODELS] по порядку, через запятую
+    "free_models":    "",  # [env ND_FREE_MODELS] по порядку, через запятую; пусто — маршрут выключен.
+                           # `:free` у OpenRouter то пропадают, то упираются в лимит —
+                           # своё значение проверьте `doctor` и tools/itest_free.py
     "free_kinds":     "classify,translate",  # [env ND_FREE_KINDS] all — все, пусто — ни одного
     "free_timeout":   60,                    # одна попытка, без повторов
     "free_pause_min": 10,                    # модель молчит или отвечает 5xx — столько минут к ней не ходим

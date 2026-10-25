@@ -188,7 +188,7 @@ def free_models() -> list:
 
 def free_wanted(kind) -> bool:
     """Идёт ли этот вид сначала в бесплатную модель."""
-    if not config.OR_KEY:
+    if not config.OR_KEY or not free_models():
         return False
     kinds = {k.strip() for k in str(CFG["free_kinds"] or "").split(",") if k.strip()}
     return "all" in kinds or (kind or "other") in kinds
@@ -229,7 +229,7 @@ def _rest(model, status, why, now) -> bool:
         _once("per-day:%d" % (int(now) // 86400), logging.INFO,
               "Бесплатный лимит OpenRouter на сутки исчерпан — до 00:00 UTC всё идёт в DeepSeek")
         return True
-    if status in (401, 402, 403):
+    if status in (401, 402):
         with _lock:
             _free_off["*"] = forever
         _once("key", logging.WARNING,
@@ -238,7 +238,9 @@ def _rest(model, status, why, now) -> bool:
         return True
     if status == 429:
         pause = 60
-    elif status in (400, 404):
+    elif status in (400, 403, 404):
+        # 403 — отказ этой модели («only available on agentic harnesses»),
+        # плохой ключ OpenRouter отдаёт 401
         pause = forever
         _once("model:" + model, logging.WARNING,
               "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "

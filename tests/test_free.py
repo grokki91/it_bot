@@ -137,6 +137,22 @@ class TestRouting(FreeCase):
         self.ask()
         self.assertEqual(self.calls[-1][1]["model"], "m1:free")
 
+    def test_forbidden_model_does_not_stop_next_one(self):
+        CFG["free_models"] = "m1:free,m2:free"
+        self.free = [(403, {"error": {"message": "only available on agentic harnesses"}}, ""),
+                     reply([{"id": 0, "section": "it"}])]
+        data, _ = self.ask()
+        self.assertEqual(data["items"][0]["section"], "it")
+        self.ask()
+        self.assertEqual([p["model"] for r, p in self.calls if r == "free"],
+                         ["m1:free", "m2:free", "m2:free"])
+
+    def test_no_models_means_deepseek_without_fallback(self):
+        CFG["free_models"] = ""
+        self.ask()
+        self.assertEqual(self.routes(), ["paid"])
+        self.assertFalse(self.row().get("fallbacks"))
+
     def test_silent_model_rests(self):
         self.free = [(0, None, "timeout")]
         self.ask()
@@ -222,6 +238,29 @@ class TestReport(FreeCase):
         self.assertIn("рассуждения 5k", text)
         self.assertIn("сэкономлено", text)
         self.assertIn("DeepSeek рассуждает", text)
+
+
+class TestDoctor(FreeCase):
+    def test_empty_models_hint_lists_free_ids(self):
+        CFG["free_models"] = ""
+        listing = {"data": [{"id": "a/x:free"}, {"id": "b/paid"}, {"id": "c/y:free"}]}
+
+        def fake_get(url, timeout=None, ua=None, headers=None):
+            if url.endswith("/models"):
+                return 200, json.dumps(listing).encode()
+            return 200, b'{"data": {}}'
+        saved, cli.http_get = cli.http_get, fake_get
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                cli.free_doctor()
+        finally:
+            cli.http_get = saved
+        text = out.getvalue()
+        self.assertIn("ND_FREE_MODELS не задан", text)
+        self.assertIn("a/x:free, c/y:free", text)
+        self.assertNotIn("b/paid", text)
+        self.assertEqual(self.calls, [])
 
 
 class TestSecretAndSchema(unittest.TestCase):
