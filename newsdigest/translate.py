@@ -154,12 +154,13 @@ def known(conn, text, language=None) -> str:
 
 
 # -------------------------------------------------------------------- перевод
-def translated(conn, texts, language=None) -> tuple:
+def translated(conn, texts, language=None, route="auto") -> tuple:
     """{исходный текст: перевод} и стоимость. Сначала кэш, к модели — за остальным.
 
     Ответ, не ставший русским, не берём и в кэш не кладём: модель иногда
     возвращает исходную строку, и запомнить такое значит закрепить английский
-    заголовок навсегда.
+    заголовок навсегда. Бесплатной модели (`route`, см. `llm.llm_json`) та же
+    проверка: не стал русским хоть один ответ — переводит DeepSeek.
     """
     ready = cached(conn, texts, language)
     missing = [text for text in dict.fromkeys(texts)
@@ -168,7 +169,9 @@ def translated(conn, texts, language=None) -> tuple:
     for start in range(0, len(missing), size):
         part = missing[start:start + size]
         try:
-            got, usage = translate_texts(part, language_of(language))
+            got, usage = translate_texts(
+                part, language_of(language), route=route,
+                check=lambda source, text: improved(source, text, language))
         except LLMError as exc:
             log.warning("Перевод %d строк(и) не удался (%s) — оставляю оригинал",
                         len(part), exc)

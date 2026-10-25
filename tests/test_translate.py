@@ -85,7 +85,7 @@ class TranslateCase(unittest.TestCase):
     #: видно, какой именно текст она переводила
     TRANSLATED = "Русский перевод строки номер %d"
 
-    def fake(self, texts, language):
+    def fake(self, texts, language, **_kw):
         self.asked.append(list(texts))
         return ({i: self.TRANSLATED % i for i in range(len(texts))},
                 {"in": 10, "out": 5})
@@ -124,7 +124,7 @@ class TestLocalize(TranslateCase):
 
     def test_untranslated_answer_is_not_remembered(self):
         """Модель вернула ту же английскую строку — это не перевод."""
-        translate.translate_texts = lambda texts, language: (
+        translate.translate_texts = lambda texts, language, **_kw: (
             {i: text for i, text in enumerate(texts)}, {"in": 1, "out": 1})
         card = {"headline": ENGLISH}
         translate.localize(self.conn, [card])
@@ -138,14 +138,14 @@ class TestLocalize(TranslateCase):
         текст: ошибаться проверка должна в эту сторону, а не в обратную.
         """
         title = "Hugging Face выпустил Transformers 5.0"
-        translate.translate_texts = lambda texts, language: (
+        translate.translate_texts = lambda texts, language, **_kw: (
             {i: text for i, text in enumerate(texts)}, {"in": 1, "out": 1})
         card = {"headline": title}
         translate.localize(self.conn, [card])
         self.assertEqual(card["headline"], title)
 
     def test_model_failure_keeps_the_original(self):
-        def broken(texts, language):
+        def broken(texts, language, **_kw):
             raise LLMError("модель недоступна")
 
         translate.translate_texts = broken

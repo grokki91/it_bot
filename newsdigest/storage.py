@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS spend (
     tok_cached INTEGER NOT NULL DEFAULT 0,
     tok_out    INTEGER NOT NULL DEFAULT 0,
     cost       REAL NOT NULL DEFAULT 0,
+    -- рассуждения DeepSeek (оплачены как выход) и бесплатный маршрут OpenRouter:
+    -- его запросы в calls/cost не входят, fallbacks — откаты из него в DeepSeek
+    tok_reason INTEGER NOT NULL DEFAULT 0,
+    free_calls INTEGER NOT NULL DEFAULT 0,
+    free_in    INTEGER NOT NULL DEFAULT 0,
+    free_out   INTEGER NOT NULL DEFAULT 0,
+    fallbacks  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, kind)
 );
 
@@ -590,6 +597,15 @@ def upgrade(conn) -> None:
     add_link_safety(conn)
     add_story_links(conn)
     add_news_gain(conn)
+    add_free_spend(conn)
+
+
+def add_free_spend(conn) -> None:
+    """Учёт бесплатного маршрута и рассуждений в журнале расхода (`spend`)."""
+    if not table_exists(conn, "spend"):  # новая база: колонки придут из SCHEMA
+        return
+    for column in ("tok_reason", "free_calls", "free_in", "free_out", "fallbacks"):
+        ensure_column(conn, "spend", column, "INTEGER NOT NULL DEFAULT 0")
 
 
 def add_news_gain(conn) -> None:

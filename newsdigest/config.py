@@ -200,6 +200,12 @@ CFG = {
     "disable_thinking": True,      # V4 умеет "думать" — нам это не нужно, дороже и медленнее
     "price_in":         0.14,      # $/1M токенов — только для оценки расхода в `status`
     "price_out":        0.28,
+    # --- бесплатный маршрут (OpenRouter) -----------------------------------
+    "free_base":      "https://openrouter.ai/api/v1",
+    "free_models":    "deepseek/deepseek-v4-flash:free",  # [env ND_FREE_MODELS] по порядку, через запятую
+    "free_kinds":     "classify,translate",  # [env ND_FREE_KINDS] all — все, пусто — ни одного
+    "free_timeout":   60,                    # одна попытка, без повторов
+    "free_pause_min": 10,                    # модель молчит или отвечает 5xx — столько минут к ней не ходим
 
     # --- Telegram ------------------------------------------------------------
     # Выпуск на полтора десятка разделов сплошной лентой — это простыня в
@@ -343,6 +349,8 @@ ENV_MAP = {
     "ND_MAX_ITEMS": ("max_items", int),
     "ND_MIN_SCORE": ("min_score", float),
     "ND_MODEL_SUMMARY": ("model_summary", str),
+    "ND_FREE_MODELS": ("free_models", str),
+    "ND_FREE_KINDS": ("free_kinds", str),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_CHAT_REPLY": ("chat_reply", str),
@@ -384,6 +392,8 @@ log = logging.getLogger("nd")
 TG_TOKEN = ""
 TG_CHAT = ""
 DS_KEY = ""
+#: ключ OpenRouter. Необязателен: без него все запросы идут в DeepSeek
+OR_KEY = ""
 #: ключ Google Safe Browsing. Необязателен: без него проверка
 #: ссылок работает своими слоями, просто без внешней базы угроз
 SB_KEY = ""
@@ -392,7 +402,7 @@ SB_KEY = ""
 # ------------------------------------------------------------------ окружение
 def load_env() -> None:
     """Читает ~/.newsdigest/env. Переменные, уже заданные снаружи, главнее."""
-    global TG_TOKEN, TG_CHAT, DS_KEY, SB_KEY
+    global TG_TOKEN, TG_CHAT, DS_KEY, OR_KEY, SB_KEY
     if ENV_FILE.exists():
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -418,6 +428,7 @@ def load_env() -> None:
     TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     DS_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    OR_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
     SB_KEY = os.environ.get("SAFEBROWSING_API_KEY", "").strip()
     remember_secrets()
 
@@ -430,7 +441,7 @@ def remember_secrets() -> None:
     сообщение об ошибке или адрес источника. Заодно забираем всё, что лежит в
     окружении под говорящим именем: там же живут ключи, дописанные руками.
     """
-    redact.remember(TG_TOKEN, DS_KEY, SB_KEY, CFG.get("web_token"))
+    redact.remember(TG_TOKEN, DS_KEY, OR_KEY, SB_KEY, CFG.get("web_token"))
     for name, value in os.environ.items():
         if redact.secret_name(name):
             redact.remember(value)

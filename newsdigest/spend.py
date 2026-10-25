@@ -41,14 +41,17 @@ LABELS = (
 #: на какое окно ждём освободившуюся базу, секунд
 WAIT = 0.25
 
-UPSERT = ("INSERT INTO spend(day, kind, calls, tok_in, tok_cached, tok_out, cost) "
-          "VALUES (?,?,?,?,?,?,?) ON CONFLICT(day, kind) DO UPDATE SET "
-          "calls=calls+excluded.calls, tok_in=tok_in+excluded.tok_in, "
-          "tok_cached=tok_cached+excluded.tok_cached, "
-          "tok_out=tok_out+excluded.tok_out, cost=cost+excluded.cost")
+#: колонки накопителя по порядку: деньги DeepSeek, потом бесплатный маршрут
+FIELDS = ("calls", "tok_in", "tok_cached", "tok_out", "cost", "tok_reason",
+          "free_calls", "free_in", "free_out", "fallbacks")
+
+UPSERT = ("INSERT INTO spend(day, kind, %s) VALUES (?,?,%s) "
+          "ON CONFLICT(day, kind) DO UPDATE SET %s"
+          % (", ".join(FIELDS), ",".join("?" * len(FIELDS)),
+             ", ".join("%s=%s+excluded.%s" % (f, f, f) for f in FIELDS)))
 
 _lock = threading.Lock()
-#: (сутки, назначение) -> [запросов, вход, из кэша, выход, стоимость]
+#: (сутки, назначение) -> значения по FIELDS
 _pending = {}
 
 
@@ -56,20 +59,43 @@ def today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def add(kind, usage, cost) -> None:
-    """Записывает один состоявшийся запрос. Учёт запрос никогда не роняет."""
+def _blank() -> list:
+    return [0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0]
+
+
+def add(kind, usage, cost, route="paid") -> None:
+    """Записывает один состоявшийся запрос. Учёт запрос никогда не роняет.
+
+    Бесплатный (`route="free"`) идёт в свои колонки: `calls` и `cost` — это
+    только то, за что платим DeepSeek.
+    """
     try:
         with _lock:
-            acc = _pending.setdefault((today(), kind or "other"),
-                                      [0, 0, 0, 0, 0.0])
-            acc[0] += 1
-            acc[1] += int(usage.get("in", 0) or 0)
-            acc[2] += int(usage.get("cached", 0) or 0)
-            acc[3] += int(usage.get("out", 0) or 0)
-            acc[4] += float(cost or 0.0)
+            acc = _pending.setdefault((today(), kind or "other"), _blank())
+            if route == "free":
+                acc[6] += 1
+                acc[7] += int(usage.get("in", 0) or 0)
+                acc[8] += int(usage.get("out", 0) or 0)
+            else:
+                acc[0] += 1
+                acc[1] += int(usage.get("in", 0) or 0)
+                acc[2] += int(usage.get("cached", 0) or 0)
+                acc[3] += int(usage.get("out", 0) or 0)
+                acc[4] += float(cost or 0.0)
+                acc[5] += int(usage.get("reason", 0) or 0)
         flush()
     except Exception as exc:  # noqa: BLE001 — учёт не повод ронять выпуск
         log.debug("Расход не записан: %s", exc)
+
+
+def fallback(kind) -> None:
+    """Запрос ушёл в бесплатную модель, а ответил в итоге DeepSeek."""
+    try:
+        with _lock:
+            _pending.setdefault((today(), kind or "other"), _blank())[9] += 1
+        flush()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Откат не записан: %s", exc)
 
 
 def flush() -> None:
@@ -92,7 +118,7 @@ def flush() -> None:
     except sqlite3.Error as exc:
         with _lock:
             for key, acc in batch.items():
-                mine = _pending.setdefault(key, [0, 0, 0, 0, 0.0])
+                mine = _pending.setdefault(key, _blank())
                 for at, value in enumerate(acc):
                     mine[at] += value
         log.debug("Расход подождёт следующего запроса: %s", exc)
@@ -111,9 +137,12 @@ def totals(conn, days: int = 7) -> list:
         return [dict(row) for row in conn.execute(
             "SELECT kind, SUM(calls) AS calls, SUM(tok_in) AS tok_in, "
             "SUM(tok_cached) AS tok_cached, SUM(tok_out) AS tok_out, "
-            "SUM(cost) AS cost FROM spend WHERE day >= ? "
+            "SUM(cost) AS cost, SUM(tok_reason) AS tok_reason, "
+            "SUM(free_calls) AS free_calls, SUM(free_in) AS free_in, "
+            "SUM(free_out) AS free_out, SUM(fallbacks) AS fallbacks "
+            "FROM spend WHERE day >= ? "
             "GROUP BY kind ORDER BY cost DESC", (since(days),))]
-    except sqlite3.OperationalError:       # база старой версии без таблицы
+    except sqlite3.OperationalError:       # база старой версии без таблицы или колонок
         return []
 
 

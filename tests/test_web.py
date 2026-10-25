@@ -1632,7 +1632,7 @@ class TestNewsLanguage(WebCase):
         translate.translate_texts = self._real_translate
         WebCase.tearDown(self)
 
-    def fake(self, texts, language):
+    def fake(self, texts, language, **_kw):
         self.asked.append(list(texts))
         return ({i: self.RUSSIAN % i for i in range(len(texts))},
                 {"in": 10, "out": 5})
@@ -1702,7 +1702,7 @@ class TestNewsLanguage(WebCase):
         self.assertEqual(self.asked, [])
 
     def test_unreachable_model_leaves_the_card_readable(self):
-        def broken(texts, language):
+        def broken(texts, language, **_kw):
             self.asked.append(list(texts))
             raise LLMError("модель недоступна")
 
@@ -1715,7 +1715,7 @@ class TestNewsLanguage(WebCase):
 
     def test_unreachable_model_is_not_asked_on_every_scroll(self):
         """Иначе каждая прокрутка ленты ждёт таймаутов и повторов."""
-        def broken(texts, language):
+        def broken(texts, language, **_kw):
             self.asked.append(list(texts))
             raise LLMError("модель недоступна")
 
@@ -1729,7 +1729,7 @@ class TestNewsLanguage(WebCase):
     def test_line_the_model_refuses_is_not_paid_for_twice(self):
         """Строку вроде «Bump version to 4.7.2» модель вернёт как есть — и это
         не повод спрашивать её о том же на каждом показе ленты."""
-        def partly(texts, language):
+        def partly(texts, language, **_kw):
             self.asked.append(list(texts))
             return ({i: (self.RUSSIAN % i if i == 0 else text)
                      for i, text in enumerate(texts)}, {"in": 1, "out": 1})
