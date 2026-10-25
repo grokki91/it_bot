@@ -1005,7 +1005,8 @@ def db() -> sqlite3.Connection:
             _ready.discard(key)
     conn = sqlite3.connect(key, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    if key in _ready:
+        conn.execute("PRAGMA journal_mode=WAL")   # уже WAL — без блокировок
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=30000")
     # INSERT OR REPLACE в `sent` без этого не снимает с индекса старую строку:
@@ -1018,6 +1019,10 @@ def db() -> sqlite3.Connection:
         with _ready_lock:
             if key not in _ready:
                 try:
+                    # переход в WAL берёт эксклюзивную блокировку, а с открытым
+                    # чтением SQLite не ждёт её, а сразу отвечает «database is
+                    # locked» — поэтому соседние нити переходят по очереди
+                    conn.execute("PRAGMA journal_mode=WAL")
                     init_schema(conn)
                 except BaseException:
                     conn.close()
