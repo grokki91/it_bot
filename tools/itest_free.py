@@ -24,6 +24,9 @@ def main(rep):
     config.load_env()
     if not config.OR_KEY or not config.DS_KEY:
         raise itest.Blocked("нет OPENROUTER_API_KEY или DEEPSEEK_API_KEY")
+    if not llm.free_models():
+        raise itest.Blocked("ND_FREE_MODELS не задан — какие модели проверять, "
+                            "подскажет `digest.py doctor`")
     seen = []
 
     class Grab(logging.Handler):

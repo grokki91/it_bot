@@ -261,6 +261,8 @@ def free_doctor() -> None:
         print("[OK]   OpenRouter ключ: %s" % (shown or "принят"))
     else:
         print("[WARN] OpenRouter ключ: HTTP %s" % status)
+    if not llm.free_models():
+        free_hint(base)
     for model in llm.free_models():
         started = time.monotonic()
         status, data, err = llm._free_once(model, llm._payload(
@@ -273,6 +275,27 @@ def free_doctor() -> None:
         else:
             print("[WARN] OpenRouter %s: HTTP %s %s"
                   % (model, status, redact.scrub(llm._why(data, err))[:160]))
+
+
+def free_hint(base) -> None:
+    """ND_FREE_MODELS пуст: маршрут выключен, подсказываем, из чего выбрать."""
+    status, raw = http_get(base + "/models", 20)
+    try:
+        rows = json.loads(raw.decode("utf-8", "replace")).get("data") or []
+    except (ValueError, AttributeError):
+        rows = []
+    ids = [str(r.get("id")) for r in rows
+           if isinstance(r, dict) and str(r.get("id") or "").endswith(":free")]
+    print("[--]   OpenRouter: ND_FREE_MODELS не задан — всё идёт в DeepSeek")
+    if ids:
+        print("       Сейчас :free (%d): %s%s" % (len(ids), ", ".join(ids[:8]),
+                                                  " …" if len(ids) > 8 else ""))
+    else:
+        print("       Список :free не получен (HTTP %s): %s/models" % (status, base))
+    print("       Проверка: ND_FREE_MODELS=<id> %s doctor; "
+          "ND_FREE_MODELS=<id> python3 tools/itest_free.py\n"
+          "       Подошла — строка ND_FREE_MODELS=<id> в %s и перезапуск"
+          % (PROG, ENV_FILE))
 
 
 def cmd_feeds(args):
