@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-from .config import DB_FILE, log
+from .config import DB_FILE, local_now, log
 
 #: назначения запросов в порядке, в котором их показывает `status`
 LABELS = (
@@ -56,7 +56,8 @@ _pending = {}
 
 
 def today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Сутки расхода — по вашему поясу: «сегодня» с полуночи, а не с 03:00."""
+    return local_now().strftime("%Y-%m-%d")
 
 
 def _blank() -> list:
@@ -126,7 +127,7 @@ def flush() -> None:
 
 def since(days: int) -> str:
     """Первые сутки окна: «за неделю» это сегодня и шесть дней до него."""
-    return (datetime.now(timezone.utc)
+    return (local_now()
             - timedelta(days=max(1, int(days)) - 1)).strftime("%Y-%m-%d")
 
 

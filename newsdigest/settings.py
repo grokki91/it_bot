@@ -159,7 +159,7 @@ def show_times(value):
 def as_tz(raw):
     value = raw.strip()
     if value and not (Path("/usr/share/zoneinfo") / value).exists():
-        raise Invalid("такого пояса нет в системе. Пример: Europe/Riga")
+        raise Invalid("такого пояса нет в системе. Пример: Europe/Moscow")
     return value
 
 
@@ -217,7 +217,7 @@ SPEC = {
     "times": Setting("per_day", "ND_PER_DAY", as_int(1, subscribers.MAX_PER_DAY),
                      "сколько выпусков в сутки: 2 — в назначенное время и через "
                      "12 часов", show_times),
-    "tz": Setting("tz", "ND_TZ", as_tz, "часовой пояс, например Europe/Riga"),
+    "tz": Setting("tz", "ND_TZ", as_tz, "часовой пояс, например Europe/Moscow"),
     "max": Setting("max_items", "ND_MAX_ITEMS", as_int(1, 20),
                    "новостей в выпуске, когда раздел всего один"),
     "min": Setting("min_items", "ND_MIN_ITEMS", as_int(1, 20),
