@@ -105,7 +105,7 @@ def cmd_setup(_args):
         topic = CFG["topic"]
 
     send_at = ask("5/7 Время отправки ЧЧ:ММ (по вашему времени)", CFG["send_at"])
-    tz = ask("    Часовой пояс (например Europe/Riga, Europe/Warsaw)", CFG["tz"])
+    tz = ask("    Часовой пояс (например Europe/Moscow, Europe/Samara)", CFG["tz"])
     print("6/7 Выпусков в сутки: 1 — только в назначенное время,")
     print("    2 — ещё один через 12 часов (каждый выпуск стоит запросов к модели).")
     per_day = ask("    Сколько", str(CFG["per_day"]))
@@ -803,7 +803,7 @@ def spend_report(conn, since) -> None:
     total = sum(row["cost"] or 0.0 for row in rows)
     first = conn.execute("SELECT MIN(day) AS d FROM spend WHERE day >= ?",
                          (spend.since(7),)).fetchone()["d"]
-    span = (datetime.now(timezone.utc).date()
+    span = (local_now().date()
             - datetime.strptime(first, "%Y-%m-%d").date()).days + 1
     print("Расход DeepSeek за %s: $%.4f  (≈ $%.2f/мес)"
           % ("неделю" if span >= 7 else "%d дн." % span, total,

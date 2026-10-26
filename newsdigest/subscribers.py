@@ -339,7 +339,7 @@ def next_send_at(sub=None, now=None) -> datetime:
 
 
 def next_send_human(sub=None, now=None) -> str:
-    """«сегодня в 21:00 (Europe/Riga)» — когда ждать следующий выпуск."""
+    """«сегодня в 21:00 (Europe/Moscow)» — когда ждать следующий выпуск."""
     now = now if now is not None else now_for(sub)
     at = next_send_at(sub, now)
     when = "сегодня" if at.date() == now.date() else "завтра"
