@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Интеграция бесплатного маршрута (OpenRouter → DeepSeek) на копии живой базы.
 
-Тесты не видят контракт внешнего API и миграцию `spend` на настоящей базе.
-Стоит двух-трёх запросов к DeepSeek — меньше $0.001.
+Тесты не видят контракт внешнего API и миграцию `spend` и `shadow` на настоящей
+базе. Стоит трёх-четырёх запросов к DeepSeek — меньше $0.001.
 
     python3 tools/itest_free.py
 """
@@ -21,6 +21,7 @@ def main(rep):
     itest.prod_copy()
     from newsdigest import classify, config, llm, sections, spend, storage, translate
     from newsdigest.config import CFG
+    from newsdigest.rank import cluster
     config.load_env()
     if not config.OR_KEY or not config.DS_KEY:
         raise itest.Blocked("нет OPENROUTER_API_KEY или DEEPSEEK_API_KEY")
@@ -81,6 +82,38 @@ def main(rep):
         rep.metric("перевод: стало по-русски", expected=len(english),
                    actual=sum(1 for t in english
                               if translate.improved(t, ready.get(t, ""))))
+
+    # --- сверка: ранжирует DeepSeek, бесплатная отвечает в фоне, в shadow — счётчики
+    rep.check(storage.table_exists(conn, "shadow"), "таблица shadow на живой базе")
+    CFG.update(free_kinds="", free_shadow="rank", free_shadow_max=10 ** 6)
+    llm._free_off.clear()
+
+    def shadowed():
+        spend.flush()
+        row = conn.execute("SELECT SUM(asks) a, SUM(failed) f, SUM(items) i, "
+                           "SUM(agree) g, SUM(risky) r FROM shadow WHERE kind='rank'"
+                           ).fetchone()
+        return tuple(row[k] or 0 for k in ("a", "f", "i", "g", "r"))
+    groups = cluster([dict(r) for r in conn.execute(
+        "SELECT * FROM items WHERE title != '' ORDER BY rowid DESC LIMIT 40")],
+        CFG["similarity"])[:8]
+    before, paid_before = shadowed(), counters("rank")
+    ranked, _ = llm.rank_clusters(groups, sections.persona(topics))
+    llm._shadow_jobs.join()
+    after, paid_after = shadowed(), counters("rank")
+    rep.metric("сверка: DeepSeek ответил", expected=paid_before[0] + 1,
+               actual=paid_after[0])
+    rep.metric("сверка: в free_calls не попала", expected=paid_before[1],
+               actual=paid_after[1])
+    rep.metric("сверка: запросов", expected=before[0] + 1, actual=after[0])
+    if after[1] == before[1]:          # бесплатная ответила годно — сверены все id
+        rep.metric("сверка: сверено id", expected=before[2] + sum(
+            1 for row in llm._by_id(ranked).values()
+            if llm._value("rank", row) is not None), actual=after[2])
+    rep.lines.append("rank: сверено %d, совпало %d, опасных %d, брак %d"
+                     % (after[2] - before[2], after[3] - before[3],
+                        after[4] - before[4], after[1] - before[1]))
+    CFG["free_shadow"] = ""
 
     # --- откат: несуществующая модель → DeepSeek
     CFG["free_kinds"], CFG["free_models"] = "classify", "nonexistent/model-for-itest:free"

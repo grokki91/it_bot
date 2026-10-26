@@ -838,6 +838,48 @@ def spend_report(conn, since) -> None:
         print("  ⚠ DeepSeek рассуждает — см. WARNING про thinking в логе")
 
 
+def shadow_report(conn) -> None:
+    """Сверка DeepSeek с бесплатной моделью за неделю: можно ли отдать ей вид.
+
+    «Можно включить» — сверено не меньше `shadow_min` id, совпало не меньше
+    `shadow_agree`, опасных не больше `shadow_risky`. Опасное расхождение меняет
+    выпуск: новость по другую сторону порога, «нового нет» против «есть»,
+    придержать против выпустить. Брак — запросы, где бесплатный ответ маршрут не
+    взял бы (откат в DeepSeek): он стоит квоты, но не качества.
+    """
+    rows = spend.shadow_totals(conn, 7)
+    if not rows and not any(llm.shadow_wanted(k) for k in llm.SHADOW_KINDS):
+        return
+    print("\n=== Сверка с бесплатной (7 дн.) ===")
+    if not rows:
+        print("  пока не было, сверяется: %s" % CFG["free_shadow"])
+        return
+    free = [k.strip() for k in str(CFG["free_kinds"] or "").split(",") if k.strip()]
+    places = [kind for kind, _label in spend.LABELS]
+    ready = []
+    for row in sorted(rows, key=lambda r: places.index(r["kind"])
+                      if r["kind"] in places else len(places)):
+        items = row["items"] or 0
+        agree = (row["agree"] or 0) / max(1, items)
+        risky = (row["risky"] or 0) / max(1, items)
+        if row["kind"] in free or "all" in free:
+            verdict = "уже бесплатно"
+        elif items < CFG["shadow_min"]:
+            verdict = "рано"
+        elif agree >= CFG["shadow_agree"] and risky <= CFG["shadow_risky"]:
+            verdict = "можно включить"
+            ready.append(row["kind"])
+        else:
+            verdict = "не включать"
+        print("  %-13s сверено %d, совпало %d%%, опасных %.1f%%  "
+              "(запросов %d, брак %d) → %s"
+              % (spend.label(row["kind"]), items, int(100 * agree), 100 * risky,
+                 row["asks"] or 0, row["failed"] or 0, verdict))
+    if ready:
+        print("  Включить: строка ND_FREE_KINDS=%s в %s и перезапуск"
+              % (",".join(free + ready), ENV_FILE))
+
+
 def breaking_report(conn, since) -> None:
     """Что было со срочным за неделю.
 
@@ -894,6 +936,7 @@ def cmd_status(_args):
     print("\nМатериалов за сутки: %d   отправлено за неделю: %d" % (fresh, sent))
 
     spend_report(conn, week)
+    shadow_report(conn)
 
     breaking_report(conn, week)
 

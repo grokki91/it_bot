@@ -103,6 +103,20 @@ CREATE TABLE IF NOT EXISTS spend (
     PRIMARY KEY (day, kind)
 );
 
+-- Сверка DeepSeek с бесплатной моделью (llm.shadow_put): только счётчики, без
+-- текстов. asks — запросов, failed — из них бесплатный ответ не взяли бы,
+-- items — сверено id, agree — совпало, risky — расхождения, меняющие выпуск.
+CREATE TABLE IF NOT EXISTS shadow (
+    day    TEXT NOT NULL,
+    kind   TEXT NOT NULL,
+    asks   INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    items  INTEGER NOT NULL DEFAULT 0,
+    agree  INTEGER NOT NULL DEFAULT 0,
+    risky  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, kind)
+);
+
 -- Сюжетные связи: какая новость какую продолжает. Приговор `follows` живёт в
 -- `dupes` по паре СИГНАТУР — он общий для всех подписчиков и переживает
 -- пересборку выпуска. Здесь же лежит то, что из него вышло у конкретного

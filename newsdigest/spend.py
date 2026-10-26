@@ -17,6 +17,9 @@
 
 Модуль не знает про `storage`: тот через `translate` импортирует `llm`, а
 `llm` пишет сюда. Сама таблица `spend` создаётся в `storage.SCHEMA`.
+
+Тем же путём пишется `shadow` — счётчики сверки DeepSeek с бесплатной моделью:
+она идёт в фоновой нити и так же не должна ждать занятую базу.
 """
 from __future__ import annotations
 
@@ -45,14 +48,25 @@ WAIT = 0.25
 FIELDS = ("calls", "tok_in", "tok_cached", "tok_out", "cost", "tok_reason",
           "free_calls", "free_in", "free_out", "fallbacks")
 
-UPSERT = ("INSERT INTO spend(day, kind, %s) VALUES (?,?,%s) "
-          "ON CONFLICT(day, kind) DO UPDATE SET %s"
-          % (", ".join(FIELDS), ",".join("?" * len(FIELDS)),
-             ", ".join("%s=%s+excluded.%s" % (f, f, f) for f in FIELDS)))
+#: колонки сверки с бесплатной моделью (`storage.SCHEMA`, таблица shadow)
+SHADOW_FIELDS = ("asks", "failed", "items", "agree", "risky")
+
+
+def _upsert(table, fields) -> str:
+    return ("INSERT INTO %s(day, kind, %s) VALUES (?,?,%s) "
+            "ON CONFLICT(day, kind) DO UPDATE SET %s"
+            % (table, ", ".join(fields), ",".join("?" * len(fields)),
+               ", ".join("%s=%s+excluded.%s" % (f, f, f) for f in fields)))
+
+
+UPSERT = _upsert("spend", FIELDS)
+SHADOW_UPSERT = _upsert("shadow", SHADOW_FIELDS)
 
 _lock = threading.Lock()
 #: (сутки, назначение) -> значения по FIELDS
 _pending = {}
+#: (сутки, назначение) -> значения по SHADOW_FIELDS
+_shadow = {}
 
 
 def today() -> str:
@@ -99,30 +113,67 @@ def fallback(kind) -> None:
         log.debug("Откат не записан: %s", exc)
 
 
+def shadow(kind, asks=0, failed=0, items=0, agree=0, risky=0) -> None:
+    """Счётчики одной сверки с бесплатной моделью. Как и учёт, ничего не роняет."""
+    try:
+        with _lock:
+            acc = _shadow.setdefault((today(), kind or "other"),
+                                     [0] * len(SHADOW_FIELDS))
+            for at, value in enumerate((asks, failed, items, agree, risky)):
+                acc[at] += int(value)
+        flush()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Сверка не записана: %s", exc)
+
+
 def flush() -> None:
     """Сбрасывает накопленное в базу. База занята — остаётся до следующего раза."""
     with _lock:
-        batch = dict(_pending)
+        books = [(UPSERT, _pending, dict(_pending)),
+                 (SHADOW_UPSERT, _shadow, dict(_shadow))]
         _pending.clear()
-    if not batch:
+        _shadow.clear()
+    if not any(batch for _sql, _book, batch in books):
         return
     try:
         if not DB_FILE.exists():
             raise sqlite3.OperationalError("базы ещё нет")
         conn = sqlite3.connect(str(DB_FILE), timeout=WAIT)
         try:
-            conn.executemany(UPSERT, [(day, kind) + tuple(acc)
-                                      for (day, kind), acc in batch.items()])
+            for sql, _book, batch in books:
+                conn.executemany(sql, [(day, kind) + tuple(acc)
+                                       for (day, kind), acc in batch.items()])
             conn.commit()
         finally:
             conn.close()
     except sqlite3.Error as exc:
         with _lock:
-            for key, acc in batch.items():
-                mine = _pending.setdefault(key, _blank())
-                for at, value in enumerate(acc):
-                    mine[at] += value
+            for _sql, book, batch in books:
+                for key, acc in batch.items():
+                    mine = book.setdefault(key, [0] * len(acc))
+                    for at, value in enumerate(acc):
+                        mine[at] += value
         log.debug("Расход подождёт следующего запроса: %s", exc)
+
+
+def shadow_asks(day) -> int:
+    """Сколько запросов сверки ушло за сутки — с запуска процесса и до него.
+    База занята — считаем только своё: лимит сверки не стоит задержки."""
+    flush()
+    with _lock:
+        pending = sum(acc[0] for (day_, _kind), acc in _shadow.items() if day_ == day)
+    try:
+        if not DB_FILE.exists():
+            raise sqlite3.OperationalError("базы ещё нет")
+        conn = sqlite3.connect(str(DB_FILE), timeout=WAIT)
+        try:
+            row = conn.execute("SELECT SUM(asks) FROM shadow WHERE day=?",
+                               (day,)).fetchone()
+        finally:
+            conn.close()
+        return pending + int(row[0] or 0)
+    except sqlite3.Error:
+        return pending
 
 
 def since(days: int) -> str:
@@ -144,6 +195,18 @@ def totals(conn, days: int = 7) -> list:
             "FROM spend WHERE day >= ? "
             "GROUP BY kind ORDER BY cost DESC", (since(days),))]
     except sqlite3.OperationalError:       # база старой версии без таблицы или колонок
+        return []
+
+
+def shadow_totals(conn, days: int = 7) -> list:
+    """Сверка с бесплатной моделью за окно по видам."""
+    flush()
+    try:
+        return [dict(row) for row in conn.execute(
+            "SELECT kind, SUM(asks) AS asks, SUM(failed) AS failed, "
+            "SUM(items) AS items, SUM(agree) AS agree, SUM(risky) AS risky "
+            "FROM shadow WHERE day >= ? GROUP BY kind", (since(days),))]
+    except sqlite3.OperationalError:       # база старой версии без таблицы
         return []
 
 

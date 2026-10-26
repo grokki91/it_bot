@@ -36,16 +36,19 @@ class FreeCase(unittest.TestCase):
     def setUp(self):
         self.conn = storage.db()
         self.conn.execute("DELETE FROM spend")
+        self.conn.execute("DELETE FROM shadow")
         self.conn.commit()
         spend._pending.clear()
+        spend._shadow.clear()
         self.saved = (llm.post_json, llm.time.time, config.DS_KEY, config.OR_KEY,
                       dict(CFG))
         config.DS_KEY, config.OR_KEY = "test-key", "or-test-key"
         CFG.update(free_kinds="classify,translate", free_models="m1:free",
-                   llm_retries=1)
+                   free_shadow="", llm_retries=1)
         llm._free_off.clear()
         llm._told.clear()
         llm._no_reasoning = llm._no_thinking = False
+        llm._shadow_used[:] = ["", 0]
         self.now = EVENING
         llm.time.time = lambda: self.now
         self.calls = []
@@ -54,10 +57,12 @@ class FreeCase(unittest.TestCase):
         llm.post_json = self.fake
 
     def tearDown(self):
+        llm._shadow_jobs.join()     # сверка в фоне не должна уйти в настоящую сеть
         (llm.post_json, llm.time.time, config.DS_KEY, config.OR_KEY, cfg) = self.saved
         CFG.clear()
         CFG.update(cfg)
         spend._pending.clear()
+        spend._shadow.clear()
         self.conn.close()
 
     def fake(self, url, payload, headers, timeout):
@@ -186,6 +191,109 @@ class TestRouting(FreeCase):
         self.assertNotIn("reasoning", self.calls[1][1])
 
 
+class TestShadow(FreeCase):
+    """Сверка: в работу идёт DeepSeek, бесплатная отвечает в фоне, в базу — счётчики."""
+
+    def setUp(self):
+        super().setUp()
+        CFG.update(free_shadow="rank,urgency,dupes,claims,cards", min_score=5.5)
+        self.paid = [reply([{"id": 0, "score": 8}, {"id": 1, "score": 4}])]
+        self.free = [reply([{"id": 0, "score": 7.5}, {"id": 1, "score": 6}])]
+
+    def rank(self):
+        data, _used = self.ask(kind="rank", expect=(0, 1))
+        llm._shadow_jobs.join()
+        return data
+
+    def shadow(self, kind="rank"):
+        spend.flush()
+        found = self.conn.execute("SELECT asks, failed, items, agree, risky "
+                                  "FROM shadow WHERE kind=?", (kind,)).fetchone()
+        return tuple(found) if found else None
+
+    def test_deepseek_answer_is_compared_in_background(self):
+        data = self.rank()
+        self.assertEqual(data["items"][0]["score"], 8)
+        self.assertEqual(self.routes(), ["paid", "free"])
+        self.assertNotIn("thinking", self.calls[1][1])
+        # id 0: 8 против 7.5 — совпало; id 1: 4 против 6 — по разные стороны порога
+        self.assertEqual(self.shadow(), (1, 0, 2, 1, 1))
+        row = self.row("rank")
+        self.assertEqual((row["calls"], row["free_calls"], row["fallbacks"]), (1, 0, 0))
+
+    def test_not_compared_without_model_or_for_text_and_delegated_kinds(self):
+        base = dict(CFG)
+        self.free = [reply([{"id": 0, "section": "it"}])]
+        for kind, cfg, route in (("rank", {"free_models": ""}, "paid"),
+                                 ("cards", {}, "paid"),
+                                 ("rank", {"free_shadow": ""}, "paid"),
+                                 # уже идёт бесплатно — сверять не с чем
+                                 ("classify", {"free_shadow": "classify"}, "free")):
+            with self.subTest(kind=kind, cfg=cfg):
+                self.calls.clear()
+                CFG.update(base, **cfg)
+                self.ask(kind=kind)
+                llm._shadow_jobs.join()
+                self.assertEqual(self.routes(), [route])
+                self.assertIsNone(self.shadow(kind))
+
+    def test_unusable_free_answer_is_counted_as_failed(self):
+        self.free = [reply([{"id": 0, "score": 7.5}])]
+        self.rank()
+        self.assertEqual(self.shadow(), (1, 1, 0, 0, 0))
+        self.assertFalse(self.row("rank")["fallbacks"])
+
+    def test_daily_cap_survives_restart(self):
+        CFG["free_shadow_max"] = 2
+        for _ in range(3):
+            self.rank()
+        self.assertEqual(self.routes(), ["paid", "free", "paid", "free", "paid"])
+        llm._shadow_used[:] = ["", 0]          # как после перезапуска
+        self.rank()
+        self.assertEqual(self.routes()[-1], "paid")
+        self.assertEqual(self.shadow()[0], 2)
+
+    def test_resting_route_is_not_asked(self):
+        llm._free_off["*"] = MIDNIGHT
+        self.rank()
+        self.assertEqual(self.routes(), ["paid"])
+        self.assertIsNone(self.shadow())
+
+    def test_daily_limit_hit_by_shadow_pauses_route(self):
+        self.free = [(429, {"error": {"message": "free-models-per-day"}}, "")]
+        self.rank()
+        self.rank()
+        self.assertEqual(self.routes(), ["paid", "free", "paid"])
+        self.assertEqual(self.shadow(), (1, 1, 0, 0, 0))
+
+    def test_compare_by_kind(self):
+        CFG.update(breaking_alert_score=7.5, breaking_flash_score=9.0)
+
+        def items(*rows):
+            return {"items": [dict(row, id=idx) for idx, row in enumerate(rows)]}
+        cases = (
+            # «нового нет» против «есть» — опасно; same против less — нет
+            ("dupes", items({"news": "same"}, {"news": "same"}, {"news": "less"}),
+             items({"news": "more"}, {"news": "less"}, {"news": "LESS"}), (3, 1, 1)),
+            ("claims", items({"verdict": "hold"}, {"verdict": "ok"}),
+             items({"verdict": "ok"}, {"verdict": "caveat"}), (2, 0, 1)),
+            # 9.5 и 9.1 — обе молнии; 7.0 и 8.0 — по разные стороны 🔔
+            ("urgency", items({"urgency": 9.5}, {"urgency": 7.0}),
+             items({"urgency": 9.1}, {"urgency": 8.0}), (2, 1, 1)),
+            # неуверенный ответ — «раздела нет»
+            ("classify", items({"section": "ai", "confidence": 0.3},
+                               {"section": "ai", "confidence": 0.9}),
+             items({"section": "", "confidence": 0}, {"section": "it", "confidence": 1}),
+             (2, 1, 0)),
+            # бесплатная промолчала или ответила неразборчиво — опасно
+            ("rank", items({"score": 6}, {"score": 7}, {"score": "?"}),
+             {"items": [{"id": 0, "score": "high"}]}, (2, 0, 2)),
+        )
+        for kind, paid, free, expected in cases:
+            with self.subTest(kind=kind):
+                self.assertEqual(llm.compare(kind, paid, free), expected)
+
+
 class TestTranslate(FreeCase):
     def test_english_from_free_model_goes_to_deepseek(self):
         self.free = [reply([{"id": 0, "text": "Apple ships new chip"}])]
@@ -238,6 +346,40 @@ class TestReport(FreeCase):
         self.assertIn("рассуждения 5k", text)
         self.assertIn("сэкономлено", text)
         self.assertIn("DeepSeek рассуждает", text)
+
+
+class TestShadowReport(FreeCase):
+    def test_status_gives_verdict_and_env_line(self):
+        CFG.update(free_shadow="rank,urgency,dupes,claims,classify")
+        spend.shadow("rank", asks=30, failed=2, items=250, agree=240, risky=2)
+        spend.shadow("urgency", asks=5, items=50, agree=50)
+        spend.shadow("dupes", asks=30, items=300, agree=200, risky=3)
+        spend.shadow("claims", asks=30, items=300, agree=295, risky=9)
+        spend.shadow("classify", asks=30, items=300, agree=300)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.shadow_report(self.conn)
+        lines = {line.split()[0]: line for line in out.getvalue().splitlines()
+                 if line.startswith("  ")}
+        self.assertIn("сверено 250, совпало 96%, опасных 0.8%", lines["ранжирование"])
+        self.assertIn("(запросов 30, брак 2) → можно включить", lines["ранжирование"])
+        self.assertIn("→ рано", lines["срочное"])
+        self.assertIn("→ не включать", lines["дубли"])
+        self.assertIn("→ не включать", lines["фактчек"])    # 3% опасных
+        self.assertIn("→ уже бесплатно", lines["разделы"])
+        self.assertIn("ND_FREE_KINDS=classify,translate,rank", lines["Включить:"])
+
+    def test_silent_without_route_and_history(self):
+        config.OR_KEY = ""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.shadow_report(self.conn)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_old_base_without_table(self):
+        conn = sqlite3.connect(":memory:")
+        self.assertEqual(spend.shadow_totals(conn), [])
+        conn.close()
 
 
 class TestDoctor(FreeCase):
