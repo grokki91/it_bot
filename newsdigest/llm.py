@@ -57,6 +57,8 @@ TEXT_KINDS = ("cards", "translate")
 _lock = threading.Lock()
 #: модель или "*" (весь маршрут) -> до какого time.time() к ней не ходим
 _free_off = {}
+#: (модель, вид) -> до какого time.time() её не зовёт сверка (`_shadow_one`)
+_shadow_off = {}
 #: о чём уже предупредили: одно и то же в лог раз за процесс (или за сутки)
 _told = set()
 #: OpenRouter не принял `reasoning`, DeepSeek не принял `thinking` — больше не шлём
@@ -223,13 +225,18 @@ def _why(data, err) -> str:
     return err or (json.dumps(data, ensure_ascii=False)[:300] if data else "")
 
 
-def _resting(model, now) -> bool:
+def _resting(model, now, shadow=None) -> bool:
     with _lock:
-        return now < _free_off.get("*", 0) or now < _free_off.get(model, 0)
+        return (now < _free_off.get("*", 0) or now < _free_off.get(model, 0)
+                or now < _shadow_off.get((model, shadow), 0))
 
 
-def _rest(model, status, why, now) -> bool:
-    """Пауза после сбоя. True — следующую модель пробовать бессмысленно."""
+def _rest(model, status, why, now, shadow=None) -> bool:
+    """Пауза после сбоя. True — следующую модель пробовать бессмысленно.
+
+    `shadow` — вид запроса сверки. Её сбой маршрут не останавливает: тяжёлое
+    ранжирование может не пройти там, где разделы проходят, поэтому отдыхает
+    только сверка этого вида. Общие для всех — суточный лимит и ключ."""
     forever = float("inf")
     if status == 429 and "per-day" in why.lower():
         with _lock:
@@ -250,14 +257,19 @@ def _rest(model, status, why, now) -> bool:
         # 403 — отказ этой модели («only available on agentic harnesses»),
         # плохой ключ OpenRouter отдаёт 401
         pause = forever
-        _once("model:" + model, logging.WARNING,
-              "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "
-              "или разрешите бесплатные эндпоинты в настройках приватности",
-              model, status, why[:160])
     elif status in (0, 408) or status >= 500:
         pause = CFG["free_pause_min"] * 60
     else:
         return True
+    if shadow is not None:
+        with _lock:
+            _shadow_off[(model, shadow)] = now + pause
+        return False
+    if pause == forever:
+        _once("model:" + model, logging.WARNING,
+              "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "
+              "или разрешите бесплатные эндпоинты в настройках приватности",
+              model, status, why[:160])
     with _lock:
         _free_off[model] = now + pause
     return False
@@ -306,15 +318,15 @@ def _free(payload, kind, expect, check, strict=False):
     return None
 
 
-def _ask_free(payload, kind, expect, check):
-    """Модели из `free_models` по очереди, с паузами после сбоев.
+def _ask_free(payload, kind, expect, check, shadow=None):
+    """Модели из `free_models` по очереди, с паузами после сбоев (`_rest`).
 
     Возвращает ((данные, usage) или None, спрашивали ли хоть одну, что не так).
     None — ответа, который можно взять в работу, нет."""
     asked, last = False, "все модели на паузе"
     for model in free_models():
         now = time.time()
-        if _resting(model, now):
+        if _resting(model, now, shadow):
             continue
         asked = True
         status, data, err = _free_once(model, payload)
@@ -333,7 +345,7 @@ def _ask_free(payload, kind, expect, check):
                 break
             return (parsed, _used(data.get("usage"))), True, ""
         last = "%s: HTTP %s %s" % (model, status, why[:160])
-        if status == 200 or _rest(model, status, why, now):
+        if status == 200 or _rest(model, status, why, now, shadow):
             break
     return None, asked, last
 
@@ -347,7 +359,8 @@ def _ask_free(payload, kind, expect, check):
 #: Квота `:free` у сверки и у бесплатного маршрута общая. Маршрут идёт первым:
 #: он отвечает на сам запрос, а сверка — уже после DeepSeek, в одной нити, по
 #: очереди на четыре места (лишнее выбрасываем: сверка — выборка), не больше
-#: `free_shadow_max` в сутки и только пока суточный лимит не исчерпан.
+#: `free_shadow_max` в сутки и только пока суточный лимит не исчерпан. Её сбои
+#: ставят на паузу только её саму (`_shadow_off`), маршрут работает дальше.
 #:
 #: Карточки и перевод так не сравнить — там текст; карточки владелец сравнивает
 #: глазами (`tools/freecards.py`).
@@ -402,7 +415,7 @@ def _shadow_one(kind, payload, paid, expect) -> None:
         _shadow_used[:] = [day, spend.shadow_asks(day)]
     if _shadow_used[1] >= CFG["free_shadow_max"]:
         return
-    got, asked, _last = _ask_free(payload, kind, expect, None)
+    got, asked, _last = _ask_free(payload, kind, expect, None, shadow=kind)
     if not asked:          # все модели на паузе или суточный лимит исчерпан
         return
     _shadow_used[1] += 1

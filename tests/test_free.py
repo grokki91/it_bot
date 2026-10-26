@@ -10,6 +10,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,6 +47,7 @@ class FreeCase(unittest.TestCase):
         CFG.update(free_kinds="classify,translate", free_models="m1:free",
                    free_shadow="", llm_retries=1)
         llm._free_off.clear()
+        llm._shadow_off.clear()
         llm._told.clear()
         llm._no_reasoning = llm._no_thinking = False
         llm._shadow_used[:] = ["", 0]
@@ -265,6 +267,36 @@ class TestShadow(FreeCase):
         self.rank()
         self.assertEqual(self.routes(), ["paid", "free", "paid"])
         self.assertEqual(self.shadow(), (1, 1, 0, 0, 0))
+
+    def test_shadow_failure_does_not_stop_route(self):
+        self.free = [(400, {"error": {"message": "context length exceeded"}}, ""),
+                     reply([{"id": 0, "section": "it"}])]
+        self.rank()
+        self.assertEqual(self.shadow(), (1, 1, 0, 0, 0))
+        self.assertNotIn("model:m1:free", llm._told)   # «уберите её» — не про сверку
+        data, _used = self.ask()               # разделы по-прежнему бесплатно
+        self.assertEqual(data["items"][0]["section"], "it")
+        self.rank()                            # а сверка ранжирования отдыхает
+        self.assertEqual(self.routes(), ["paid", "free", "free", "paid"])
+
+    def test_full_queue_drops_extra_jobs(self):
+        entered, release = threading.Event(), threading.Event()
+        plain = self.fake
+
+        def slow(url, payload, headers, timeout):
+            if FREE in url:
+                entered.set()
+                release.wait(5)
+            return plain(url, payload, headers, timeout)
+        llm.post_json = slow
+        self.ask(kind="rank", expect=(0, 1))
+        self.assertTrue(entered.wait(5))       # нить сверки занята первым
+        for _ in range(5):                     # четыре ждут, пятый лишний
+            self.ask(kind="rank", expect=(0, 1))
+        release.set()
+        llm._shadow_jobs.join()
+        self.assertEqual(self.routes().count("free"), 5)
+        self.assertEqual(self.shadow()[0], 5)
 
     def test_compare_by_kind(self):
         CFG.update(breaking_alert_score=7.5, breaking_flash_score=9.0)
