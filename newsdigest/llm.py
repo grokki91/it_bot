@@ -6,6 +6,7 @@ import collections
 import hashlib
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -56,6 +57,8 @@ TEXT_KINDS = ("cards", "translate")
 _lock = threading.Lock()
 #: модель или "*" (весь маршрут) -> до какого time.time() к ней не ходим
 _free_off = {}
+#: (модель, вид) -> до какого time.time() её не зовёт сверка (`_shadow_one`)
+_shadow_off = {}
 #: о чём уже предупредили: одно и то же в лог раз за процесс (или за сутки)
 _told = set()
 #: OpenRouter не принял `reasoning`, DeepSeek не принял `thinking` — больше не шлём
@@ -121,6 +124,10 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
     только OpenRouter, сбой — `LLMError`. Бесплатный ответ берём, только если
     в нём есть каждый id из `expect` с обязательным полем (`REQUIRED`) и его
     принял `check(данные)`.
+
+    Ответ DeepSeek по видам из `free_shadow` в фоне сверяется с бесплатной
+    моделью (`shadow_put`): в работу идёт только он, а `status` показывает, можно
+    ли этот вид отдать бесплатной.
     """
     if route not in ROUTES:
         raise ValueError("route: %r" % route)
@@ -135,7 +142,10 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
         got = _free(payload, kind, expect, check, strict=route == "free")
         if got is not None:
             return got
-    return _paid(payload, kind)
+    data, used = _paid(payload, kind)
+    if route == "auto" and shadow_wanted(kind):
+        shadow_put(kind, payload, data, expect)
+    return data, used
 
 
 def _paid(payload, kind):
@@ -215,13 +225,18 @@ def _why(data, err) -> str:
     return err or (json.dumps(data, ensure_ascii=False)[:300] if data else "")
 
 
-def _resting(model, now) -> bool:
+def _resting(model, now, shadow=None) -> bool:
     with _lock:
-        return now < _free_off.get("*", 0) or now < _free_off.get(model, 0)
+        return (now < _free_off.get("*", 0) or now < _free_off.get(model, 0)
+                or now < _shadow_off.get((model, shadow), 0))
 
 
-def _rest(model, status, why, now) -> bool:
-    """Пауза после сбоя. True — следующую модель пробовать бессмысленно."""
+def _rest(model, status, why, now, shadow=None) -> bool:
+    """Пауза после сбоя. True — следующую модель пробовать бессмысленно.
+
+    `shadow` — вид запроса сверки. Её сбой маршрут не останавливает: тяжёлое
+    ранжирование может не пройти там, где разделы проходят, поэтому отдыхает
+    только сверка этого вида. Общие для всех — суточный лимит и ключ."""
     forever = float("inf")
     if status == 429 and "per-day" in why.lower():
         with _lock:
@@ -242,22 +257,25 @@ def _rest(model, status, why, now) -> bool:
         # 403 — отказ этой модели («only available on agentic harnesses»),
         # плохой ключ OpenRouter отдаёт 401
         pause = forever
-        _once("model:" + model, logging.WARNING,
-              "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "
-              "или разрешите бесплатные эндпоинты в настройках приватности",
-              model, status, why[:160])
     elif status in (0, 408) or status >= 500:
         pause = CFG["free_pause_min"] * 60
     else:
         return True
+    if shadow is not None:
+        with _lock:
+            _shadow_off[(model, shadow)] = now + pause
+        return False
+    if pause == forever:
+        _once("model:" + model, logging.WARNING,
+              "OpenRouter не отдаёт %s (HTTP %s: %s) — уберите её из ND_FREE_MODELS "
+              "или разрешите бесплатные эндпоинты в настройках приватности",
+              model, status, why[:160])
     with _lock:
         _free_off[model] = now + pause
     return False
 
 
-def covers(kind, data, expect) -> bool:
-    """В ответе есть каждый id из `expect` вместе с обязательным полем."""
-    field = REQUIRED.get(kind)
+def _by_id(data) -> dict:
     rows = {}
     for row in as_list(data):
         if not isinstance(row, dict):
@@ -266,6 +284,13 @@ def covers(kind, data, expect) -> bool:
             rows[int(row.get("id", -1))] = row
         except (TypeError, ValueError):
             continue
+    return rows
+
+
+def covers(kind, data, expect) -> bool:
+    """В ответе есть каждый id из `expect` вместе с обязательным полем."""
+    field = REQUIRED.get(kind)
+    rows = _by_id(data)
     for idx in expect:
         row = rows.get(int(idx))
         if row is None or (field and row.get(field) is None):
@@ -281,10 +306,27 @@ def _free(payload, kind, expect, check, strict=False):
         if strict:
             raise LLMError("OPENROUTER_API_KEY не задан")
         return None
+    got, asked, last = _ask_free(payload, kind, expect, check)
+    if got is not None:
+        spend.add(kind, got[1], 0.0, route="free")
+        return got
+    if asked:
+        spend.fallback(kind)
+        log.debug("Бесплатная модель не ответила (%s) — спрашиваю DeepSeek", last)
+    if strict:
+        raise LLMError("OpenRouter: " + last)
+    return None
+
+
+def _ask_free(payload, kind, expect, check, shadow=None):
+    """Модели из `free_models` по очереди, с паузами после сбоев (`_rest`).
+
+    Возвращает ((данные, usage) или None, спрашивали ли хоть одну, что не так).
+    None — ответа, который можно взять в работу, нет."""
     asked, last = False, "все модели на паузе"
     for model in free_models():
         now = time.time()
-        if _resting(model, now):
+        if _resting(model, now, shadow):
             continue
         asked = True
         status, data, err = _free_once(model, payload)
@@ -301,18 +343,152 @@ def _free(payload, kind, expect, check, strict=False):
             if check is not None and not check(parsed):
                 last = "%s: ответ не прошёл проверку" % model
                 break
-            used = _used(data.get("usage"))
-            spend.add(kind, used, 0.0, route="free")
-            return parsed, used
+            return (parsed, _used(data.get("usage"))), True, ""
         last = "%s: HTTP %s %s" % (model, status, why[:160])
-        if status == 200 or _rest(model, status, why, now):
+        if status == 200 or _rest(model, status, why, now, shadow):
             break
-    if asked:
-        spend.fallback(kind)
-        log.debug("Бесплатная модель не ответила (%s) — спрашиваю DeepSeek", last)
-    if strict:
-        raise LLMError("OpenRouter: " + last)
-    return None
+    return None, asked, last
+
+
+# ------------------------------------------------- сверка с бесплатной моделью
+#: Решать, можно ли отдать бесплатной ранжирование или фактчек, надо по
+#: цифрам, а не на глаз. Поэтому ответ DeepSeek по таким видам в фоне
+#: сравнивается с ответом бесплатной модели на тот же запрос. В выпуск идёт
+#: только DeepSeek; в базу — только счётчики (`spend.shadow`), без текстов.
+#:
+#: Квота `:free` у сверки и у бесплатного маршрута общая. Маршрут идёт первым:
+#: он отвечает на сам запрос, а сверка — уже после DeepSeek, в одной нити, по
+#: очереди на четыре места (лишнее выбрасываем: сверка — выборка), не больше
+#: `free_shadow_max` в сутки и только пока суточный лимит не исчерпан. Её сбои
+#: ставят на паузу только её саму (`_shadow_off`), маршрут работает дальше.
+#:
+#: Карточки и перевод так не сравнить — там текст; карточки владелец сравнивает
+#: глазами (`tools/freecards.py`).
+SHADOW_KINDS = ("rank", "urgency", "dupes", "claims", "classify")
+
+_shadow_jobs = queue.Queue(maxsize=4)
+_shadow_thread = None
+#: [сутки, сколько запросов сверки за них ушло] — только для нити сверки
+_shadow_used = ["", 0]
+
+
+def shadow_wanted(kind) -> bool:
+    """Сверять ли этот вид. Тот, что уже идёт бесплатно, — нет: его ответ и так
+    проверен механически, а повторять запрос незачем."""
+    if not config.OR_KEY or not free_models() or free_wanted(kind):
+        return False
+    kinds = {k.strip() for k in str(CFG["free_shadow"] or "").split(",") if k.strip()}
+    return kind in SHADOW_KINDS and kind in kinds
+
+
+def shadow_put(kind, payload, paid, expect) -> None:
+    """Ставит сверку в очередь. Запрос не ждёт ни её, ни места в очереди."""
+    global _shadow_thread
+    with _lock:
+        if _shadow_thread is None or not _shadow_thread.is_alive():
+            _shadow_thread = threading.Thread(target=_shadow_loop,
+                                              name="free-shadow", daemon=True)
+            _shadow_thread.start()
+    try:
+        # копия: вызывающий волен менять свой ответ, пока сверка ждёт очереди
+        _shadow_jobs.put_nowait((kind, payload, json.loads(json.dumps(paid)),
+                                 tuple(expect)))
+    except queue.Full:
+        pass
+
+
+def _shadow_loop() -> None:
+    while True:
+        job = _shadow_jobs.get()
+        try:
+            _shadow_one(*job)
+        except Exception as exc:  # noqa: BLE001 — сверка не повод ронять нить
+            log.debug("Сверка с бесплатной моделью не удалась: %s", exc)
+        finally:
+            _shadow_jobs.task_done()
+
+
+def _shadow_one(kind, payload, paid, expect) -> None:
+    day = spend.today()
+    if _shadow_used[0] != day:
+        # после перезапуска сутки продолжаются: считанное берём из базы
+        _shadow_used[:] = [day, spend.shadow_asks(day)]
+    if _shadow_used[1] >= CFG["free_shadow_max"]:
+        return
+    got, asked, _last = _ask_free(payload, kind, expect, None, shadow=kind)
+    if not asked:          # все модели на паузе или суточный лимит исчерпан
+        return
+    _shadow_used[1] += 1
+    if got is None:        # такой ответ маршрут не взял бы: был бы откат
+        spend.shadow(kind, asks=1, failed=1)
+        return
+    items, agree, risky = compare(kind, paid, got[0])
+    spend.shadow(kind, asks=1, items=items, agree=agree, risky=risky)
+
+
+def _level(urgency) -> int:
+    """Срочность → что с новостью будет: 0 ждёт выпуска, 1 🔔, 2 ⚡."""
+    return ((urgency >= CFG["breaking_alert_score"])
+            + (urgency >= CFG["breaking_flash_score"]))
+
+
+def _value(kind, row):
+    """Что сверяем в строке ответа. None — сверять нечего."""
+    try:
+        if kind == "classify":
+            # как в `classify.ask_model`: неуверенный ответ — это «раздела нет»
+            if float(row.get("confidence") or 0) < 0.5:
+                return ""
+            return str(row.get("section") or "").strip()
+        if kind in ("rank", "urgency"):
+            return float(row.get(REQUIRED[kind]))
+        return str(row.get(REQUIRED[kind]) or "").strip().lower()
+    except (TypeError, ValueError):
+        return None
+
+
+def _agree(kind, mine, theirs) -> bool:
+    if kind == "rank":
+        return abs(mine - theirs) <= 1
+    if kind == "urgency":
+        return _level(mine) == _level(theirs)
+    return mine == theirs
+
+
+def _risky(kind, mine, theirs) -> bool:
+    """Расхождение меняет выпуск: новость пропала бы или попала бы зря."""
+    if kind == "rank":
+        return (mine >= CFG["min_score"]) != (theirs >= CFG["min_score"])
+    if kind == "urgency":
+        return _level(mine) != _level(theirs)
+    if kind == "dupes":
+        return (mine in NOTHING_NEW) != (theirs in NOTHING_NEW)
+    if kind == "claims":
+        return (mine == "hold") != (theirs == "hold")
+    return False
+
+
+def compare(kind, paid, free) -> tuple:
+    """Ответы DeepSeek и бесплатной модели по id: (сверено, совпало, опасных).
+
+    Сверяем то, на что ответил DeepSeek: чего он не вернул, сравнить не с чем.
+    Бесплатная там промолчала или ответила неразборчиво — это расхождение, и
+    опасное: такой ответ в выпуске оставил бы дыру.
+    """
+    theirs = _by_id(free)
+    items = agree = risky = 0
+    for idx, row in _by_id(paid).items():
+        mine = _value(kind, row)
+        if mine is None:
+            continue
+        items += 1
+        other = _value(kind, theirs[idx]) if idx in theirs else None
+        if other is None:
+            risky += 1
+            continue
+        agree += _agree(kind, mine, other)
+        risky += _risky(kind, mine, other)
+    return items, agree, risky
 
 
 def _loads(text: str):
@@ -791,7 +967,7 @@ def card_key(persona: str, language: str, text: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
-def summarize_batch(picked, persona, language, offset=0):
+def summarize_batch(picked, persona, language, offset=0, route="auto"):
     """Карточки для одной пачки новостей. Ключи ответа — индексы в picked."""
     payload = []
     for idx, (group, _score, _cat) in enumerate(picked, offset):
@@ -800,7 +976,7 @@ def summarize_batch(picked, persona, language, offset=0):
         SUM_SYSTEM, task("Новости", payload, "Читатель: " + persona,
                          "Язык ответа: " + language),
         CFG["model_summary"], max_tokens=400 * len(payload) + 500,
-        kind="cards", expect=[p["id"] for p in payload])
+        kind="cards", expect=[p["id"] for p in payload], route=route)
     cards = {}
     for card in as_list(data):
         try:

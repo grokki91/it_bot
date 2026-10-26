@@ -209,6 +209,13 @@ CFG = {
     "free_kinds":     "classify,translate",  # [env ND_FREE_KINDS] all — все, пусто — ни одного
     "free_timeout":   60,                    # одна попытка, без повторов
     "free_pause_min": 10,                    # модель молчит или отвечает 5xx — столько минут к ней не ходим
+    # сверка: ответ DeepSeek по этим видам в фоне сравнивается с бесплатной
+    # моделью, в выпуск идёт только DeepSeek; итог — в `status`
+    "free_shadow":     "rank,urgency,dupes,claims",  # [env ND_FREE_SHADOW] пусто — не сверять
+    "free_shadow_max": 100,    # [env ND_FREE_SHADOW_MAX] запросов сверки в сутки: квота :free общая
+    "shadow_min":      200,    # сверено меньше — «рано»
+    "shadow_agree":    0.90,   # «можно включить»: совпало не меньше...
+    "shadow_risky":    0.02,   # ...и опасных расхождений не больше
 
     # --- Telegram ------------------------------------------------------------
     # Выпуск на полтора десятка разделов сплошной лентой — это простыня в
@@ -354,6 +361,8 @@ ENV_MAP = {
     "ND_MODEL_SUMMARY": ("model_summary", str),
     "ND_FREE_MODELS": ("free_models", str),
     "ND_FREE_KINDS": ("free_kinds", str),
+    "ND_FREE_SHADOW": ("free_shadow", str),
+    "ND_FREE_SHADOW_MAX": ("free_shadow_max", int),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_CHAT_REPLY": ("chat_reply", str),
