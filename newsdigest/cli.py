@@ -663,7 +663,7 @@ def cmd_web(args):
           % (args.port or CFG["web_port"], args.port or CFG["web_port"]))
     print("А чтобы сайт открывали все и по https — свой домен и прокси перед "
           "страницей: `python3 %s site --domain <ваш-домен>`\n" % PROG)
-    serve(Worker().start(), args.host, args.port)
+    serve(Worker().start(), args.host, args.port or None)
     return 0
 
 

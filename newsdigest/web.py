@@ -627,7 +627,9 @@ class Server(ThreadingHTTPServer):
 
 def build(worker=None, host=None, port=None) -> Server:
     host = str(host or CFG["web_host"])
-    port = int(port if port else CFG["web_port"])
+    # 0 — «любой свободный» (тесты), а не «по умолчанию»: иначе тесты на
+    # сервере садились на порт работающего демона
+    port = int(CFG["web_port"] if port is None else port)
     server = Server((host, port), worker)
     token()                     # создаётся заранее: пусть пароль будет в логе
     return server
