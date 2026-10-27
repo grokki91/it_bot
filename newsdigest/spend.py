@@ -18,8 +18,9 @@
 Модуль не знает про `storage`: тот через `translate` импортирует `llm`, а
 `llm` пишет сюда. Сама таблица `spend` создаётся в `storage.SCHEMA`.
 
-Тем же путём пишется `shadow` — счётчики сверки DeepSeek с бесплатной моделью:
-она идёт в фоновой нити и так же не должна ждать занятую базу.
+Тем же путём пишутся `shadow` — счётчики сверки DeepSeek с бесплатной моделью
+(она идёт в фоновой нити и так же не должна ждать занятую базу) — и `free_use`:
+какая бесплатная модель сколько ответила и как часто совпала с DeepSeek.
 """
 from __future__ import annotations
 
@@ -51,22 +52,28 @@ FIELDS = ("calls", "tok_in", "tok_cached", "tok_out", "cost", "tok_reason",
 #: колонки сверки с бесплатной моделью (`storage.SCHEMA`, таблица shadow)
 SHADOW_FIELDS = ("asks", "failed", "items", "agree", "risky")
 
+#: колонки учёта по бесплатным моделям (таблица free_use)
+MODEL_FIELDS = ("answers", "rejected", "errors", "items", "agree")
 
-def _upsert(table, fields) -> str:
-    return ("INSERT INTO %s(day, kind, %s) VALUES (?,?,%s) "
-            "ON CONFLICT(day, kind) DO UPDATE SET %s"
-            % (table, ", ".join(fields), ",".join("?" * len(fields)),
+
+def _upsert(table, fields, key="kind") -> str:
+    return ("INSERT INTO %s(day, %s, %s) VALUES (?,?,%s) "
+            "ON CONFLICT(day, %s) DO UPDATE SET %s"
+            % (table, key, ", ".join(fields), ",".join("?" * len(fields)), key,
                ", ".join("%s=%s+excluded.%s" % (f, f, f) for f in fields)))
 
 
 UPSERT = _upsert("spend", FIELDS)
 SHADOW_UPSERT = _upsert("shadow", SHADOW_FIELDS)
+MODEL_UPSERT = _upsert("free_use", MODEL_FIELDS, key="model")
 
 _lock = threading.Lock()
 #: (сутки, назначение) -> значения по FIELDS
 _pending = {}
 #: (сутки, назначение) -> значения по SHADOW_FIELDS
 _shadow = {}
+#: (сутки, модель) -> значения по MODEL_FIELDS
+_models = {}
 
 
 def today() -> str:
@@ -113,26 +120,36 @@ def fallback(kind) -> None:
         log.debug("Откат не записан: %s", exc)
 
 
-def shadow(kind, asks=0, failed=0, items=0, agree=0, risky=0) -> None:
-    """Счётчики одной сверки с бесплатной моделью. Как и учёт, ничего не роняет."""
+def _count(book, key, values) -> None:
+    """Прибавляет счётчики к накопителю и сбрасывает в базу. Ничего не роняет."""
     try:
         with _lock:
-            acc = _shadow.setdefault((today(), kind or "other"),
-                                     [0] * len(SHADOW_FIELDS))
-            for at, value in enumerate((asks, failed, items, agree, risky)):
+            acc = book.setdefault((today(), key), [0] * len(values))
+            for at, value in enumerate(values):
                 acc[at] += int(value)
         flush()
     except Exception as exc:  # noqa: BLE001
-        log.debug("Сверка не записана: %s", exc)
+        log.debug("Счётчики не записаны: %s", exc)
+
+
+def shadow(kind, asks=0, failed=0, items=0, agree=0, risky=0) -> None:
+    """Счётчики одной сверки с бесплатной моделью."""
+    _count(_shadow, kind or "other", (asks, failed, items, agree, risky))
+
+
+def model(name, answers=0, rejected=0, errors=0, items=0, agree=0) -> None:
+    """Счётчики одной бесплатной модели: её ответы и совпадения с DeepSeek."""
+    _count(_models, name or "?", (answers, rejected, errors, items, agree))
 
 
 def flush() -> None:
     """Сбрасывает накопленное в базу. База занята — остаётся до следующего раза."""
     with _lock:
         books = [(UPSERT, _pending, dict(_pending)),
-                 (SHADOW_UPSERT, _shadow, dict(_shadow))]
-        _pending.clear()
-        _shadow.clear()
+                 (SHADOW_UPSERT, _shadow, dict(_shadow)),
+                 (MODEL_UPSERT, _models, dict(_models))]
+        for _sql, book, _batch in books:
+            book.clear()
     if not any(batch for _sql, _book, batch in books):
         return
     try:
@@ -206,6 +223,19 @@ def shadow_totals(conn, days: int = 7) -> list:
             "SELECT kind, SUM(asks) AS asks, SUM(failed) AS failed, "
             "SUM(items) AS items, SUM(agree) AS agree, SUM(risky) AS risky "
             "FROM shadow WHERE day >= ? GROUP BY kind", (since(days),))]
+    except sqlite3.OperationalError:       # база старой версии без таблицы
+        return []
+
+
+def model_totals(conn, days: int = 7) -> list:
+    """Бесплатные модели за окно: самая отвечающая — первой."""
+    flush()
+    try:
+        return [dict(row) for row in conn.execute(
+            "SELECT model, SUM(answers) AS answers, SUM(rejected) AS rejected, "
+            "SUM(errors) AS errors, SUM(items) AS items, SUM(agree) AS agree "
+            "FROM free_use WHERE day >= ? GROUP BY model "
+            "ORDER BY answers DESC, model", (since(days),))]
     except sqlite3.OperationalError:       # база старой версии без таблицы
         return []
 
