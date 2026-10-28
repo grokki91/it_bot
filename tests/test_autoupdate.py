@@ -61,7 +61,9 @@ class ScriptCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, str(self.tmp), True)
         self.origin = self.tmp / "origin"
         self.work = self.tmp / "work"
-        self.git(self.tmp, "init", "-q", "-b", "main", "origin")
+        # не `init -b main`: этого флага нет в git до 2.28, а на сервере 2.25
+        self.git(self.tmp, "init", "-q", "origin")
+        self.git(self.origin, "symbolic-ref", "HEAD", "refs/heads/main")
         (self.origin / "code.py").write_text("one\n", encoding="utf-8")
         self.commit(self.origin, "первый")
         self.git(self.tmp, "clone", "-q", str(self.origin), str(self.work))

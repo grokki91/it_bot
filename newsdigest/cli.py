@@ -663,7 +663,7 @@ def cmd_web(args):
           % (args.port or CFG["web_port"], args.port or CFG["web_port"]))
     print("А чтобы сайт открывали все и по https — свой домен и прокси перед "
           "страницей: `python3 %s site --domain <ваш-домен>`\n" % PROG)
-    serve(Worker().start(), args.host, args.port)
+    serve(Worker().start(), args.host, args.port or None)
     return 0
 
 
@@ -836,6 +836,29 @@ def spend_report(conn, since) -> None:
                  llm_cost({"in": free["in"], "out": free["out"], "cached": 0})))
     if free["reason"]:
         print("  ⚠ DeepSeek рассуждает — см. WARNING про thinking в логе")
+    models_report(conn)
+
+
+def models_report(conn) -> None:
+    """Какая бесплатная модель отвечала за неделю и как часто совпала с DeepSeek.
+
+    Брак — ответ пришёл, но в работу не годится (не разобрался, не все id, не
+    прошёл проверку); сбой — HTTP-ошибка или лимит. Совпадения — из сверки и
+    обратной сверки (`llm.audit_put`)."""
+    rows = spend.model_totals(conn, 7)
+    if not rows:
+        return
+    print("  Модели OpenRouter:")
+    for row in rows:
+        parts = ["ответов %d" % (row["answers"] or 0)]
+        if row["rejected"]:
+            parts.append("брак %d" % row["rejected"])
+        if row["errors"]:
+            parts.append("сбоев %d" % row["errors"])
+        if row["items"]:
+            parts.append("совпало с DeepSeek %d%% из %d"
+                         % (100 * (row["agree"] or 0) // row["items"], row["items"]))
+        print("    %s: %s" % (row["model"], ", ".join(parts)))
 
 
 def shadow_report(conn) -> None:
@@ -846,38 +869,54 @@ def shadow_report(conn) -> None:
     выпуск: новость по другую сторону порога, «нового нет» против «есть»,
     придержать против выпустить. Брак — запросы, где бесплатный ответ маршрут не
     взял бы (откат в DeepSeek): он стоит квоты, но не качества.
+
+    Вид, что уже идёт бесплатно, сверяется в обратную сторону (`llm.audit_put`)
+    по тем же порогам: не дотянул — «вернуть в DeepSeek».
     """
     rows = spend.shadow_totals(conn, 7)
-    if not rows and not any(llm.shadow_wanted(k) for k in llm.SHADOW_KINDS):
+    watched = [spend.label(k) for k in llm.SHADOW_KINDS
+               if llm.shadow_wanted(k) or llm.audit_wanted(k)]
+    if not rows and not watched:
         return
     print("\n=== Сверка с бесплатной (7 дн.) ===")
     if not rows:
-        print("  пока не было, сверяется: %s" % CFG["free_shadow"])
+        print("  пока не было, сверяется: %s" % ", ".join(watched))
         return
     free = [k.strip() for k in str(CFG["free_kinds"] or "").split(",") if k.strip()]
     places = [kind for kind, _label in spend.LABELS]
-    ready = []
+    if "all" in free:
+        free = [kind for kind in places if kind != "other"]
+    ready, back = [], []
     for row in sorted(rows, key=lambda r: places.index(r["kind"])
                       if r["kind"] in places else len(places)):
         items = row["items"] or 0
         agree = (row["agree"] or 0) / max(1, items)
         risky = (row["risky"] or 0) / max(1, items)
-        if row["kind"] in free or "all" in free:
-            verdict = "уже бесплатно"
+        good = agree >= CFG["shadow_agree"] and risky <= CFG["shadow_risky"]
+        if row["kind"] in free:
+            if items < CFG["shadow_min"]:
+                verdict = "уже бесплатно"
+            elif good:
+                verdict = "уже бесплатно, в норме"
+            else:
+                verdict = "вернуть в DeepSeek"
+                back.append(row["kind"])
         elif items < CFG["shadow_min"]:
             verdict = "рано"
-        elif agree >= CFG["shadow_agree"] and risky <= CFG["shadow_risky"]:
+        elif good:
             verdict = "можно включить"
             ready.append(row["kind"])
         else:
             verdict = "не включать"
-        print("  %-13s сверено %d, совпало %d%%, опасных %.1f%%  "
-              "(запросов %d, брак %d) → %s"
+        asks = ("(запросов %d, брак %d) " % (row["asks"], row["failed"] or 0)
+                if row["asks"] else "")
+        print("  %-13s сверено %d, совпало %d%%, опасных %.1f%%  %s→ %s"
               % (spend.label(row["kind"]), items, int(100 * agree), 100 * risky,
-                 row["asks"] or 0, row["failed"] or 0, verdict))
-    if ready:
-        print("  Включить: строка ND_FREE_KINDS=%s в %s и перезапуск"
-              % (",".join(free + ready), ENV_FILE))
+                 asks, verdict))
+    if ready or back:
+        print("  %s: строка ND_FREE_KINDS=%s в %s и перезапуск"
+              % ("Вернуть в DeepSeek" if back else "Включить",
+                 ",".join([k for k in free if k not in back] + ready), ENV_FILE))
 
 
 def breaking_report(conn, since) -> None:

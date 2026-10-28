@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS shadow (
     PRIMARY KEY (day, kind)
 );
 
+-- Бесплатные модели OpenRouter по суткам (llm._ask_free): какая отвечала и как
+-- часто совпадала с DeepSeek. answers — ответ годный, rejected — пришёл, но не
+-- годится, errors — HTTP-сбой или лимит; items/agree — сверено id и совпало
+-- (сверка и обратная сверка). Только счётчики, без текстов.
+CREATE TABLE IF NOT EXISTS free_use (
+    day      TEXT NOT NULL,
+    model    TEXT NOT NULL,
+    answers  INTEGER NOT NULL DEFAULT 0,
+    rejected INTEGER NOT NULL DEFAULT 0,
+    errors   INTEGER NOT NULL DEFAULT 0,
+    items    INTEGER NOT NULL DEFAULT 0,
+    agree    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
+
 -- Сюжетные связи: какая новость какую продолжает. Приговор `follows` живёт в
 -- `dupes` по паре СИГНАТУР — он общий для всех подписчиков и переживает
 -- пересборку выпуска. Здесь же лежит то, что из него вышло у конкретного

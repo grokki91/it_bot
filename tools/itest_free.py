@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Интеграция бесплатного маршрута (OpenRouter → DeepSeek) на копии живой базы.
 
-Тесты не видят контракт внешнего API и миграцию `spend` и `shadow` на настоящей
-базе. Стоит трёх-четырёх запросов к DeepSeek — меньше $0.001.
+Тесты не видят контракт внешнего API и миграцию `spend`, `shadow` и `free_use`
+на настоящей базе. Стоит четырёх-пяти запросов к DeepSeek — меньше $0.002.
 
     python3 tools/itest_free.py
 """
@@ -35,6 +35,9 @@ def main(rep):
             seen.append(record.getMessage())
     config.log.addHandler(Grab())
     conn = storage.db()
+    # обратная сверка — в фоне и платно: здесь она мешала бы счётчикам, её
+    # проверяет свой шаг ниже
+    CFG["free_audit"] = 0
 
     def counters(kind):
         spend.flush()
@@ -43,6 +46,13 @@ def main(rep):
                            (kind,)).fetchone()
         return (row["c"] or 0, row["f"] or 0, row["b"] or 0, row["cost"] or 0.0)
 
+    def answered():
+        """Учёт по бесплатным моделям, все вместе: (годных ответов, сверено id, совпало)."""
+        spend.flush()
+        row = conn.execute("SELECT SUM(answers) a, SUM(items) i, SUM(agree) g "
+                           "FROM free_use").fetchone()
+        return (row["a"] or 0, row["i"] or 0, row["g"] or 0)
+
     # --- классификация: бесплатно, потом DeepSeek, сверка разделов
     rows = [dict(r) for r in conn.execute(
         "SELECT title, summary FROM items WHERE title != '' "
@@ -50,10 +60,13 @@ def main(rep):
     if not rows:
         raise itest.Blocked("в базе нет материалов")
     topics = sections.plan()
-    before = counters("classify")
+    rep.check(storage.table_exists(conn, "free_use"), "таблица free_use на живой базе")
+    before, used_before = counters("classify"), answered()
     CFG["free_kinds"] = "classify"
     free, _ = classify.ask_model(rows, topics)
     mid = counters("classify")
+    rep.metric("free_use: годных ответов", expected=used_before[0] + 1,
+               actual=answered()[0])
     CFG["free_kinds"] = ""
     paid, _ = classify.ask_model(rows, topics)
     after = counters("classify")
@@ -69,6 +82,24 @@ def main(rep):
     rep.check(same >= AGREE * max(1, len(paid)),
               "разделы бесплатной модели совпадают с DeepSeek не меньше %d%%"
               % (AGREE * 100))
+
+    # --- обратная сверка: бесплатный ответ в работе, DeepSeek переспрошен в фоне
+    CFG.update(free_kinds="classify", free_audit=1)
+    llm._audit_seen.clear()
+    before, used_before = counters("classify"), answered()
+    classify.ask_model(rows[:5], topics)
+    llm._shadow_jobs.join()
+    after, used_after = counters("classify"), answered()
+    if after[1] == before[1] + 1:      # бесплатный ответ принят
+        rep.metric("обратная сверка: DeepSeek переспрошен", expected=before[0] + 1,
+                   actual=after[0])
+        rep.check(used_after[1] > used_before[1], "обратная сверка: id сверены")
+        rep.lines.append("обратная сверка: совпало %d из %d"
+                         % (used_after[2] - used_before[2],
+                            used_after[1] - used_before[1]))
+    else:
+        rep.lines.append("обратная сверка: бесплатный ответ не принят — не проверена")
+    CFG["free_audit"] = 0
 
     # --- перевод: английские заголовки → русские
     english = [r["title"] for r in conn.execute(

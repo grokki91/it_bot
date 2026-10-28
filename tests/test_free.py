@@ -38,15 +38,18 @@ class FreeCase(unittest.TestCase):
         self.conn = storage.db()
         self.conn.execute("DELETE FROM spend")
         self.conn.execute("DELETE FROM shadow")
+        self.conn.execute("DELETE FROM free_use")
         self.conn.commit()
         spend._pending.clear()
         spend._shadow.clear()
+        spend._models.clear()
         self.saved = (llm.post_json, llm.time.time, config.DS_KEY, config.OR_KEY,
                       dict(CFG))
         config.DS_KEY, config.OR_KEY = "test-key", "or-test-key"
         CFG.update(free_kinds="classify,translate", free_models="m1:free",
-                   free_shadow="", llm_retries=1)
+                   free_shadow="", free_audit=0, llm_retries=1)
         llm._free_off.clear()
+        llm._audit_seen.clear()
         llm._shadow_off.clear()
         llm._told.clear()
         llm._no_reasoning = llm._no_thinking = False
@@ -65,6 +68,7 @@ class FreeCase(unittest.TestCase):
         CFG.update(cfg)
         spend._pending.clear()
         spend._shadow.clear()
+        spend._models.clear()
         self.conn.close()
 
     def fake(self, url, payload, headers, timeout):
@@ -326,6 +330,108 @@ class TestShadow(FreeCase):
                 self.assertEqual(llm.compare(kind, paid, free), expected)
 
 
+class TestAudit(FreeCase):
+    """Обратная сверка: бесплатный ответ идёт в работу, а выборка из них в фоне
+    переспрашивается у DeepSeek — видно, не пора ли вернуть вид обратно."""
+
+    def setUp(self):
+        super().setUp()
+        CFG["free_audit"] = 2
+        self.free = [reply([{"id": 0, "section": "it", "confidence": 0.9,
+                             "text": "привет"}])]
+        self.paid = [reply([{"id": 0, "section": "science", "confidence": 0.9}])]
+
+    def classify(self):
+        data, _used = self.ask()
+        llm._shadow_jobs.join()
+        return data
+
+    def counters(self, table, where, fields):
+        spend.flush()
+        found = self.conn.execute("SELECT %s FROM %s WHERE %s"
+                                  % (fields, table, where)).fetchone()
+        return tuple(found) if found else None
+
+    def test_sample_of_free_answers_is_rechecked_by_deepseek(self):
+        for _ in range(3):
+            self.assertEqual(self.classify()["items"][0]["section"], "it")
+        # первый и каждый второй: бесплатно+DeepSeek, бесплатно, бесплатно+DeepSeek
+        self.assertEqual(self.routes(), ["free", "paid", "free", "free", "paid"])
+        self.assertEqual(self.calls[1][1]["model"], "deepseek-v4-flash")
+        self.assertNotIn("reasoning", self.calls[1][1])
+        # квоту сверки (asks) не тратит; it против science — не совпало
+        self.assertEqual(self.counters("shadow", "kind='classify'",
+                                       "asks, items, agree, risky"), (0, 2, 0, 0))
+        row = self.row()
+        self.assertEqual((row["free_calls"], row["calls"], row["fallbacks"]), (3, 2, 0))
+        self.assertGreater(row["cost"], 0)
+        self.assertEqual(self.counters("free_use", "model='m1:free'",
+                                       "answers, rejected, errors, items, agree"),
+                         (3, 0, 0, 2, 0))
+
+    def test_not_rechecked_when_off_for_text_or_strict(self):
+        base = dict(CFG)
+        for kind, cfg, kw in (("classify", {"free_audit": 0}, {}),
+                              ("translate", {}, {}),       # текст не сравнить
+                              ("classify", {}, {"route": "free"})):
+            with self.subTest(kind=kind, cfg=cfg, kw=kw):
+                self.calls.clear()
+                llm._audit_seen.clear()
+                CFG.update(base, **cfg)
+                self.ask(kind=kind, **kw)
+                llm._shadow_jobs.join()
+                self.assertEqual(self.routes(), ["free"])
+        self.assertIsNone(self.counters("shadow", "1", "kind"))
+
+    def test_deepseek_down_leaves_no_trace(self):
+        self.paid = [(500, None, "boom")]
+        self.assertEqual(self.classify()["items"][0]["section"], "it")
+        self.assertEqual(self.routes(), ["free", "paid"])
+        self.assertIsNone(self.counters("shadow", "1", "kind"))
+
+
+class TestModels(FreeCase):
+    def test_each_model_is_counted(self):
+        CFG["free_models"] = "m1:free,m2:free,m3:free"
+        self.free = [(429, {"error": {"message": "rate limited"}}, ""),
+                     reply([{"id": 0, "section": "it"}])]
+        self.ask()                       # m1 — сбой, ответила m2
+        self.ask(expect=(0, 1))          # m1 отдыхает, у m2 не все id — брак
+        self.assertEqual(self.routes(), ["free", "free", "free", "paid"])
+        rows = {row["model"]: row for row in spend.model_totals(self.conn)}
+        self.assertEqual(set(rows), {"m1:free", "m2:free"})
+        self.assertEqual((rows["m1:free"]["answers"], rows["m1:free"]["errors"]), (0, 1))
+        self.assertEqual((rows["m2:free"]["answers"], rows["m2:free"]["rejected"]), (1, 1))
+
+    def test_shadow_agreement_goes_to_answering_model(self):
+        CFG.update(free_shadow="rank", min_score=5.5)
+        self.paid = [reply([{"id": 0, "score": 8}, {"id": 1, "score": 4}])]
+        self.free = [reply([{"id": 0, "score": 7.5}, {"id": 1, "score": 6}])]
+        self.ask(kind="rank", expect=(0, 1))
+        llm._shadow_jobs.join()
+        row = spend.model_totals(self.conn)[0]
+        self.assertEqual((row["model"], row["answers"], row["items"], row["agree"]),
+                         ("m1:free", 1, 2, 1))
+
+    def test_status_lists_models(self):
+        spend.add("classify", {"in": 1000, "out": 100}, 0.0, route="free")
+        spend.model("a/x:free", answers=40, rejected=2, errors=3, items=50, agree=45)
+        spend.model("b/y:free", errors=7)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.spend_report(self.conn, "")
+        text = out.getvalue()
+        self.assertIn("a/x:free: ответов 40, брак 2, сбоев 3, "
+                      "совпало с DeepSeek 90% из 50", text)
+        self.assertIn("b/y:free: ответов 0, сбоев 7", text)
+        self.assertLess(text.index("a/x:free"), text.index("b/y:free"))
+
+    def test_old_base_without_table(self):
+        conn = sqlite3.connect(":memory:")
+        self.assertEqual(spend.model_totals(conn), [])
+        conn.close()
+
+
 class TestTranslate(FreeCase):
     def test_english_from_free_model_goes_to_deepseek(self):
         self.free = [reply([{"id": 0, "text": "Apple ships new chip"}])]
@@ -400,6 +506,22 @@ class TestShadowReport(FreeCase):
         self.assertIn("→ не включать", lines["фактчек"])    # 3% опасных
         self.assertIn("→ уже бесплатно", lines["разделы"])
         self.assertIn("ND_FREE_KINDS=classify,translate,rank", lines["Включить:"])
+
+    def test_free_kind_that_disagrees_goes_back_to_deepseek(self):
+        CFG["free_audit"] = 20
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.shadow_report(self.conn)
+        self.assertIn("пока не было, сверяется: разделы", out.getvalue())
+        spend.shadow("classify", items=300, agree=240)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.shadow_report(self.conn)
+        lines = {line.split()[0]: line for line in out.getvalue().splitlines()
+                 if line.startswith("  ")}
+        self.assertIn("сверено 300, совпало 80%, опасных 0.0%  → вернуть в DeepSeek",
+                      lines["разделы"])
+        self.assertIn("ND_FREE_KINDS=translate ", lines["Вернуть"])
 
     def test_silent_without_route_and_history(self):
         config.OR_KEY = ""

@@ -127,7 +127,9 @@ def llm_json(system: str, user: str, model: str, max_tokens: int = 3000,
 
     Ответ DeepSeek по видам из `free_shadow` в фоне сверяется с бесплатной
     моделью (`shadow_put`): в работу идёт только он, а `status` показывает, можно
-    ли этот вид отдать бесплатной.
+    ли этот вид отдать бесплатной. Принятый бесплатный ответ — наоборот: первый и
+    каждый `free_audit`-й в фоне переспрашивается у DeepSeek (`audit_put`), и
+    `status` скажет, если вид пора вернуть в DeepSeek.
     """
     if route not in ROUTES:
         raise ValueError("route: %r" % route)
@@ -308,8 +310,11 @@ def _free(payload, kind, expect, check, strict=False):
         return None
     got, asked, last = _ask_free(payload, kind, expect, check)
     if got is not None:
-        spend.add(kind, got[1], 0.0, route="free")
-        return got
+        data, used, model = got
+        spend.add(kind, used, 0.0, route="free")
+        if not strict and audit_due(kind):
+            audit_put(kind, payload, data, model)
+        return data, used
     if asked:
         spend.fallback(kind)
         log.debug("Бесплатная модель не ответила (%s) — спрашиваю DeepSeek", last)
@@ -318,11 +323,25 @@ def _free(payload, kind, expect, check, strict=False):
     return None
 
 
+def _accept(kind, data, expect, check):
+    """Ответ OpenRouter с HTTP 200 -> (данные, None) или (None, почему не берём)."""
+    try:
+        parsed = _loads(data["choices"][0]["message"]["content"] or "")
+    except (KeyError, IndexError, TypeError, LLMError) as exc:
+        return None, "ответ не разобрался (%s)" % str(exc)[:120]
+    if not covers(kind, parsed, expect):
+        return None, "в ответе не все id"
+    if check is not None and not check(parsed):
+        return None, "ответ не прошёл проверку"
+    return parsed, None
+
+
 def _ask_free(payload, kind, expect, check, shadow=None):
     """Модели из `free_models` по очереди, с паузами после сбоев (`_rest`).
 
-    Возвращает ((данные, usage) или None, спрашивали ли хоть одну, что не так).
-    None — ответа, который можно взять в работу, нет."""
+    Возвращает ((данные, usage, модель) или None, спрашивали ли хоть одну, что
+    не так). None — ответа, который можно взять в работу, нет. Каждая попытка
+    ложится в учёт по моделям (`spend.model`): `status` покажет, какая отвечает."""
     asked, last = False, "все модели на паузе"
     for model in free_models():
         now = time.time()
@@ -332,18 +351,14 @@ def _ask_free(payload, kind, expect, check, shadow=None):
         status, data, err = _free_once(model, payload)
         why = _why(data, err)
         if status == 200 and isinstance(data, dict) and not data.get("error"):
-            try:
-                parsed = _loads(data["choices"][0]["message"]["content"] or "")
-            except (KeyError, IndexError, TypeError, LLMError) as exc:
-                last = "%s: ответ не разобрался (%s)" % (model, str(exc)[:120])
-                break
-            if not covers(kind, parsed, expect):
-                last = "%s: в ответе не все id" % model
-                break
-            if check is not None and not check(parsed):
-                last = "%s: ответ не прошёл проверку" % model
-                break
-            return (parsed, _used(data.get("usage"))), True, ""
+            parsed, bad = _accept(kind, data, expect, check)
+            if bad is None:
+                spend.model(model, answers=1)
+                return (parsed, _used(data.get("usage")), model), True, ""
+            spend.model(model, rejected=1)
+            last = "%s: %s" % (model, bad)
+            break
+        spend.model(model, errors=1)
         last = "%s: HTTP %s %s" % (model, status, why[:160])
         if status == 200 or _rest(model, status, why, now, shadow):
             break
@@ -362,6 +377,12 @@ def _ask_free(payload, kind, expect, check, shadow=None):
 #: `free_shadow_max` в сутки и только пока суточный лимит не исчерпан. Её сбои
 #: ставят на паузу только её саму (`_shadow_off`), маршрут работает дальше.
 #:
+#: Вид, уже отданный бесплатной, сверяется в обратную сторону (`audit_put`):
+#: первый и каждый `free_audit`-й принятый ответ переспрашивается у DeepSeek.
+#: `covers` проверяет только полноту, а не то, верен ли раздел, — без этого
+#: качество бесплатного маршрута после включения не видно никому. Платно, но
+#: это один запрос из двадцати; квоту `:free` не трогает.
+#:
 #: Карточки и перевод так не сравнить — там текст; карточки владелец сравнивает
 #: глазами (`tools/freecards.py`).
 SHADOW_KINDS = ("rank", "urgency", "dupes", "claims", "classify")
@@ -370,6 +391,8 @@ _shadow_jobs = queue.Queue(maxsize=4)
 _shadow_thread = None
 #: [сутки, сколько запросов сверки за них ушло] — только для нити сверки
 _shadow_used = ["", 0]
+#: вид -> сколько бесплатных ответов принято за процесс (`audit_due`)
+_audit_seen = collections.Counter()
 
 
 def shadow_wanted(kind) -> bool:
@@ -381,7 +404,23 @@ def shadow_wanted(kind) -> bool:
     return kind in SHADOW_KINDS and kind in kinds
 
 
-def shadow_put(kind, payload, paid, expect) -> None:
+def audit_wanted(kind) -> bool:
+    """Переспрашивать ли у DeepSeek бесплатные ответы этого вида."""
+    return (int(CFG["free_audit"] or 0) > 0 and kind in SHADOW_KINDS
+            and free_wanted(kind))
+
+
+def audit_due(kind) -> bool:
+    """Этот принятый бесплатный ответ — на выборочную проверку: первый и каждый
+    `free_audit`-й. Первый — чтобы цифры появились и после перезапуска."""
+    if not audit_wanted(kind) or not config.DS_KEY:
+        return False
+    with _lock:
+        _audit_seen[kind] += 1
+        return (_audit_seen[kind] - 1) % int(CFG["free_audit"]) == 0
+
+
+def _background(job, *args) -> None:
     """Ставит сверку в очередь. Запрос не ждёт ни её, ни места в очереди."""
     global _shadow_thread
     with _lock:
@@ -390,18 +429,26 @@ def shadow_put(kind, payload, paid, expect) -> None:
                                               name="free-shadow", daemon=True)
             _shadow_thread.start()
     try:
-        # копия: вызывающий волен менять свой ответ, пока сверка ждёт очереди
-        _shadow_jobs.put_nowait((kind, payload, json.loads(json.dumps(paid)),
-                                 tuple(expect)))
+        _shadow_jobs.put_nowait((job, args))
     except queue.Full:
         pass
 
 
+def shadow_put(kind, payload, paid, expect) -> None:
+    # копия: вызывающий волен менять свой ответ, пока сверка ждёт очереди
+    _background(_shadow_one, kind, payload, json.loads(json.dumps(paid)),
+                tuple(expect))
+
+
+def audit_put(kind, payload, free, model) -> None:
+    _background(_audit_one, kind, payload, json.loads(json.dumps(free)), model)
+
+
 def _shadow_loop() -> None:
     while True:
-        job = _shadow_jobs.get()
+        job, args = _shadow_jobs.get()
         try:
-            _shadow_one(*job)
+            job(*args)
         except Exception as exc:  # noqa: BLE001 — сверка не повод ронять нить
             log.debug("Сверка с бесплатной моделью не удалась: %s", exc)
         finally:
@@ -424,6 +471,20 @@ def _shadow_one(kind, payload, paid, expect) -> None:
         return
     items, agree, risky = compare(kind, paid, got[0])
     spend.shadow(kind, asks=1, items=items, agree=agree, risky=risky)
+    spend.model(got[2], items=items, agree=agree)
+
+
+def _audit_one(kind, payload, free, model) -> None:
+    """Обратная сверка: бесплатный ответ уже в работе, DeepSeek отвечает на тот
+    же запрос. Квоту сверки (`asks`) не трогает — та про лимит `:free`."""
+    try:
+        paid, _used = _paid(payload, kind)
+    except LLMError as exc:
+        log.debug("Обратная сверка: DeepSeek не ответил (%s)", exc)
+        return
+    items, agree, risky = compare(kind, paid, free)
+    spend.shadow(kind, items=items, agree=agree, risky=risky)
+    spend.model(model, items=items, agree=agree)
 
 
 def _level(urgency) -> int:

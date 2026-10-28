@@ -213,6 +213,9 @@ CFG = {
     # моделью, в выпуск идёт только DeepSeek; итог — в `status`
     "free_shadow":     "rank,urgency,dupes,claims",  # [env ND_FREE_SHADOW] пусто — не сверять
     "free_shadow_max": 100,    # [env ND_FREE_SHADOW_MAX] запросов сверки в сутки: квота :free общая
+    # обратная сверка: виды, что уже идут бесплатно (кроме текстов), — первый и
+    # каждый N-й принятый ответ в фоне переспрашивается у DeepSeek (платно)
+    "free_audit":      20,     # [env ND_FREE_AUDIT] 0 — не переспрашивать
     "shadow_min":      200,    # сверено меньше — «рано»
     "shadow_agree":    0.90,   # «можно включить»: совпало не меньше...
     "shadow_risky":    0.02,   # ...и опасных расхождений не больше
@@ -363,6 +366,7 @@ ENV_MAP = {
     "ND_FREE_KINDS": ("free_kinds", str),
     "ND_FREE_SHADOW": ("free_shadow", str),
     "ND_FREE_SHADOW_MAX": ("free_shadow_max", int),
+    "ND_FREE_AUDIT": ("free_audit", int),
     "ND_SILENT": ("silent", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_LISTEN": ("listen", lambda v: str(v).lower() in ("1", "true", "yes")),
     "ND_CHAT_REPLY": ("chat_reply", str),
