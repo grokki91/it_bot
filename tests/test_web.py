@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import config, feedback, newsfeed, profiles  # noqa: E402
-from newsdigest import render, sections, storage, subscribers  # noqa: E402
+from newsdigest import render, sections, spend, storage, subscribers  # noqa: E402
 from newsdigest import translate, userprofiles, web  # noqa: E402
 from newsdigest.config import CFG, now_iso, to_local  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
@@ -695,6 +695,29 @@ class TestTools(WebCase):
     def test_timezone_comes_along(self):
         self.login()
         self.assertTrue(self.tools()["tz"])
+
+    def test_llm_spend_is_for_the_owner_only(self):
+        """Расход и имена моделей — только владельцу: в ленте и на странице
+        гостя их нет, а сами имена приходят из базы, не из кода страницы."""
+        conn = storage.db()
+        try:
+            conn.execute("DELETE FROM model_spend")
+            conn.execute("INSERT INTO model_spend VALUES (?,?,?,?,?,?)",
+                         (spend.today(), "secret-paid-model", 3, 900, 100, 0.25))
+            conn.commit()
+        finally:
+            conn.close()
+        names = [m["name"] for m in self.ask("/api/news")[1].get("llm", {})
+                 .get("models", [])]
+        self.assertEqual(names, [])
+        self.assertNotIn("secret-paid-model", json.dumps(self.ask("/api/news")[1]))
+        self.assertNotIn("secret-paid-model", self.raw("/")[2])
+        self.login()
+        llm = self.tools()["llm"]
+        self.assertEqual([p["id"] for p in llm["periods"]], ["day", "week", "month"])
+        self.assertEqual(llm["models"], [{"name": "secret-paid-model", "calls": 3,
+                                          "tokens": 1000, "cost": 0.25}])
+        self.assertNotIn("secret-paid-model", self.raw("/")[2])
 
 
 class TestFeedList(WebCase):

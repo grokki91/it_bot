@@ -332,9 +332,10 @@ def collect(topics=None, wire_only=False) -> dict:
     cutoff_b = (datetime.now(timezone.utc)
                 - timedelta(hours=CFG["breaking_window_h"] + 24)).isoformat()
     conn.execute("DELETE FROM ratings WHERE at < ?", (cutoff_b,))
-    conn.execute("DELETE FROM spend WHERE day < ?",
-                 ((datetime.now(timezone.utc)
-                   - timedelta(days=CFG["keep_spend_days"])).strftime("%Y-%m-%d"),))
+    old_day = (datetime.now(timezone.utc)
+               - timedelta(days=CFG["keep_spend_days"])).strftime("%Y-%m-%d")
+    conn.execute("DELETE FROM spend WHERE day < ?", (old_day,))
+    conn.execute("DELETE FROM model_spend WHERE day < ?", (old_day,))
     conn.execute("DELETE FROM dupes WHERE at < ?", (cutoff_d,))
     # приговоры фактчека и наша репутация доменов живут дольше самих новостей:
     # домен, знакомый полгода, — это и есть то, ради чего таблица заведена

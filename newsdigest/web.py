@@ -42,7 +42,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import (config, feedback, newsfeed, redact, rss, sections, settings,
-               sources, subscribers)
+               sources, spend, subscribers)
 from .config import CFG, ENV_FILE, log, to_local, tz_label, write_env
 from .feedparse import parse_date
 from .profiles import label, profile, title as section_title
@@ -387,7 +387,8 @@ def alerts(worker=None, admin=True) -> dict:
 
 
 def tools(worker=None) -> dict:
-    """Раздел «Настройки»: подписчики, источники и настройки — всё для чтения."""
+    """Раздел «Настройки»: подписчики, источники, расход на модели и настройки —
+    всё для чтения. Только владельцу: гостю `/api/tools` отвечает 401."""
     chat = chat_id()
     conn = db()
     try:
@@ -395,10 +396,11 @@ def tools(worker=None) -> dict:
         sub = subscribers.get(conn, chat)
         people = readers(conn)
         feed_list = feeds(conn, sub)
+        llm_spend = spend.summary(conn)
     finally:
         conn.close()
     return {"readers": people, "settings": tuning(sub), "feeds": feed_list,
-            "tz": tz_label(), "state": state(worker)}
+            "llm": llm_spend, "tz": tz_label(), "state": state(worker)}
 
 
 # ------------------------------------------------------------------- действия

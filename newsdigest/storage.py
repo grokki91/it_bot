@@ -132,6 +132,19 @@ CREATE TABLE IF NOT EXISTS free_use (
     PRIMARY KEY (day, model)
 );
 
+-- Расход по моделям (spend.add): DeepSeek и бесплатные из ND_FREE_MODELS,
+-- у бесплатных cost = 0. Имена моделей — только из настроек на машине бота,
+-- на страницу попадают лишь владельцу (`/api/tools`).
+CREATE TABLE IF NOT EXISTS model_spend (
+    day     TEXT NOT NULL,
+    model   TEXT NOT NULL,
+    calls   INTEGER NOT NULL DEFAULT 0,
+    tok_in  INTEGER NOT NULL DEFAULT 0,
+    tok_out INTEGER NOT NULL DEFAULT 0,
+    cost    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
+
 -- Сюжетные связи: какая новость какую продолжает. Приговор `follows` живёт в
 -- `dupes` по паре СИГНАТУР — он общий для всех подписчиков и переживает
 -- пересборку выпуска. Здесь же лежит то, что из него вышло у конкретного

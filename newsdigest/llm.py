@@ -170,7 +170,7 @@ def _paid(payload, kind):
                 raise LLMError("неожиданный формат ответа: %s" % exc)
             used = _used(data.get("usage"))
             # деньги потрачены, даже если ответ не разобрался: учитываем до разбора
-            spend.add(kind, used, llm_cost(used))
+            spend.add(kind, used, llm_cost(used), model=payload.get("model", ""))
             return _loads(text), used
         last = "HTTP %s %s" % (status, err or (json.dumps(data)[:300] if data else ""))
         # некоторые аккаунты/модели не принимают поле thinking — снимаем и
@@ -311,7 +311,7 @@ def _free(payload, kind, expect, check, strict=False):
     got, asked, last = _ask_free(payload, kind, expect, check)
     if got is not None:
         data, used, model = got
-        spend.add(kind, used, 0.0, route="free")
+        spend.add(kind, used, 0.0, route="free", model=model)
         if not strict and audit_due(kind):
             audit_put(kind, payload, data, model)
         return data, used
