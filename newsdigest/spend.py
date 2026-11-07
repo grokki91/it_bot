@@ -55,6 +55,9 @@ SHADOW_FIELDS = ("asks", "failed", "items", "agree", "risky")
 #: колонки учёта по бесплатным моделям (таблица free_use)
 MODEL_FIELDS = ("answers", "rejected", "errors", "items", "agree")
 
+#: колонки расхода по моделям (таблица model_spend): и платных, и бесплатных
+BY_MODEL_FIELDS = ("calls", "tok_in", "tok_out", "cost")
+
 
 def _upsert(table, fields, key="kind") -> str:
     return ("INSERT INTO %s(day, %s, %s) VALUES (?,?,%s) "
@@ -66,6 +69,7 @@ def _upsert(table, fields, key="kind") -> str:
 UPSERT = _upsert("spend", FIELDS)
 SHADOW_UPSERT = _upsert("shadow", SHADOW_FIELDS)
 MODEL_UPSERT = _upsert("free_use", MODEL_FIELDS, key="model")
+BY_MODEL_UPSERT = _upsert("model_spend", BY_MODEL_FIELDS, key="model")
 
 _lock = threading.Lock()
 #: (сутки, назначение) -> значения по FIELDS
@@ -74,6 +78,8 @@ _pending = {}
 _shadow = {}
 #: (сутки, модель) -> значения по MODEL_FIELDS
 _models = {}
+#: (сутки, модель) -> значения по BY_MODEL_FIELDS
+_by_model = {}
 
 
 def today() -> str:
@@ -85,14 +91,20 @@ def _blank() -> list:
     return [0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0]
 
 
-def add(kind, usage, cost, route="paid") -> None:
+def add(kind, usage, cost, route="paid", model="") -> None:
     """Записывает один состоявшийся запрос. Учёт запрос никогда не роняет.
 
     Бесплатный (`route="free"`) идёт в свои колонки: `calls` и `cost` — это
-    только то, за что платим DeepSeek.
+    только то, за что платим DeepSeek. `model` — ещё и в расход по моделям.
     """
     try:
         with _lock:
+            if model:
+                mine = _by_model.setdefault((today(), model), [0, 0, 0, 0.0])
+                mine[0] += 1
+                mine[1] += int(usage.get("in", 0) or 0)
+                mine[2] += int(usage.get("out", 0) or 0)
+                mine[3] += float(cost or 0.0) if route != "free" else 0.0
             acc = _pending.setdefault((today(), kind or "other"), _blank())
             if route == "free":
                 acc[6] += 1
@@ -147,7 +159,8 @@ def flush() -> None:
     with _lock:
         books = [(UPSERT, _pending, dict(_pending)),
                  (SHADOW_UPSERT, _shadow, dict(_shadow)),
-                 (MODEL_UPSERT, _models, dict(_models))]
+                 (MODEL_UPSERT, _models, dict(_models)),
+                 (BY_MODEL_UPSERT, _by_model, dict(_by_model))]
         for _sql, book, _batch in books:
             book.clear()
     if not any(batch for _sql, _book, batch in books):
@@ -238,6 +251,42 @@ def model_totals(conn, days: int = 7) -> list:
             "ORDER BY answers DESC, model", (since(days),))]
     except sqlite3.OperationalError:       # база старой версии без таблицы
         return []
+
+
+#: окна сводки для страницы: (id, подпись, сколько суток)
+WINDOWS = (("day", "Сегодня", 1), ("week", "7 дн.", 7), ("month", "30 дн.", 30))
+
+
+def summary(conn) -> dict:
+    """Расход на модели для «Настроек» владельца: окна и модели за 30 дн.
+
+    Окна — из `spend` (вся история), модели — из `model_spend` (с тех пор, как
+    он пишется). Платные токены — вход + выход DeepSeek, бесплатные — отдельно.
+    """
+    flush()
+    periods, models = [], []
+    try:
+        for key, title, days in WINDOWS:
+            row = conn.execute(
+                "SELECT SUM(cost), SUM(calls), SUM(tok_in) + SUM(tok_out), "
+                "SUM(free_calls), SUM(free_in) + SUM(free_out) "
+                "FROM spend WHERE day >= ?", (since(days),)).fetchone()
+            periods.append({"id": key, "label": title,
+                            "cost": round(float(row[0] or 0.0), 4),
+                            "calls": int(row[1] or 0), "tokens": int(row[2] or 0),
+                            "free_calls": int(row[3] or 0),
+                            "free_tokens": int(row[4] or 0)})
+        models = [{"name": row[0], "calls": int(row[1] or 0),
+                   "tokens": int(row[2] or 0),
+                   "cost": round(float(row[3] or 0.0), 4)}
+                  for row in conn.execute(
+                      "SELECT model, SUM(calls), SUM(tok_in) + SUM(tok_out), "
+                      "SUM(cost) FROM model_spend WHERE day >= ? GROUP BY model "
+                      "ORDER BY SUM(cost) DESC, SUM(calls) DESC, model",
+                      (since(WINDOWS[-1][2]),))]
+    except sqlite3.OperationalError:       # база старой версии без таблиц
+        pass
+    return {"periods": periods, "models": models}
 
 
 def label(kind: str) -> str:

@@ -21,8 +21,10 @@ class SpendCase(unittest.TestCase):
     def setUp(self):
         self.conn = storage.db()
         self.conn.execute("DELETE FROM spend")
+        self.conn.execute("DELETE FROM model_spend")
         self.conn.commit()
         spend._pending.clear()
+        spend._by_model.clear()
         self.saved = (llm.post_json, config.DS_KEY)
         config.DS_KEY = "test-key"
 
@@ -223,6 +225,65 @@ class TestRetention(SpendCase):
             CFG["use_hackernews"] = hackernews
         days = [r["day"] for r in self.conn.execute("SELECT day FROM spend")]
         self.assertEqual(days, [spend.today()])
+
+
+class TestByModel(SpendCase):
+    """Расход по моделям и сводка для «Настроек» владельца."""
+
+    def models(self):
+        return {row["model"]: dict(row) for row in self.conn.execute(
+            "SELECT * FROM model_spend")}
+
+    def test_paid_request_lands_under_its_model(self):
+        self.answer()
+        llm.llm_json("s", "u", "paid-a", kind="rank")
+        llm.llm_json("s", "u", "paid-b", kind="cards")
+        llm.llm_json("s", "u", "paid-a", kind="dupes")
+        rows = self.models()
+        self.assertEqual(rows["paid-a"]["calls"], 2)
+        self.assertEqual(rows["paid-a"]["tok_in"], 4000)
+        self.assertEqual(rows["paid-a"]["tok_out"], 200)
+        self.assertAlmostEqual(rows["paid-a"]["cost"], 2 * llm.llm_cost(
+            {"in": 2000, "cached": 1500, "out": 100}))
+        self.assertEqual(rows["paid-b"]["calls"], 1)
+
+    def test_free_request_costs_nothing(self):
+        spend.add("classify", {"in": 500, "out": 20}, 0.9, route="free",
+                  model="free-x")
+        row = self.models()["free-x"]
+        self.assertEqual((row["calls"], row["tok_in"], row["tok_out"], row["cost"]),
+                         (1, 500, 20, 0.0))
+
+    def test_summary_windows_and_models(self):
+        day = spend.today()
+        old = spend.since(10)
+        self.conn.executemany(
+            "INSERT INTO spend(day, kind, calls, tok_in, tok_out, cost, "
+            "free_calls, free_in, free_out) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(day, "rank", 2, 1000, 100, 0.01, 0, 0, 0),
+             (day, "classify", 0, 0, 0, 0.0, 5, 400, 40),
+             (old, "rank", 10, 5000, 500, 0.05, 0, 0, 0)])
+        self.conn.executemany(
+            "INSERT INTO model_spend VALUES (?,?,?,?,?,?)",
+            [(day, "paid-a", 2, 1000, 100, 0.01), (old, "paid-a", 10, 5000, 500, 0.05),
+             (day, "free-x", 5, 400, 40, 0.0)])
+        self.conn.commit()
+        got = spend.summary(self.conn)
+        win = {p["id"]: p for p in got["periods"]}
+        self.assertEqual((win["day"]["cost"], win["day"]["calls"], win["day"]["tokens"],
+                          win["day"]["free_calls"], win["day"]["free_tokens"]),
+                         (0.01, 2, 1100, 5, 440))
+        self.assertEqual(win["week"]["cost"], 0.01)          # десятый день — вне недели
+        self.assertEqual(win["month"]["cost"], 0.06)
+        self.assertEqual(win["month"]["tokens"], 6600)
+        self.assertEqual(got["models"], [
+            {"name": "paid-a", "calls": 12, "tokens": 6600, "cost": 0.06},
+            {"name": "free-x", "calls": 5, "tokens": 440, "cost": 0.0}])
+
+    def test_summary_of_an_empty_journal(self):
+        got = spend.summary(self.conn)
+        self.assertEqual([p["cost"] for p in got["periods"]], [0.0, 0.0, 0.0])
+        self.assertEqual(got["models"], [])
 
 
 if __name__ == "__main__":

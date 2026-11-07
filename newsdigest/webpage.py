@@ -2417,6 +2417,7 @@ function drawPanel() {
   box.appendChild(folk);
 
   if (data.feeds) { box.appendChild(drawFeeds(data.feeds)); }
+  if (data.llm) { box.appendChild(drawSpend(data.llm)); }
 
   var opts = el('div', 'box');
   opts.appendChild(el('h3', null, 'Настройки приложения'));
@@ -2480,6 +2481,31 @@ function drawReader(man) {
   if (man.paused) { line.appendChild(el('span', 'warn', '⏸ пауза')); }
   box.appendChild(line);
   box.appendChild(el('div', 'about', man.own));
+  return box;
+}
+
+/* Расход на модели: окна и модели за 30 дн. Имена моделей приходят из
+   настроек бота и только владельцу — в коде страницы их нет. */
+function kTok(n) { return (n >= 1000 ? Math.round(n / 1000) + 'k' : n) + ' ток.'; }
+
+function drawSpend(llm) {
+  var box = el('div', 'box');
+  box.appendChild(el('h3', null, 'Расход на LLM'));
+  var rows = el('div', 'opts');
+  llm.periods.forEach(function (p) {
+    var about = p.calls + ' запр. · ' + kTok(p.tokens);
+    if (p.free_calls) {
+      about += ' · бесплатно ' + p.free_calls + ' запр., ' + kTok(p.free_tokens);
+    }
+    rows.appendChild(drawOption({name: p.label, value: '$' + p.cost.toFixed(4),
+                                 about: about}));
+  });
+  llm.models.forEach(function (m) {
+    rows.appendChild(drawOption({name: m.name + ' (30 дн.)',
+      value: m.cost ? '$' + m.cost.toFixed(4) : 'бесплатно',
+      about: m.calls + ' запр. · ' + kTok(m.tokens)}));
+  });
+  box.appendChild(rows);
   return box;
 }
 
