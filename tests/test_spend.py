@@ -277,8 +277,21 @@ class TestByModel(SpendCase):
         self.assertEqual(win["month"]["cost"], 0.06)
         self.assertEqual(win["month"]["tokens"], 6600)
         self.assertEqual(got["models"], [
-            {"name": "paid-a", "calls": 12, "tokens": 6600, "cost": 0.06},
-            {"name": "free-x", "calls": 5, "tokens": 440, "cost": 0.0}])
+            {"name": "paid-a", "calls": 12, "tokens": 6600, "cost": 0.06,
+             "share": {"day": 28.6, "week": 28.6, "month": 70.6}},
+            {"name": "free-x", "calls": 5, "tokens": 440, "cost": 0.0,
+             "share": {"day": 71.4, "week": 71.4, "month": 29.4}}])
+
+    def test_share_of_a_model_idle_today_is_zero(self):
+        """Сегодня работала только одна модель — у неё 100 %, у другой 0 %."""
+        self.conn.executemany(
+            "INSERT INTO model_spend VALUES (?,?,?,?,?,?)",
+            [(spend.today(), "paid-a", 4, 100, 10, 0.01),
+             (spend.since(3), "free-x", 4, 100, 10, 0.0)])
+        self.conn.commit()
+        share = {m["name"]: m["share"] for m in spend.summary(self.conn)["models"]}
+        self.assertEqual(share["paid-a"], {"day": 100.0, "week": 50.0, "month": 50.0})
+        self.assertEqual(share["free-x"], {"day": 0, "week": 50.0, "month": 50.0})
 
     def test_summary_of_an_empty_journal(self):
         got = spend.summary(self.conn)
