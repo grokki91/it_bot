@@ -1213,13 +1213,11 @@ var UI_ICONS = {
     + '<path d="M4.9 20.2a7.1 7.1 0 0 1 14.2 0"/>',
   key: '<circle cx="8.2" cy="12" r="3.9"/><path d="M12.1 12h8.3"/>'
     + '<path d="M17.2 12v3.2M20.4 12v2.4"/>',
-  /* «Выйти» и «Обновить» раньше несли значок буквой — ⏻ и ↻. Знака ⏻ нет в
+  /* «Выйти» раньше нёс значок буквой — ⏻. Знака ⏻ нет в
      шрифтах Android, и на кнопке рисовался квадратик с крестом. Линия
      рисуется везде одинаково */
   logout: '<path d="M9.6 20.2H6.2a1.6 1.6 0 0 1-1.6-1.6V5.4a1.6 1.6 0 0 1 1.6-1.6h3.4"/>'
     + '<path d="m15.4 16.4 4.4-4.4-4.4-4.4"/><path d="M19.8 12H9.4"/>',
-  refresh: '<path d="M19.8 12.4a7.8 7.8 0 1 1-2.3-5.9l2.3 2.3"/>'
-    + '<path d="M19.8 4.2v4.6h-4.6"/>',
   /* воронка у кнопки «Темы»: она подрезает ленту, а не настраивает бота, и
      значок «шестерёнки» тут читался бы как второй вход в настройки */
   filter: '<path d="M3.8 5.6h16.4l-6.4 7.5v5.7l-3.6-2.1v-3.6z"/>'
@@ -1235,7 +1233,7 @@ function uiIcon(name) {
   return box;
 }
 
-/* Кнопка со значком навигации и подписью: «Войти», «Выйти», «Обновить». */
+/* Кнопка со значком навигации и подписью: «Войти», «Выйти». */
 function iconButton(cls, icon, text) {
   var button = el('button', cls);
   button.type = 'button';
@@ -1325,7 +1323,7 @@ function reboot() {
   S.hot = false;
   S.hello = true;
   paint();
-  refresh(false);
+  refresh();
   loadNews(true);
 }
 
@@ -2096,14 +2094,12 @@ function drawDigestBox() {
   }
   box.appendChild(facts);
 
-  var pair = el('div', 'pair');
-  var upd = iconButton('ghost', 'refresh', 'Обновить');
-  upd.onclick = function () { loadNews(true); refresh(true); };
+  /* Кнопки «Обновить» здесь больше нет: лента и уведомления и так
+     перечитываются опросом раз в 8 с и при каждом переходе, а новый вид
+     страницы приходит только с её перезагрузкой — нажатие ничего не меняло. */
   var out = iconButton('ghost', 'logout', 'Выйти');
   out.onclick = logout;
-  pair.appendChild(upd);
-  pair.appendChild(out);
-  box.appendChild(pair);
+  box.appendChild(out);
 }
 
 /* Сюжеты, которые сейчас развиваются. Считается по тем же связям, что и
@@ -2746,7 +2742,7 @@ function loadTools() {
   });
 }
 
-function refresh(manual) {
+function refresh() {
   /* пока состояния нет, сравнивать не с чем: первый ответ — не «пришло
      новое», а просто первый ответ, и ленту за ним перечитывать незачем */
   var known = !!S.state, before = feedMark();
@@ -2754,10 +2750,7 @@ function refresh(manual) {
     applyAlerts(data);
     /* пришёл выпуск — значит в ленте появились новости, перечитываем её */
     if (known && feedMark() !== before && isNews(S.view)) { loadNews(true); }
-    if (manual) { toast('Обновлено'); }
-  }).catch(function (reason) {
-    if (manual && reason !== 'auth') { toast('Не отвечает: ' + reason); }
-  });
+  }).catch(function () {});
 }
 
 /* ------------------------------------------------------ опрос и запуск */
@@ -2766,7 +2759,7 @@ function stopTimer() { if (S.timer) { clearInterval(S.timer); S.timer = null; } 
 function startTimer() {
   stopTimer();
   S.timer = setInterval(function () {
-    if (!document.hidden) { refresh(false); }
+    if (!document.hidden) { refresh(); }
   }, 8000);
 }
 
@@ -2782,7 +2775,7 @@ function start() {
 }
 
 document.addEventListener('visibilitychange', function () {
-  if (!document.hidden && S.started) { refresh(false); }
+  if (!document.hidden && S.started) { refresh(); }
 });
 
 /* ----------------------------------------------------------- клавиатура */
