@@ -619,6 +619,15 @@ class TestPageLook(WebCase):
             self.assertNotIn(glyph, page)
         self.assertIn("iconButton('ghost wide', 'logout', 'Выйти')", page)
 
+    def test_no_refresh_button(self):
+        """«Обновить» в правом блоке ничего не давал: лента и уведомления
+        перечитываются опросом и переходами, а новый вид страницы приходит
+        только с перезагрузкой. Кнопки нет, «Выйти» остаётся."""
+        page = self.code()
+        self.assertNotIn("'Обновить'", page)
+        self.assertNotIn("toast('Обновлено')", page)
+        self.assertIn("iconButton('ghost', 'logout', 'Выйти')", page)
+
     def test_sources_start_folded(self):
         """Шестнадцать строк разделов растягивали «Настройки» на лишний экран.
         Блок приходит свёрнутым и раскрывается нажатием на заголовок."""
