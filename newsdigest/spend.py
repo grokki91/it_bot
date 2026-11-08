@@ -262,6 +262,8 @@ def summary(conn) -> dict:
 
     Окна — из `spend` (вся история), модели — из `model_spend` (с тех пор, как
     он пишется). Платные токены — вход + выход DeepSeek, бесплатные — отдельно.
+    `share` модели — её доля запросов в каждом окне, в процентах: сумма по
+    моделям — 100 (с точностью до округления), окно без запросов — 0.
     """
     flush()
     periods, models = [], []
@@ -284,6 +286,16 @@ def summary(conn) -> dict:
                       "SUM(cost) FROM model_spend WHERE day >= ? GROUP BY model "
                       "ORDER BY SUM(cost) DESC, SUM(calls) DESC, model",
                       (since(WINDOWS[-1][2]),))]
+        for model in models:
+            model["share"] = {}
+        for key, _title, days in WINDOWS:
+            calls = dict(conn.execute(
+                "SELECT model, SUM(calls) FROM model_spend WHERE day >= ? "
+                "GROUP BY model", (since(days),)).fetchall())
+            total = sum(int(n or 0) for n in calls.values())
+            for model in models:
+                mine = int(calls.get(model["name"]) or 0)
+                model["share"][key] = round(100.0 * mine / total, 1) if total else 0
     except sqlite3.OperationalError:       # база старой версии без таблиц
         pass
     return {"periods": periods, "models": models}

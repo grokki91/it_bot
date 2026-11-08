@@ -716,7 +716,9 @@ class TestTools(WebCase):
         llm = self.tools()["llm"]
         self.assertEqual([p["id"] for p in llm["periods"]], ["day", "week", "month"])
         self.assertEqual(llm["models"], [{"name": "secret-paid-model", "calls": 3,
-                                          "tokens": 1000, "cost": 0.25}])
+                                          "tokens": 1000, "cost": 0.25,
+                                          "share": {"day": 100.0, "week": 100.0,
+                                                    "month": 100.0}}])
         self.assertNotIn("secret-paid-model", self.raw("/")[2])
 
 

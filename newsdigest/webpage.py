@@ -2484,8 +2484,9 @@ function drawReader(man) {
   return box;
 }
 
-/* Расход на модели: окна и модели за 30 дн. Имена моделей приходят из
-   настроек бота и только владельцу — в коде страницы их нет. */
+/* Расход на модели: окна и модели за 30 дн., у модели — доля её запросов
+   в каждом окне. Имена моделей приходят из настроек бота и только
+   владельцу — в коде страницы их нет. */
 function kTok(n) { return (n >= 1000 ? Math.round(n / 1000) + 'k' : n) + ' ток.'; }
 
 function drawSpend(llm) {
@@ -2501,9 +2502,14 @@ function drawSpend(llm) {
                                  about: about}));
   });
   llm.models.forEach(function (m) {
+    var about = m.calls + ' запр. · ' + kTok(m.tokens);
+    if (m.share) {
+      about += ' · доля запр.: ' + llm.periods.map(function (p) {
+        return p.label.toLowerCase() + ' ' + (m.share[p.id] || 0) + '%';
+      }).join(', ');
+    }
     rows.appendChild(drawOption({name: m.name + ' (30 дн.)',
-      value: m.cost ? '$' + m.cost.toFixed(4) : 'бесплатно',
-      about: m.calls + ' запр. · ' + kTok(m.tokens)}));
+      value: m.cost ? '$' + m.cost.toFixed(4) : 'бесплатно', about: about}));
   });
   box.appendChild(rows);
   return box;
