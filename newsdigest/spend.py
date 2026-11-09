@@ -264,6 +264,7 @@ def summary(conn) -> dict:
     он пишется). Платные токены — вход + выход DeepSeek, бесплатные — отдельно.
     `share` модели — её доля запросов в каждом окне, в процентах: сумма по
     моделям — 100 (с точностью до округления), окно без запросов — 0.
+    `windows` модели — её запросы, токены и цена в каждом окне.
     """
     flush()
     periods, models = [], []
@@ -287,15 +288,18 @@ def summary(conn) -> dict:
                       "ORDER BY SUM(cost) DESC, SUM(calls) DESC, model",
                       (since(WINDOWS[-1][2]),))]
         for model in models:
-            model["share"] = {}
+            model["share"], model["windows"] = {}, {}
         for key, _title, days in WINDOWS:
-            calls = dict(conn.execute(
-                "SELECT model, SUM(calls) FROM model_spend WHERE day >= ? "
-                "GROUP BY model", (since(days),)).fetchall())
-            total = sum(int(n or 0) for n in calls.values())
+            rows = {row[0]: row[1:] for row in conn.execute(
+                "SELECT model, SUM(calls), SUM(tok_in) + SUM(tok_out), SUM(cost) "
+                "FROM model_spend WHERE day >= ? GROUP BY model", (since(days),))}
+            total = sum(int(row[0] or 0) for row in rows.values())
             for model in models:
-                mine = int(calls.get(model["name"]) or 0)
+                calls, tokens, cost = rows.get(model["name"], (0, 0, 0.0))
+                mine = int(calls or 0)
                 model["share"][key] = round(100.0 * mine / total, 1) if total else 0
+                model["windows"][key] = {"calls": mine, "tokens": int(tokens or 0),
+                                         "cost": round(float(cost or 0.0), 4)}
     except sqlite3.OperationalError:       # база старой версии без таблиц
         pass
     return {"periods": periods, "models": models}

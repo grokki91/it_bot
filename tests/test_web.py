@@ -727,7 +727,9 @@ class TestTools(WebCase):
         self.assertEqual(llm["models"], [{"name": "secret-paid-model", "calls": 3,
                                           "tokens": 1000, "cost": 0.25,
                                           "share": {"day": 100.0, "week": 100.0,
-                                                    "month": 100.0}}])
+                                                    "month": 100.0},
+                                          "windows": {"day": {"calls": 3, "tokens": 1000, "cost": 0.25}, "week": {"calls": 3, "tokens": 1000, "cost": 0.25},
+                                                      "month": {"calls": 3, "tokens": 1000, "cost": 0.25}}}])
         self.assertNotIn("secret-paid-model", self.raw("/")[2])
 
 
