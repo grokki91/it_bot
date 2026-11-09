@@ -751,6 +751,11 @@ header {
 }
 .opt .val { font-weight: 700; margin-left: 6px; }
 .opt .about { color: var(--dim); font-size: 13px; display: block; }
+.opt .win { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin-top: 4px; padding-left: 8px; }
+.opt .win .per { min-width: 64px; color: var(--dim); font-size: 13px; }
+.opt .win .val { margin-left: 0; min-width: 84px; }
+.opt .win .about { display: inline; }
 .folk { display: flex; flex-direction: column; gap: 12px; }
 .folk .man { font-size: 14px; display: flex; align-items: baseline; gap: 8px;
              flex-wrap: wrap; }
@@ -2480,8 +2485,8 @@ function drawReader(man) {
   return box;
 }
 
-/* Расход на модели: окна и модели за 30 дн., у модели — доля её запросов
-   в каждом окне. Имена моделей приходят из настроек бота и только
+/* Расход на модели: окна и модели за 30 дн., у модели — по строке на окно
+   (сегодня, 7 и 30 дн.): цена, запросы, токены и доля её запросов. Имена моделей приходят из настроек бота и только
    владельцу — в коде страницы их нет. */
 function kTok(n) { return (n >= 1000 ? Math.round(n / 1000) + 'k' : n) + ' ток.'; }
 
@@ -2498,14 +2503,19 @@ function drawSpend(llm) {
                                  about: about}));
   });
   llm.models.forEach(function (m) {
-    var about = m.calls + ' запр. · ' + kTok(m.tokens);
-    if (m.share) {
-      about += ' · доля запр.: ' + llm.periods.map(function (p) {
-        return p.label.toLowerCase() + ' ' + (m.share[p.id] || 0) + '%';
-      }).join(', ');
-    }
-    rows.appendChild(drawOption({name: m.name + ' (30 дн.)',
-      value: m.cost ? '$' + m.cost.toFixed(4) : 'бесплатно', about: about}));
+    var card = el('div', 'opt');
+    card.appendChild(el('span', 'nm', m.name));
+    llm.periods.forEach(function (p) {
+      var w = (m.windows || {})[p.id] || {calls: 0, tokens: 0, cost: 0};
+      var line = el('div', 'win');
+      line.appendChild(el('span', 'per', p.label));
+      line.appendChild(el('span', 'val', w.cost ? '$' + w.cost.toFixed(4)
+                                               : (w.calls ? 'бесплатно' : '—')));
+      line.appendChild(el('span', 'about', w.calls + ' запр. · ' + kTok(w.tokens) +
+        (m.share ? ' · доля запр. ' + (m.share[p.id] || 0) + '%' : '')));
+      card.appendChild(line);
+    });
+    rows.appendChild(card);
   });
   box.appendChild(rows);
   return box;
