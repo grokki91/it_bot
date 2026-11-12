@@ -299,6 +299,21 @@ class TestByModel(SpendCase):
         self.assertEqual(share["paid-a"], {"day": 100.0, "week": 50.0, "month": 50.0})
         self.assertEqual(share["free-x"], {"day": 0, "week": 50.0, "month": 50.0})
 
+    def test_daily_series_covers_thirty_days(self):
+        """График: 30 суток по порядку, пустые — нулями, старше окна — мимо."""
+        self.conn.executemany(
+            "INSERT INTO spend(day, kind, calls, cost) VALUES (?,?,?,?)",
+            [(spend.today(), "rank", 2, 0.01), (spend.today(), "cards", 1, 0.02),
+             (spend.since(5), "rank", 4, 0.03), (spend.since(40), "rank", 9, 0.5)])
+        self.conn.commit()
+        daily = spend.summary(self.conn)["daily"]
+        self.assertEqual(len(daily), 30)
+        self.assertEqual(daily[0]["day"], spend.since(30))
+        self.assertEqual(daily[-1], {"day": spend.today(), "cost": 0.03, "calls": 3})
+        self.assertEqual(daily[-5], {"day": spend.since(5), "cost": 0.03, "calls": 4})
+        self.assertEqual(daily[-2], {"day": spend.since(2), "cost": 0.0, "calls": 0})
+        self.assertEqual(sum(d["calls"] for d in daily), 7)
+
     def test_summary_of_an_empty_journal(self):
         got = spend.summary(self.conn)
         self.assertEqual([p["cost"] for p in got["periods"]], [0.0, 0.0, 0.0])

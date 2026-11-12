@@ -265,9 +265,11 @@ def summary(conn) -> dict:
     `share` модели — её доля запросов в каждом окне, в процентах: сумма по
     моделям — 100 (с точностью до округления), окно без запросов — 0.
     `windows` модели — её запросы, токены и цена в каждом окне.
+    `daily` — цена и платные запросы по суткам за 30 дн., старые — первыми,
+    сутки без запросов — нулями: из них страница рисует график.
     """
     flush()
-    periods, models = [], []
+    periods, models, daily = [], [], []
     try:
         for key, title, days in WINDOWS:
             row = conn.execute(
@@ -300,9 +302,19 @@ def summary(conn) -> dict:
                 model["share"][key] = round(100.0 * mine / total, 1) if total else 0
                 model["windows"][key] = {"calls": mine, "tokens": int(tokens or 0),
                                          "cost": round(float(cost or 0.0), 4)}
+        start = since(WINDOWS[-1][2])
+        by_day = {row[0]: row[1:] for row in conn.execute(
+            "SELECT day, SUM(cost), SUM(calls) FROM spend WHERE day >= ? "
+            "GROUP BY day", (start,))}
+        first = local_now() - timedelta(days=WINDOWS[-1][2] - 1)
+        for back in range(WINDOWS[-1][2]):
+            day = (first + timedelta(days=back)).strftime("%Y-%m-%d")
+            cost, calls = by_day.get(day, (0.0, 0))
+            daily.append({"day": day, "cost": round(float(cost or 0.0), 4),
+                          "calls": int(calls or 0)})
     except sqlite3.OperationalError:       # база старой версии без таблиц
         pass
-    return {"periods": periods, "models": models}
+    return {"periods": periods, "models": models, "daily": daily}
 
 
 def label(kind: str) -> str:
