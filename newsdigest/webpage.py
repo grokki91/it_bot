@@ -756,6 +756,77 @@ header {
 .opt .win .per { min-width: 64px; color: var(--dim); font-size: 13px; }
 .opt .win .val { margin-left: 0; min-width: 84px; }
 .opt .win .about { display: inline; }
+/* Расходы на AI: три окна плитками, график по суткам, модели полосами. */
+.spend .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.spend .stat {
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  min-width: 0;
+}
+.spend .stat .per, .spend .stat .calls { color: var(--dim); font-size: 12px; }
+.spend .stat .sum { font-size: 20px; font-weight: 700; line-height: 1.3;
+  overflow-wrap: anywhere; }
+.spend .shead { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; }
+.spend .stitle { flex: 1; font-size: 14px; font-weight: 600; }
+.spend .seg { display: flex; gap: 2px; background: var(--soft); border-radius: 9px;
+  padding: 2px; }
+.spend .seg button {
+  border: 0; background: none; color: var(--dim); font-size: 12px;
+  padding: 4px 10px; border-radius: 7px;
+}
+.spend .seg button.on { background: var(--card); color: var(--ink);
+  font-weight: 600; box-shadow: var(--shadow); }
+.spend select.per {
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border-radius: 8px; font-size: 12px; padding: 3px 6px;
+}
+.spend .chart { padding-left: 46px; }
+.spend .plot { position: relative; height: 150px; }
+.spend .plot svg { position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: visible; }
+.spend .plot .area { fill: var(--accent); opacity: .12; }
+.spend .plot .line { fill: none; stroke: var(--accent); stroke-width: 2;
+  vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.spend .grid { position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px dashed var(--line); }
+.spend .grid .tick { position: absolute; right: 100%; margin-right: 8px;
+  transform: translateY(-50%); color: var(--dim); font-size: 11px;
+  white-space: nowrap; }
+.spend .dot {
+  position: absolute; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--card); border: 2px solid var(--accent);
+  transform: translate(-50%, -50%);
+}
+.spend .dense .dot { width: 5px; height: 5px; border-width: 1.5px; }
+.spend .axis { position: relative; height: 18px; margin-top: 6px; }
+.spend .axis span { position: absolute; transform: translateX(-50%);
+  color: var(--dim); font-size: 11px; white-space: nowrap; }
+.spend .axis .first { transform: none; }
+.spend .axis .last { transform: translateX(-100%); }
+.spend .models { display: flex; flex-direction: column; gap: 4px; }
+.spend .mrow {
+  display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(60px, 2fr) 84px 40px 18px;
+  align-items: center; gap: 12px; font-size: 13px; padding: 5px 0; width: 100%;
+}
+.spend .mname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spend .bar { height: 6px; border-radius: 3px; background: var(--soft);
+  overflow: hidden; }
+.spend .bar span { display: block; height: 100%; border-radius: 3px; }
+.spend .bar .m1 { background: var(--accent); }
+.spend .bar .m2 { background: #22a06b; }
+.spend .bar .m3 { background: var(--dim); opacity: .45; }
+.spend .mval { font-weight: 600; text-align: right; white-space: nowrap; }
+.spend .mshare { color: var(--dim); font-size: 12px; text-align: right; }
+.spend .others { color: var(--dim); }
+.spend .others .mval { font-weight: 400; }
+.spend .rest { padding-left: 12px; border-left: 2px solid var(--line); }
+.spend .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
+@media (max-width: 560px) {
+  .spend .stats { gap: 6px; }
+  .spend .stat { padding: 8px; }
+  .spend .stat .sum { font-size: 15px; }
+  .spend .mrow { grid-template-columns: minmax(0, 1fr) auto 34px 18px; row-gap: 4px; }
+  .spend .bar { grid-column: 1 / -1; grid-row: 2; }
+}
 .folk { display: flex; flex-direction: column; gap: 12px; }
 .folk .man { font-size: 14px; display: flex; align-items: baseline; gap: 8px;
              flex-wrap: wrap; }
@@ -1066,6 +1137,8 @@ var S = {
   state: null, alerts: [], tools: null, menu: [], side: null,
   feedsShown: false,    /* раскрыт ли блок «Источники» в «Настройках» */
   feedsOpen: {},        /* какие разделы источников раскрыты в нём */
+  /* «Расходы на AI»: окно графика (суток), окно моделей, раскрыты ли «Другие» */
+  spendDays: 7, spendPer: 'month', spendOthers: false,
   filters: [], pick: []
 };
 
@@ -2485,39 +2558,199 @@ function drawReader(man) {
   return box;
 }
 
-/* Расход на модели: окна и модели за 30 дн., у модели — по строке на окно
-   (сегодня, 7 и 30 дн.): цена, запросы, токены и доля её запросов. Имена моделей приходят из настроек бота и только
-   владельцу — в коде страницы их нет. */
+/* Расходы на AI (владельцу): три окна, график цены по суткам и модели.
+   Моделей на виду две — самые активные по запросам в выбранном окне; прочие
+   свёрнуты в строку «Другие модели» и раскрываются нажатием на неё. Имена
+   моделей приходят из настроек бота и только владельцу — в коде страницы
+   их нет. Выбор окон живёт в S: «Настройки» перерисовываются с каждым
+   ответом сервера, и переключатель под пальцем сбрасываться не должен. */
+var SPEND_TOP = 2;
+var SPEND_PER = { day: 'Сегодня', week: '7 дней', month: '30 дней' };
+
 function kTok(n) { return (n >= 1000 ? Math.round(n / 1000) + 'k' : n) + ' ток.'; }
 
-function drawSpend(llm) {
-  var box = el('div', 'box');
-  box.appendChild(el('h3', null, 'Расход на LLM'));
-  var rows = el('div', 'opts');
-  llm.periods.forEach(function (p) {
-    var about = p.calls + ' запр. · ' + kTok(p.tokens);
-    if (p.free_calls) {
-      about += ' · бесплатно ' + p.free_calls + ' запр., ' + kTok(p.free_tokens);
+function money(v) { return '$' + (v || 0).toFixed(4); }
+
+/* Подпись оси: столько знаков, чтобы соседние деления не слиплись. */
+function moneyTick(v, step) {
+  if (!v) { return '$0'; }
+  var digits = Math.min(4, Math.max(0, Math.ceil(-Math.log(step) / Math.LN10) + 1));
+  return '$' + parseFloat(v.toFixed(digits));
+}
+
+/* Верх оси: ближайшее «круглое» число не меньше максимума. */
+function niceTop(max) {
+  if (!(max > 0)) { return 0.01; }
+  var mag = Math.pow(10, Math.floor(Math.log(max) / Math.LN10));
+  var steps = [1, 2, 2.5, 5, 10];
+  for (var i = 0; i < steps.length; i++) {
+    if (steps[i] * mag >= max - 1e-12) { return steps[i] * mag; }
+  }
+  return 10 * mag;
+}
+
+function segButtons(items, current, pick) {
+  var row = el('div', 'seg');
+  items.forEach(function (it) {
+    var b = el('button', it.id === current ? 'on' : null, it.name);
+    b.type = 'button';
+    b.onclick = function () { pick(it.id); };
+    row.appendChild(b);
+  });
+  return row;
+}
+
+function drawSpendChart(daily, days) {
+  var points = daily.slice(-days);
+  var wrap = el('div', 'chart' + (days > 14 ? ' dense' : ''));
+  if (!points.length) {
+    wrap.appendChild(el('div', 'empty', 'Данных пока нет'));
+    return wrap;
+  }
+  var top = niceTop(Math.max.apply(null, points.map(function (p) { return p.cost; })));
+  var plot = el('div', 'plot');
+  [1, 0.5, 0].forEach(function (f) {
+    var grid = el('div', 'grid');
+    grid.style.top = (100 - f * 100) + '%';
+    grid.appendChild(el('span', 'tick', moneyTick(top * f, top / 2)));
+    plot.appendChild(grid);
+  });
+  var n = points.length;
+  function x(i) { return n > 1 ? i * 100 / (n - 1) : 50; }
+  function y(p) { return 100 - p.cost / top * 100; }
+  var line = points.map(function (p, i) {
+    return (i ? 'L' : 'M') + x(i).toFixed(2) + ' ' + y(p).toFixed(2);
+  }).join(' ');
+  var ns = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 100 100');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  var area = document.createElementNS(ns, 'path');
+  area.setAttribute('class', 'area');
+  area.setAttribute('d', line + ' L' + x(n - 1) + ' 100 L' + x(0) + ' 100 Z');
+  var stroke = document.createElementNS(ns, 'path');
+  stroke.setAttribute('class', 'line');
+  stroke.setAttribute('d', line);
+  svg.appendChild(area);
+  svg.appendChild(stroke);
+  plot.appendChild(svg);
+  var every = Math.ceil(n / 7);
+  var axis = el('div', 'axis');
+  points.forEach(function (p, i) {
+    var dot = el('span', 'dot');
+    dot.style.left = x(i) + '%';
+    dot.style.top = y(p) + '%';
+    var label = p.day.slice(8, 10) + '.' + p.day.slice(5, 7);
+    dot.title = label + ' · ' + money(p.cost) + ' · ' + p.calls + ' запр.';
+    plot.appendChild(dot);
+    if ((n - 1 - i) % every === 0) {
+      var tick = el('span', i === 0 ? 'first' : (i === n - 1 ? 'last' : null), label);
+      tick.style.left = x(i) + '%';
+      axis.appendChild(tick);
     }
-    rows.appendChild(drawOption({name: p.label, value: '$' + p.cost.toFixed(4),
-                                 about: about}));
   });
-  llm.models.forEach(function (m) {
-    var card = el('div', 'opt');
-    card.appendChild(el('span', 'nm', m.name));
-    llm.periods.forEach(function (p) {
-      var w = (m.windows || {})[p.id] || {calls: 0, tokens: 0, cost: 0};
-      var line = el('div', 'win');
-      line.appendChild(el('span', 'per', p.label));
-      line.appendChild(el('span', 'val', w.cost ? '$' + w.cost.toFixed(4)
-                                               : (w.calls ? 'бесплатно' : '—')));
-      line.appendChild(el('span', 'about', w.calls + ' запр. · ' + kTok(w.tokens) +
-        (m.share ? ' · доля запр. ' + (m.share[p.id] || 0) + '%' : '')));
-      card.appendChild(line);
-    });
-    rows.appendChild(card);
+  wrap.appendChild(plot);
+  wrap.appendChild(axis);
+  return wrap;
+}
+
+function drawModelRow(name, share, value, cls, tip) {
+  var row = el('div', 'mrow');
+  if (tip) { row.title = tip; }
+  row.appendChild(el('span', 'mname', name));
+  var bar = el('span', 'bar');
+  var fill = el('span', cls);
+  fill.style.width = Math.max(share > 0 ? 2 : 0, Math.min(100, share)) + '%';
+  bar.appendChild(fill);
+  row.appendChild(bar);
+  row.appendChild(el('span', 'mval', value));
+  row.appendChild(el('span', 'mshare',
+    share > 0 && share < 0.5 ? '<1%' : Math.round(share) + '%'));
+  return row;
+}
+
+function modelValue(w) {
+  return w.cost ? money(w.cost) : (w.calls ? 'Бесплатно' : '—');
+}
+
+function drawSpend(llm) {
+  var box = el('div', 'box spend');
+  box.appendChild(el('h3', null, 'Расходы на AI'));
+
+  var stats = el('div', 'stats');
+  llm.periods.forEach(function (p) {
+    var card = el('div', 'stat');
+    card.appendChild(el('div', 'per', SPEND_PER[p.id] || p.label));
+    card.appendChild(el('div', 'sum', money(p.cost)));
+    card.appendChild(el('div', 'calls', p.calls + ' ' +
+      plural(p.calls, 'запрос', 'запроса', 'запросов')));
+    card.title = kTok(p.tokens) + (p.free_calls ? ' · бесплатно ' + p.free_calls +
+      ' запр., ' + kTok(p.free_tokens) : '');
+    stats.appendChild(card);
   });
-  box.appendChild(rows);
+  box.appendChild(stats);
+
+  var head = el('div', 'shead');
+  head.appendChild(el('span', 'stitle', 'Динамика расходов'));
+  head.appendChild(segButtons([{id: 7, name: '7 дней'}, {id: 30, name: '30 дней'}],
+    S.spendDays, function (id) { S.spendDays = id; drawPanel(); }));
+  box.appendChild(head);
+  box.appendChild(drawSpendChart(llm.daily || [], S.spendDays));
+
+  var per = S.spendPer;
+  var mhead = el('div', 'shead');
+  mhead.appendChild(el('span', 'stitle', 'Использование моделей'));
+  var choose = el('select', 'per');
+  ['day', 'week', 'month'].forEach(function (id) {
+    var o = el('option', null, SPEND_PER[id]);
+    o.value = id;
+    if (id === per) { o.selected = true; }
+    choose.appendChild(o);
+  });
+  choose.onchange = function () { S.spendPer = choose.value; drawPanel(); };
+  mhead.appendChild(choose);
+  box.appendChild(mhead);
+
+  function win(m) { return (m.windows || {})[per] || {calls: 0, tokens: 0, cost: 0}; }
+  var active = llm.models.filter(function (m) { return win(m).calls > 0; });
+  active.sort(function (a, b) {
+    return win(b).calls - win(a).calls || win(b).cost - win(a).cost ||
+           (a.name < b.name ? -1 : 1);
+  });
+  var list = el('div', 'models');
+  if (!active.length) {
+    list.appendChild(el('div', 'empty', 'Запросов к моделям не было'));
+  }
+  function row(m, cls) {
+    var w = win(m);
+    return drawModelRow(m.name, (m.share || {})[per] || 0, modelValue(w), cls,
+                        w.calls + ' запр. · ' + kTok(w.tokens));
+  }
+  active.slice(0, SPEND_TOP).forEach(function (m, i) {
+    list.appendChild(row(m, i ? 'm2' : 'm1'));
+  });
+  var rest = active.slice(SPEND_TOP);
+  if (rest.length) {
+    var share = 0, cost = 0;
+    rest.forEach(function (m) { share += (m.share || {})[per] || 0; cost += win(m).cost; });
+    var other = el('button', 'fold others' + (S.spendOthers ? ' on' : ''));
+    other.type = 'button';
+    var line = drawModelRow('Другие модели', share,
+      rest.length + ' ' + plural(rest.length, 'модель', 'модели', 'моделей'), 'm3',
+      cost ? money(cost) : '');
+    var chev = el('span', 'chev');
+    chev.innerHTML = svgIcon(CHEV_ICON);
+    line.appendChild(chev);
+    other.appendChild(line);
+    other.onclick = function () { S.spendOthers = !S.spendOthers; drawPanel(); };
+    list.appendChild(other);
+    if (S.spendOthers) {
+      var more = el('div', 'rest');
+      rest.forEach(function (m) { more.appendChild(row(m, 'm3')); });
+      list.appendChild(more);
+    }
+  }
+  box.appendChild(list);
   return box;
 }
 
