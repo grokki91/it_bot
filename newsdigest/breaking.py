@@ -46,7 +46,7 @@ from .feedback import persona_hint
 from .feedparse import parse_date
 from .llm import (LLMError, card_key, card_text, llm_cost, rate_urgency,
                   summarize)
-from .pipeline import card_of, for_topic, fresh_rows
+from .pipeline import card_of, card_persona, for_topic, fresh_rows
 from .rank import SentIndex, cluster, prescore, primary_of
 from .render import alert_bulletin, breaking_card
 from .storage import (cards_known, db, log_run, meta_get, meta_set,
@@ -565,10 +565,12 @@ def card_for(conn, group, score, category, persona, cache):
     запасной заголовок тоже общий: модель лежит сразу для всех, и ходить к ней
     заново на каждого читателя значит только тянуть время.
 
-    Ключ здесь тот же, что и у выпуска (`llm.card_key`), поэтому написанное
-    для одной группы читателей достаётся следующей бесплатно: срочное
-    проверяется каждые несколько минут, и группы разбираются по очереди.
+    Ключ здесь тот же, что и у выпуска (`llm.card_key`), и портрет тот же —
+    раздела новости (`pipeline.card_persona`), а не группы читателей. Поэтому
+    написанное для одной группы достаётся следующей бесплатно, какие бы
+    разделы у неё ни были, а карточку срочного берёт и плановый выпуск.
     """
+    persona = card_persona(section_of(primary_of(group)), persona)
     key = card_key(persona, CFG["language"], card_text(group))
     if key in cache:
         return cache[key], 0.0

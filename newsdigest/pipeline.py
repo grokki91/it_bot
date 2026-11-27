@@ -571,35 +571,73 @@ def rank_all(shortlists, hint, stats) -> dict:
     return out
 
 
+def card_persona(topic, fallback) -> str:
+    """Портрет, которым пишется карточка новости раздела `topic`.
+
+    Портрет раздела, а не всего набора разделов читателя: он входит в ключ
+    кэша (`llm.card_key`), и со смешанным портретом («Его разделы: …») одна и
+    та же новость писалась заново для каждого набора разделов — у «ИИ + Наука»
+    и у «ИИ + Политика» она стоила дважды. С портретом раздела карточка одна на
+    всех, у кого этот раздел есть, а сам портрет точнее смешанного
+    (`sections.persona`). Раздела нет в профилях — `fallback`.
+    """
+    return PROFILES[topic]["persona"] if topic in PROFILES else fallback
+
+
 def write_cards(conn, blocks, plan, stats):
     """Просит модель написать карточки на весь выпуск и раскладывает их обратно.
 
     Спрашиваем только про то, чего в кэше нет. Одна и та же новость приходит
-    нескольким подписчикам с одинаковым набором разделов, а карточка у неё при
-    том же портрете читателя и том же языке одна — второй раз она стоила бы
-    ровно столько же, сколько первый, и слово в слово повторила бы первую.
+    многим подписчикам, а карточка у неё при том же портрете раздела и том же
+    языке одна — второй раз она стоила бы ровно столько же, сколько первый, и
+    слово в слово повторила бы первую. Ненаписанное идёт одним запросом на
+    раздел (`card_persona`), разделы — параллельно, как в `rank_all`.
     """
-    flat = [pick for _topic, picked in blocks for pick in picked]
-    persona, language = sections.persona(plan), CFG["language"]
-    keys = [card_key(persona, language, card_text(group))
-            for group, _score, _cat in flat]
+    flat, personas = [], []
+    common, language = sections.persona(plan), CFG["language"]
+    for topic, picked in blocks:
+        for pick in picked:
+            flat.append(pick)
+            personas.append(card_persona(topic, common))
+    keys = [card_key(persona, language, card_text(pick[0]))
+            for persona, pick in zip(personas, flat)]
     known = cards_known(conn, keys)
     cards_map = {idx: known[key] for idx, key in enumerate(keys) if key in known}
-    todo = [idx for idx, key in enumerate(keys) if key not in known]
-    hits = len(keys) - len(todo)
+    hits = len(cards_map)
+    # портрет -> номера в flat; одна и та же новость дважды не пишется
+    todo, asked = {}, set()
+    for idx, key in enumerate(keys):
+        if key not in known and key not in asked:
+            asked.add(key)
+            todo.setdefault(personas[idx], []).append(idx)
     if todo:
-        try:
-            written, usage = summarize([flat[idx] for idx in todo], persona,
-                                       language)
-            stats["cost"] += llm_cost(usage)
-        except LLMError as exc:
-            log.error("Саммари не удалось (%s) — публикую исходные заголовки", exc)
-            written = {}
+        def one(job):
+            persona, idxs = job
+            try:
+                written, usage = summarize([flat[idx] for idx in idxs], persona,
+                                           language)
+                return idxs, written, llm_cost(usage)
+            except LLMError as exc:
+                log.error("Саммари не удалось (%s) — публикую исходные "
+                          "заголовки", exc)
+                return idxs, {}, 0.0
+
+        jobs = list(todo.items())
+        if len(jobs) == 1:
+            results = [one(jobs[0])]
+        else:
+            workers = max(1, min(int(CFG["section_workers"]), len(jobs)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(one, jobs))
         fresh = {}
-        for place, card in written.items():
-            if 0 <= place < len(todo):
-                cards_map[todo[place]] = card
-                fresh[keys[todo[place]]] = card
+        for idxs, written, cost in results:
+            stats["cost"] += cost
+            for place, card in written.items():
+                if 0 <= place < len(idxs):
+                    fresh[keys[idxs[place]]] = card
+        for idx, key in enumerate(keys):
+            if key in fresh:
+                cards_map[idx] = fresh[key]
         remember_cards(conn, fresh.items())
     if hits:
         log.info("Карточки: написано %d, взято из кэша %d",
