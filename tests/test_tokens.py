@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("ND_HOME", tempfile.mkdtemp(prefix="ndtest-"))
 
 from newsdigest import (classify, config, llm, pipeline,  # noqa: E402
-                        storage, textutil)
+                        storage, subscribers, textutil)
+from newsdigest.profiles import PROFILES  # noqa: E402
 
 from test_core import item  # noqa: E402
 from test_pipeline import CHAT, PipelineCase  # noqa: E402
@@ -158,12 +159,22 @@ class TestCardCache(PipelineCase):
 
     def summarized(self, picked, persona, language):
         self.calls.append(len(picked))
+        self.personas.append(persona)
         return self.fake_summarize(picked, persona, language)
 
     def setUp(self):
         PipelineCase.setUp(self)
-        self.calls = []
+        self.calls, self.personas = [], []
         pipeline.summarize = self.summarized
+
+    def reader(self, chat_id, topics):
+        conn = storage.db()
+        try:
+            subscribers.add(conn, chat_id, role="member")
+            subscribers.set_field(conn, chat_id, "sections", topics)
+            return subscribers.get(conn, chat_id)
+        finally:
+            conn.close()
 
     def test_the_second_reader_gets_the_cards_for_free(self):
         self.fill(3)
@@ -174,6 +185,27 @@ class TestCardCache(PipelineCase):
         # свежие (своя история), а карточки к ним уже написаны
         pipeline.build_and_send(chat_id="78")
         self.assertEqual(self.calls, [3])
+
+    def test_another_set_of_sections_gets_the_cards_for_free(self):
+        """Карточка пишется портретом раздела, а не набора разделов: читатель
+        «ИИ + Наука» берёт написанное для читателя «ИИ»."""
+        self.fill(3)
+        pipeline.build_and_send(chat_id=CHAT)
+        pipeline.build_and_send(sub=self.reader("78", "ai,science"))
+        self.assertEqual(self.calls, [3])
+        self.assertEqual(self.personas, [PROFILES["ai"]["persona"]])
+
+    def test_each_section_is_written_with_its_own_persona(self):
+        self.fill(2)
+        # заголовки свои: одинаковые склеились бы в одно событие
+        self.fill(2, topic="science",
+                  titles=["Телескоп нашёл воду на экзопланете",
+                          "Физики измерили массу W-бозона"])
+        pipeline.build_and_send(sub=self.reader("78", "ai,science"))
+        self.assertEqual(sorted(self.calls), [2, 2])
+        self.assertEqual(sorted(self.personas),
+                         sorted([PROFILES["ai"]["persona"],
+                                 PROFILES["science"]["persona"]]))
 
     def test_a_new_event_is_still_written(self):
         self.fill(3)

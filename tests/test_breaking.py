@@ -14,6 +14,7 @@ from newsdigest import (breaking, sections, storage, subscribers,  # noqa: E402
                         translate)
 from newsdigest.config import CFG, now_iso  # noqa: E402
 from newsdigest.llm import LLMError  # noqa: E402
+from newsdigest.profiles import PROFILES  # noqa: E402
 from newsdigest.rank import primary_of  # noqa: E402
 
 from test_core import item  # noqa: E402
@@ -406,6 +407,7 @@ class TestGrouped(BreakingCase):
         super().setUp()
         self.ranked = []          # по запросу на каждый заход модели
         self.written = []         # то же для карточек
+        self.personas = []
 
         def rank(groups, persona):
             self.ranked.append(len(groups))
@@ -415,6 +417,7 @@ class TestGrouped(BreakingCase):
 
         def write(picked, persona, language):
             self.written.append(language)
+            self.personas.append(persona)
             return ({0: {"headline": "Срочный заголовок", "what": "суть",
                          "why": "важно"}}, {"in": 5, "out": 5})
 
@@ -452,6 +455,16 @@ class TestGrouped(BreakingCase):
         self.assertEqual(breaking.check_all(readers), 2)
         self.assertEqual(self.chats(), ["101", "102"])
         self.assertEqual(self.ranked, [1, 1])  # разделы разные — запросы тоже
+
+    def test_different_sections_share_the_card(self):
+        """Группы разные — оценка у каждой своя, но карточка пишется портретом
+        раздела новости, и вторая группа берёт её из кэша."""
+        readers = [self.reader("101", "ai"), self.reader("102", "ai,crypto")]
+        self.fill(["openai", "theverge", "techcrunch"], tiers={"openai": 1})
+        self.assertEqual(breaking.check_all(readers), 2)
+        self.assertEqual(self.ranked, [1, 1])
+        self.assertEqual(self.written, ["русский"])
+        self.assertEqual(self.personas, [PROFILES["ai"]["persona"]])
 
     def test_history_stays_personal_inside_group(self):
         readers = [self.reader("101", "ai"), self.reader("102", "ai")]
